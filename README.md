@@ -39,7 +39,7 @@ See [docs/usage.md](docs/usage.md) for the full CLI, TUI controls, recovery rule
 - Each feature gets a fresh builder context. An independent auditor checks a detached copy of the exact repository bytes, and only external checks can mark the feature complete.
 - Runs are file-backed, Git-native, and resumable after interruption. The append-only record includes model calls, tool calls, costs, status changes, checks, audits, and commit evidence.
 - The full-screen TUI and scriptable CLI share the same lifecycle. The TUI supports live steering and an effort dial; CLI commands cover pause, resume, inspection, per-role model effort, and structured JSON output.
-- Reflection can propose small playbook or prompt changes. Promotion requires isolated development and held-out evaluation, integrity checks, statistical gates, and a reversible Git transaction.
+- Reflection proposes small playbook changes; operators can also propose prompt variants. Promotion requires isolated development and held-out evaluation, integrity checks, statistical gates, and a reversible Git transaction.
 - Claude and ChatGPT subscription OAuth use the provider flows from the pi libraries. API keys can be entered with a masked prompt and are stored locally.
 
 ## Evidence and limits
