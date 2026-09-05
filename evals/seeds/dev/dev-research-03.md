@@ -1,0 +1,1 @@
+Shape: research. Study whether irregular sleep timing predicts next-day prospective-memory errors among rotating-shift workers independently of total sleep duration. Collect privacy-preserving diaries and short cognitive tasks for four weeks, avoid clinical interventions, and plan for substantial missing observations.

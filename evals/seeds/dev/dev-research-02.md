@@ -1,0 +1,1 @@
+Shape: research. Examine whether diverse root-associated fungi help salt-stressed vegetable seedlings recover after brief freshwater pulses in coastal soil. Design one growing-season pot study with simple biomass and soil-moisture measurements, a limited greenhouse footprint, and no genetic sequencing.

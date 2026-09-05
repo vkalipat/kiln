@@ -1,0 +1,1 @@
+Shape: product. Design a queue and fault-reporting tool for rural water committees coordinating scarce repair crews across dispersed hand pumps. It must function through basic text messages during unreliable service, expose no household-level usage, and help a committee explain why one repair was prioritized over another.

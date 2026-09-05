@@ -1,0 +1,1 @@
+Shape: product. Design a prop-tracking workflow for small theatre groups that borrow objects across overlapping rehearsals and productions. It should use printable labels without dedicated scanning hardware, show custody and return condition at a glance, and recover gracefully when an item is renamed, repaired, or split into a set.

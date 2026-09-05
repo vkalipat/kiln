@@ -1,0 +1,1 @@
+Shape: research. Test whether short dawn recordings can reveal orchard pest outbreaks early by tracking changes in insect-wing acoustics before visible crop damage. The protocol may use inexpensive microphones and weekly manual counts at four orchards, but it must address rain noise and confusion between harmful and harmless species.

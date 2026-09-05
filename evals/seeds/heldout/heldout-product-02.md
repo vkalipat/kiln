@@ -1,0 +1,1 @@
+Shape: product. Build a low-stimulation museum itinerary aid for families who want landmark exhibits while controlling sensory load. Because crowd telemetry is unavailable, staff need a printable and compact-screen format with rough zone conditions; sudden room closures should be reroutable, and each visitor chooses tolerances for brightness, noise, and rest cadence.

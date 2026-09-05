@@ -1,0 +1,1 @@
+Shape: research. Compare retrieval practice schedules for adults learning unfamiliar speech contrasts when speakers have varied regional accents. Use a six-week remote experiment with random assignment, accessible listening tasks, and a fixed participant payment pool, while separating durable learning from familiarity with the recorded voices.

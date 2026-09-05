@@ -1,0 +1,1 @@
+Shape: product. Design a lightweight intake and triage system for neighborhood repair events where volunteers match broken household items to skills and spare parts. Visitors should not need accounts, donated laptops are the only hardware, and the system must keep working when expertise estimates or part availability change during the day.

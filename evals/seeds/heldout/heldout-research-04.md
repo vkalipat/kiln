@@ -1,0 +1,1 @@
+Shape: research. Assess which building conditions best predict the return of indoor fungi in schools during the year after minor flooding. Restrict work to non-invasive air and surface sampling outside class hours, avoid making individual health diagnoses, and account for cleaning schedules, ventilation, and seasonal humidity.

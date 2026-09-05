@@ -1,0 +1,1 @@
+Shape: creative. Create an eighteen-minute participatory radio drama for rural teenagers about a drought council deciding how to share one failing well. Listeners must be able to infer three possible branches from recurring sound cues alone, while the recorded piece uses no phone interaction, celebrity voices, or external explanation.

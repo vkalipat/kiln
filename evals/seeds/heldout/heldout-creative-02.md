@@ -1,0 +1,1 @@
+Shape: creative. Compose an eight-page tactile poetry booklet for readers with low vision, pairing raised textures with spare lines about recognizing a place by touch. Color cannot carry essential meaning, each spread must be legible in under a minute, and the sequence should gain a second interpretation when read from the back.

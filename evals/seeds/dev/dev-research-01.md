@@ -1,0 +1,1 @@
+Shape: research. Investigate how shaded courtyards, pale paving, and planted edges alter evening heat retention in dense apartment blocks, with attention to which treatment most improves pedestrian comfort. Use portable sensors at no more than six sites, keep the study under eight weeks, and separate material effects from wind and daily weather variation.

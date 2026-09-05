@@ -1,0 +1,1 @@
+Shape: research. Determine how synthetic textile fibers move from storm drains into wetland invertebrate food webs after heavy rain. Sampling must fit three accessible marshes and two field visits per site, distinguish fibers from natural debris without advanced spectroscopy, and produce a falsifiable account of transport rather than a descriptive count alone.

@@ -1,0 +1,197 @@
+{
+  "version": 1,
+  "seeds": [
+    {
+      "id": "dev-research-01",
+      "shape": "research",
+      "split": "dev",
+      "file": "seeds/dev/dev-research-01.md",
+      "sha256": "4c428d6ad2bcad24e1bb24382c985ab74cd858e8e6dff0f3675d0f8dc8a640fe",
+      "rationale": "The study must isolate interacting surface, vegetation, weather, and airflow effects with sparse field measurements, so a useful idea needs a credible comparison strategy rather than a generic monitoring proposal."
+    },
+    {
+      "id": "dev-research-02",
+      "shape": "research",
+      "split": "dev",
+      "file": "seeds/dev/dev-research-02.md",
+      "sha256": "c61d3bec3e8d19cc98f9a723243972496bfd753094892e8dc3cf64fedc5ce782",
+      "rationale": "Recovery after alternating salt and freshwater exposure raises timing, interaction, and measurement questions that must be resolved within tight space and assay limits."
+    },
+    {
+      "id": "dev-research-03",
+      "shape": "research",
+      "split": "dev",
+      "file": "seeds/dev/dev-research-03.md",
+      "sha256": "e79cd78dcea7f135cd5682fa1efc99373f6d5fefab8ebe64edcdcfde61c23ea6",
+      "rationale": "Separating schedule irregularity from sleep quantity in a missing-prone longitudinal sample requires careful temporal measurement, confound handling, and an analysis that does not imply treatment effects."
+    },
+    {
+      "id": "dev-research-04",
+      "shape": "research",
+      "split": "dev",
+      "file": "seeds/dev/dev-research-04.md",
+      "sha256": "56640e6f5690a2a21204172716db3bfe1c9c877ae5fcf5c89ef6d07a7da4b8aa",
+      "rationale": "Connecting rainfall-driven transport to uptake by organisms with few visits and limited identification equipment demands a discriminating causal prediction, not merely more sampling."
+    },
+    {
+      "id": "dev-product-01",
+      "shape": "product",
+      "split": "dev",
+      "file": "seeds/dev/dev-product-01.md",
+      "sha256": "64b66fd29649bfed1c74228a20664226a89bdbcdc4922749b7ed3db9d6432805",
+      "rationale": "The solution has to reconcile offline synchronization, multilingual use, privacy, fast volunteer turnover, and perishable stock without adding administrative burden."
+    },
+    {
+      "id": "dev-product-02",
+      "shape": "product",
+      "split": "dev",
+      "file": "seeds/dev/dev-product-02.md",
+      "sha256": "2a385faed9921c263cdb2287b0489fd8bef9fe6832be64bed06d45107f367759",
+      "rationale": "Useful guidance must communicate uncertain disruptions and accessible alternatives without live feeds, while remaining legible in a stressful outdoor decision moment."
+    },
+    {
+      "id": "dev-product-03",
+      "shape": "product",
+      "split": "dev",
+      "file": "seeds/dev/dev-product-03.md",
+      "sha256": "479cc8f09a3e42625cb5d9fe7f013bc4ba27a12e93ea40fb9ea3c7da861e98d1",
+      "rationale": "Informal caregivers need accountable coordination across unreliable connections, but safety, privacy, low effort, and the absence of a designated manager pull the design in different directions."
+    },
+    {
+      "id": "dev-product-04",
+      "shape": "product",
+      "split": "dev",
+      "file": "seeds/dev/dev-product-04.md",
+      "sha256": "438abf2dc81e63ef3405f628c513789fdeaa20b6b45e9184fa25bd90e3d87502",
+      "rationale": "Dynamic matching among uncertain damage, volunteer skill, and changing parts inventory must work on modest equipment without persistent visitor identities."
+    },
+    {
+      "id": "dev-creative-01",
+      "shape": "creative",
+      "split": "dev",
+      "file": "seeds/dev/dev-creative-01.md",
+      "sha256": "bec72a854e706d8e22c0bf9bb4ce926d24bfc03d0e66ad7cdb67b119f71eeae1",
+      "rationale": "The concept must make ecological scale shifts emotionally legible through sound and silence alone while fitting a short walk and familiar listening equipment."
+    },
+    {
+      "id": "dev-creative-02",
+      "shape": "creative",
+      "split": "dev",
+      "file": "seeds/dev/dev-creative-02.md",
+      "sha256": "61b73409b9d52d9238c8a8ddb79f9ba8061ddea2570aefe335dac983a9e34294",
+      "rationale": "Turning craft memory into live shadow and acoustic action without speech or projection requires a coherent stage grammar that respects a knowledgeable audience."
+    },
+    {
+      "id": "dev-creative-03",
+      "shape": "creative",
+      "split": "dev",
+      "file": "seeds/dev/dev-creative-03.md",
+      "sha256": "3547827c316640b82c29313024dff6b57e81f95ccc51d7bf1841becc4c1109fe",
+      "rationale": "The physical unfolding, strict panel sequence, tiny word budget, and required visual callback must combine into one narrative mechanism rather than parallel decorative choices."
+    },
+    {
+      "id": "dev-creative-04",
+      "shape": "creative",
+      "split": "dev",
+      "file": "seeds/dev/dev-creative-04.md",
+      "sha256": "7826b1c0bc14498c6989ba90b825927f63aea6000d3e8e032419e3c718cd0f76",
+      "rationale": "Meaningful participation has to be encoded inside a fixed audio work, making branch clarity, collective stakes, and dramatic pacing interdependent."
+    },
+    {
+      "id": "heldout-research-01",
+      "shape": "research",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-research-01.md",
+      "sha256": "a86aee3cf2fe866fafdc63c3cf8c2f8c7f6ff22bcb24a22155aab9bb93258698",
+      "rationale": "An early-warning signal is valuable only if the design can distinguish species and weather noise from a true lead over visible crop damage using sparse paired ground truth."
+    },
+    {
+      "id": "heldout-research-02",
+      "shape": "research",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-research-02.md",
+      "sha256": "af6dcc5e9ef0ccf89aa5b6f83978efcec082bbd34eac1fd925a6132f581a09f6",
+      "rationale": "The experiment must separate lasting perceptual learning from voice memorization while balancing schedule contrasts, accent variation, accessibility, attrition, and a fixed payment pool."
+    },
+    {
+      "id": "heldout-research-03",
+      "shape": "research",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-research-03.md",
+      "sha256": "a45150cdeb8461d35830eff987ab24efd4dc57f99a3d4e921e570ff9ebcebb6f",
+      "rationale": "A one-visit field design must preserve enough comparison structure to distinguish biological influence on establishment from linked physical gradients despite imperfect sample storage."
+    },
+    {
+      "id": "heldout-research-04",
+      "shape": "research",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-research-04.md",
+      "sha256": "1ec991f9bcc7e8bf23bcb8df283b66b2ef32da94edca0323eec5d69063480df3",
+      "rationale": "Recurrence is shaped by moisture, ventilation, cleaning, season, and hidden building differences, yet the study must remain non-invasive and avoid overclaiming individual health consequences."
+    },
+    {
+      "id": "heldout-product-01",
+      "shape": "product",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-product-01.md",
+      "sha256": "a35ce7d190c50e1f0e0147f119368d0cfb870f064a3823cbfa0c560721e70e6d",
+      "rationale": "The workflow must allocate scarce crews transparently from fragmentary low-bandwidth reports while protecting household information and preserving legitimacy across villages."
+    },
+    {
+      "id": "heldout-product-02",
+      "shape": "product",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-product-02.md",
+      "sha256": "60682f856a43e7570d815b780273bd90f1d09ec3676401a6182ea5120c57d92c",
+      "rationale": "Personal sensory preferences, coarse staff estimates, format parity, landmark access, and sudden closures must all inform routing without pretending that live crowd data exists."
+    },
+    {
+      "id": "heldout-product-03",
+      "shape": "product",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-product-03.md",
+      "sha256": "0cc14f1ffa3efed79997624aec8cea82d23168346b89892fa7ac16dd14eefddc",
+      "rationale": "Perishable supply, uncertain quantities, changing transport, privacy, and the lack of a payment mechanism create a time-critical coordination problem with several failure modes."
+    },
+    {
+      "id": "heldout-product-04",
+      "shape": "product",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-product-04.md",
+      "sha256": "3760ed72a1e754d84dbfb11e633ecbe04a6998658a740095d434721f62115038",
+      "rationale": "Shared objects change names, condition, grouping, and custody across concurrent productions, so simple labels must support a surprisingly fluid identity model."
+    },
+    {
+      "id": "heldout-creative-01",
+      "shape": "creative",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-creative-01.md",
+      "sha256": "bf9b03bd1ec8e472637fce4cf9ce7d82afe111b3b2f964ce48f72459bdc957d3",
+      "rationale": "A small movement vocabulary and austere materials must convey unstable routes, individual separation, and reciprocal dependence to viewers with different lived histories."
+    },
+    {
+      "id": "heldout-creative-02",
+      "shape": "creative",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-creative-02.md",
+      "sha256": "f8e3026412b61fd7adc96fa8bec07e2c41faac7a4941fc565029a02ff41303b6",
+      "rationale": "Texture, language, pacing, accessibility, and reversible sequence need to support two readings without relying on color as a hidden information channel."
+    },
+    {
+      "id": "heldout-creative-03",
+      "shape": "creative",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-creative-03.md",
+      "sha256": "a09af5f5a49bf524f7f8a39ed9f68f9c73f58d5e8a7eeefc870dfaa8481947ed",
+      "rationale": "The installation must invite agency and layered memory in a constrained room using fragile reclaimed media, without collapsing complex change into linear nostalgia."
+    },
+    {
+      "id": "heldout-creative-04",
+      "shape": "creative",
+      "split": "heldout",
+      "file": "seeds/heldout/heldout-creative-04.md",
+      "sha256": "59e45ad508ffe12acea74b18d0c71e6fc37112521dde799880adc15e63010866",
+      "rationale": "A wordless miniature narrative must make collective action understandable to young viewers through material transformation and repetition within severe runtime and set limits."
+    }
+  ]
+}

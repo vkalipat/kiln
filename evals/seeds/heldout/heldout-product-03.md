@@ -1,0 +1,1 @@
+Shape: product. Develop a same-day exchange for market vendors and food-rescue volunteers to redirect unsold produce before it spoils. The initial service cannot process payments or publish precise stall addresses, must represent uncertain quantities honestly, and should coordinate pickups despite volunteers arriving in changing vehicles.

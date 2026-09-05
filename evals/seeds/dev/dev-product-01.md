@@ -1,0 +1,1 @@
+Shape: product. Design an inventory aid for volunteer-run community kitchens that need to share rapidly changing ingredient counts across shifts. It must work offline on aging tablets, support several written languages, avoid tracking individual guests, and let a new volunteer record a delivery in under one minute.

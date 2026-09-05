@@ -1,0 +1,1 @@
+Shape: creative. Imagine a duotone illustrated foldout for early commuters that reveals the hidden night shift of a neighborhood bakery as the page physically unfolds. Use exactly six connected panels and fewer than one hundred words, with the final image reinterpreting a small detail visible in the opening panel.

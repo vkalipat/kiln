@@ -1,0 +1,1 @@
+Shape: product. Develop a handoff workspace for relatives coordinating meals, visits, and medication reminders for an older adult living at home. Protect sensitive notes, tolerate intermittent connectivity, preserve a clear history of changes, and keep routine updates below two minutes without assuming a trained coordinator.

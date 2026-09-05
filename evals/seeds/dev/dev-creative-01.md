@@ -1,0 +1,1 @@
+Shape: creative. Conceive a twelve-minute audio walk for adolescents visiting a tidal marsh, turning shifts in water, mud, insects, and distant traffic into a story about attention across scales. The piece must use spatial sound and pauses rather than a guiding narrator, remain intelligible through ordinary headphones, and avoid imitating a known nature program.

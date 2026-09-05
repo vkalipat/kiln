@@ -1,0 +1,1 @@
+Shape: creative. Design a temporary storefront installation for residents returning to a rapidly changed neighborhood, built from recordings of ordinary sounds that have disappeared. Use only salvaged speakers, translucent cloth, and one narrow room, allowing each visitor to alter the mix without turning the work into a literal historical timeline.

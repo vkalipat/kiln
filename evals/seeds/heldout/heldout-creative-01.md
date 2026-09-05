@@ -1,0 +1,1 @@
+Shape: creative. Choreograph a dance for a multigenerational audience in which four performers repeatedly redraw migration paths that collapse before anyone reaches the end. Use a square floor, lengths of rope, and breath as the only sound; the closing image should hold both separation and mutual dependence without explanatory text.

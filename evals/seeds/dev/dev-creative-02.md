@@ -1,0 +1,1 @@
+Shape: creative. Develop an intimate chamber performance for local craft workers in which moving shadows transform patterns associated with weaving into a meditation on skill passed between generations. Limit the work to three performers, portable acoustic instruments, and twenty minutes; projections and spoken exposition are unavailable.

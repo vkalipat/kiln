@@ -1,0 +1,1 @@
+Shape: research. Explore how microbial communities in newly exposed glacial sediment influence the first establishment of alpine plants after thaw. Field access is limited to one expedition and twelve plots, samples cannot rely on a continuous cold chain, and the design must distinguish microbial influence from moisture and particle-size differences.

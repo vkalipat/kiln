@@ -1,0 +1,1 @@
+Shape: creative. Envision a brief clay-animation fable for young children: dormant seeds in an underground vault must collectively endure an abnormally long winter. Runtime is capped at seven minutes, with four miniature environments and zero dialogue; collaboration should emerge from shifting textures, size relationships, and recurring gestures instead of a written moral.

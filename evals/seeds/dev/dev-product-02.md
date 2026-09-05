@@ -1,0 +1,1 @@
+Shape: product. Create a disruption-planning service for passengers who rely on infrequent commuter ferries and must decide whether to wait, walk, or seek an accessible alternative. The first version cannot depend on live operator feeds, must explain uncertainty clearly, and should remain usable in bright outdoor conditions with one hand.
