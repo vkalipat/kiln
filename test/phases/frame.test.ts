@@ -101,6 +101,10 @@ describe("runFrame", () => {
   test("frames a broad commercial ambition into a bounded brief and advances", async () => {
     const d = deps([]);
     writeFileSync(d.run.seed, "Find an idea that will make me a billionaire and ship it.\n");
+    const customKernel = "# operator kernel\n\nPreserve this initialized-home customization.\n";
+    const customBrain = "# operator brain\n\nPreserve this role customization too.\n";
+    writeFileSync(join(d.home, "prompts", "kernel.md"), customKernel);
+    writeFileSync(join(d.home, "prompts", "brain.md"), customBrain);
     const model = createMockModel({
       id: "mock",
       handler: async (ctx: unknown) => {
@@ -119,6 +123,8 @@ describe("runFrame", () => {
     expect(result).toEqual({ outcome: "ok" });
     expect(readStatus(d.run)).toMatchObject({ phase: "discover", state: "running", shape: "product" });
     expect(readFileSync(d.run.brief, "utf8")).toContain("without claiming a guaranteed financial outcome");
+    expect(readFileSync(join(d.home, "prompts", "kernel.md"), "utf8")).toBe(customKernel);
+    expect(readFileSync(join(d.home, "prompts", "brain.md"), "utf8")).toBe(customBrain);
     expect(model.calls).toHaveLength(2);
     expect(d.record.read().some((event) => event.t === "tool.call" && event.name === "write" && event.ok)).toBe(true);
   });
