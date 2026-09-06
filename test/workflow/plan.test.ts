@@ -8,6 +8,7 @@ import {
   loadWorkflowPlan,
   planWorkflow,
   saveWorkflowPlan,
+  workflowGuidance,
   workflowPath,
 } from "../../src/workflow/plan";
 
@@ -22,13 +23,13 @@ describe("adaptive workflow planning", () => {
       defaultThrough: "reflect",
       assumptionPolicy: "bounded",
       researchPolicy: "landscape",
-      checkpointDefault: "human",
+      checkpointDefault: "autonomous",
     });
     expect(plan.rationale.join(" ")).toContain("checkable proxy");
     expect(compileWorkflow(plan, {})).toMatchObject({
       through: "reflect",
       throughSource: "intent",
-      checkpointPolicy: "human",
+      checkpointPolicy: "autonomous",
       phases: ["frame", "discover", "ideate", "checkpoint", "form", "build", "reflect"],
     });
   });
@@ -44,12 +45,22 @@ describe("adaptive workflow planning", () => {
       intent: "supplied_concept",
       artifactContext: "not_applicable",
     });
-    expect(planWorkflow("Continue the existing project and fix its import flow", { artifactAvailable: true })).toMatchObject({
+    expect(planWorkflow("I have an idea for a browser extension that compares privacy policies")).toMatchObject({
+      intent: "supplied_concept",
+      goal: "explore",
+    });
+    expect(planWorkflow("Give me business ideas for independent pharmacies")).toMatchObject({
+      intent: "open_ended_ideation",
+      goal: "explore",
+    });
+    expect(planWorkflow("Continue the existing project and fix its import flow")).toMatchObject({
       intent: "existing_artifact",
       goal: "deliver",
       researchPolicy: "repository_first",
       assumptionPolicy: "inspect_existing",
-      artifactContext: "declared",
+      artifactContext: "not_supplied",
+      defaultThrough: "checkpoint",
+      checkpointDefault: "human",
     });
   });
 
@@ -67,6 +78,18 @@ describe("adaptive workflow planning", () => {
       checkpointPolicy: "autonomous",
       phases: ["frame", "discover", "ideate", "checkpoint", "form", "build"],
     });
+    expect(compileWorkflow(planWorkflow("Find a startup idea and ship it"), { interactive: true })).toMatchObject({
+      through: "reflect",
+      checkpointPolicy: "human",
+    });
+  });
+
+  test("changes phase behavior instead of only labelling the run", () => {
+    const open = planWorkflow("Give me business ideas for pharmacies");
+    const supplied = planWorkflow("A refill-forecasting service for independent pharmacies");
+    expect(workflowGuidance(open, "ideate")).toContain("broad portfolio");
+    expect(workflowGuidance(supplied, "discover")).toContain("do not perform broad unrelated market exploration");
+    expect(workflowGuidance(supplied, "ideate")).toContain("not unrelated replacement concepts");
   });
 
   test("persists a frozen plan and rejects a conflicting rewrite", () => {

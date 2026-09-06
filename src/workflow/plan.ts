@@ -27,6 +27,7 @@ export interface WorkflowPlan {
 export interface WorkflowControls {
   through?: WorkflowPhase;
   autonomous?: boolean;
+  interactive?: boolean;
 }
 
 export interface WorkflowExecution {
@@ -36,15 +37,9 @@ export interface WorkflowExecution {
   phases: WorkflowPhase[];
 }
 
-export interface PlanWorkflowOptions {
-  autonomous?: boolean;
-  /** Reserved for an explicit future artifact adapter; --out is a destination and must not set it. */
-  artifactAvailable?: boolean;
-}
-
 const OPEN_ENDED = [
-  /\b(?:find|discover|generate|suggest|brainstorm|identify|explore|come up with)\b[^.!?\n]{0,100}\bideas?\b/i,
-  /\bideas?\s+(?:for|that|to)\b/i,
+  /\b(?:find|discover|generate|suggest|brainstorm|identify|explore|give|come up with)\b[^.!?\n]{0,100}\bideas?\b/i,
+  /\b(?:find|discover|identify|explore)\s+(?:me\s+)?(?:a|the|some)\s+(?:way|opportunity|business|startup|product)\b/i,
   /\bwhat\s+(?:business|company|product|project|thing)?\s*should\s+i\s+(?:build|start|pursue|make)\b/i,
   /\bmake\s+me\s+(?:a\s+)?(?:billionaire|millionaire)\b/i,
 ];
@@ -57,6 +52,7 @@ const EXISTING_ARTIFACT = [
 ];
 
 const DELIVERY = /\b(?:ship|implement|prototype|launch|deliver|build|develop|create|fix|finish|complete)\b/i;
+const OPEN_DELIVERY = /\b(?:ship|implement|prototype|launch|deliver|build|develop|fix|finish|complete)\b/i;
 
 function seedHash(seed: string): string {
   return createHash("sha256").update(seed).digest("hex");
@@ -66,38 +62,39 @@ function matchesAny(seed: string, patterns: readonly RegExp[]): boolean {
   return patterns.some((pattern) => pattern.test(seed));
 }
 
-export function classifyWorkflowIntent(seed: string, opts: Pick<PlanWorkflowOptions, "artifactAvailable"> = {}): WorkflowIntent {
-  if (matchesAny(seed, EXISTING_ARTIFACT) || (opts.artifactAvailable === true && DELIVERY.test(seed))) return "existing_artifact";
+export function classifyWorkflowIntent(seed: string): WorkflowIntent {
+  if (matchesAny(seed, EXISTING_ARTIFACT)) return "existing_artifact";
   if (matchesAny(seed, OPEN_ENDED)) return "open_ended_ideation";
   return "supplied_concept";
 }
 
-export function planWorkflow(seed: string, opts: PlanWorkflowOptions = {}): WorkflowPlan {
-  const intent = classifyWorkflowIntent(seed, opts);
-  const goal: WorkflowGoal = DELIVERY.test(seed) ? "deliver" : "explore";
+export function planWorkflow(seed: string): WorkflowPlan {
+  const intent = classifyWorkflowIntent(seed);
+  const goal: WorkflowGoal = (intent === "open_ended_ideation" ? OPEN_DELIVERY : DELIVERY).test(seed) ? "deliver" : "explore";
+  const missingArtifact = intent === "existing_artifact";
   const rationale: string[] = [];
   if (intent === "open_ended_ideation") {
     rationale.push("The seed asks Kiln to search across ideas; translate aspirational outcomes into a checkable proxy and state bounded assumptions.");
   } else if (intent === "supplied_concept") {
     rationale.push("The seed supplies a concept; preserve it and use research to test assumptions, risks, and implementation choices.");
   } else {
-    rationale.push(opts.artifactAvailable
-      ? "The seed targets an existing artifact and explicit readable context was declared; inspect that evidence before proposing changes."
-      : "The seed refers to an existing artifact but no readable source was supplied; keep work at bounded planning until the source is available.");
+    rationale.push("The seed refers to an existing artifact but no readable source was supplied; keep work at bounded planning until the source is available.");
   }
-  rationale.push(goal === "deliver"
+  rationale.push(goal === "deliver" && !missingArtifact
     ? "The seed asks for delivery, so the default route reaches verified build and reflection without bypassing the checkpoint or acceptance freeze."
-    : "The seed asks for exploration, so the default route ends at the idea checkpoint.");
+    : missingArtifact
+      ? "Artifact delivery cannot start without an explicit readable source, so the default route stops at a human checkpoint."
+      : "The seed asks for exploration, so the default route ends at the idea checkpoint.");
 
   return {
     version: 1,
     intent,
     goal,
-    defaultThrough: goal === "deliver" ? "reflect" : "checkpoint",
+    defaultThrough: goal === "deliver" && !missingArtifact ? "reflect" : "checkpoint",
     assumptionPolicy: intent === "open_ended_ideation" ? "bounded" : intent === "supplied_concept" ? "preserve" : "inspect_existing",
     researchPolicy: intent === "open_ended_ideation" ? "landscape" : intent === "supplied_concept" ? "targeted" : "repository_first",
-    checkpointDefault: opts.autonomous === true ? "autonomous" : "human",
-    artifactContext: intent !== "existing_artifact" ? "not_applicable" : opts.artifactAvailable === true ? "declared" : "not_supplied",
+    checkpointDefault: !missingArtifact && goal === "deliver" ? "autonomous" : "human",
+    artifactContext: intent !== "existing_artifact" ? "not_applicable" : "not_supplied",
     seedSha256: seedHash(seed),
     rationale,
   };
@@ -109,7 +106,9 @@ export function compileWorkflow(plan: WorkflowPlan, controls: WorkflowControls):
   return {
     through,
     throughSource,
-    checkpointPolicy: controls.autonomous === undefined
+    checkpointPolicy: controls.interactive === true
+      ? "human"
+      : controls.autonomous === undefined
       ? plan.checkpointDefault
       : controls.autonomous ? "autonomous" : "human",
     phases: WORKFLOW_PHASES.slice(0, WORKFLOW_PHASES.indexOf(through) + 1),
@@ -143,14 +142,14 @@ export function loadWorkflowPlan(run: RunPaths): WorkflowPlan | undefined {
 }
 
 /** Create the run's plan once; later invocations reuse it and reject seed drift. */
-export function ensureWorkflowPlan(run: RunPaths, opts: PlanWorkflowOptions = {}): WorkflowPlan {
+export function ensureWorkflowPlan(run: RunPaths): WorkflowPlan {
   const seed = readFileSync(run.seed, "utf8");
   const current = loadWorkflowPlan(run);
   if (current) {
     if (current.seedSha256 !== seedHash(seed)) throw new Error("workflow plan does not match the run seed");
     return current;
   }
-  const plan = planWorkflow(seed, opts);
+  const plan = planWorkflow(seed);
   saveWorkflowPlan(run, plan);
   return plan;
 }
