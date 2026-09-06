@@ -132,7 +132,7 @@ export async function runDiscover(d: PhaseDeps): Promise<PhaseResult> {
     getApiKey: () => d.apiKeyFor(String(brainModel.provider)),
     tools: brainTools(ctx, "discover"),
     systemPrompt: [loadPrompt(d.home, "kernel"), loadPrompt(d.home, "brain"), `## Playbook (discover)\n${playbookSection(loadPlaybook(d.home), "discover")}`],
-    pinned: discoverContract(d.run, questions, turnCap),
+    pinned: discoverContract(d.run, questions, turnCap, d.workflow),
     record: d.record,
     role: "brain",
     phase: "discover",

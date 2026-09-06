@@ -6,6 +6,7 @@ import type { RunRecord } from "../core/record";
 import { bullets } from "../phases/contracts";
 import type { PhaseDeps } from "../phases/frame";
 import { effortFor } from "../providers/models";
+import { workflowGuidance, type WorkflowPlan } from "../workflow/plan";
 import { type Axis, parseDossier, splitIdeas, validateDossier } from "./dossier";
 import { formatRawIsland, type IslandBatch } from "./island-raw";
 
@@ -133,7 +134,7 @@ export interface IslandInputs {
 }
 
 /** The island's pinned block: its seat, its one move, and the closed vocabulary it must choose from. */
-export function islandContract(plan: IslandPlan, inputs: IslandInputs, cfg: KilnConfig): string {
+export function islandContract(plan: IslandPlan, inputs: IslandInputs, cfg: KilnConfig, workflow?: WorkflowPlan): string {
   const move = plan.lens ?? plan.operator;
   const lines = [
     `Round ${plan.round} of ${cfg.ideation.rounds}, island ${plan.island} of ${cfg.ideation.islands}.`,
@@ -143,6 +144,7 @@ export function islandContract(plan: IslandPlan, inputs: IslandInputs, cfg: Kiln
     const kind = plan.lens ? "Lens" : "Mutation operator";
     lines.push(`${kind} ${move.id} — apply it to every idea you write this round: ${move.text}`);
   }
+  if (workflow) lines.push(`Workflow: ${workflowGuidance(workflow, "ideate")}`);
   lines.push(
     "Axis vocabulary. Every idea gives one value per axis, chosen from these lists and nothing else:",
     ...inputs.axes.map((a) => `- ${a.name}: ${a.values.join(" | ")}`),
@@ -246,7 +248,7 @@ export async function runIsland(deps: PhaseDeps, plan: IslandPlan, inputs: Islan
     getApiKey: () => deps.apiKeyFor(String(plan.model.provider)),
     tools: [],
     systemPrompt: [loadPrompt(deps.home, "kernel"), loadPrompt(deps.home, "generator")],
-    pinned: islandContract(plan, inputs, deps.cfg),
+    pinned: islandContract(plan, inputs, deps.cfg, deps.workflow),
     record: deps.record,
     role: "generator",
     phase: "ideate",
