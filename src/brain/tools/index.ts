@@ -17,6 +17,7 @@ import { exitTool } from "./exit";
 import { scoutTool } from "./scout";
 import { scholarSearchTool } from "./scholar";
 import { probeRequestTool } from "./probe-request";
+import { askUserTool } from "./ask-user";
 
 export type ExitKind = "underspecified" | "no_idea_clears_bar" | "not_formable" | "cannot_be_satisfied";
 export const EXIT_KINDS: ExitKind[] = ["underspecified", "no_idea_clears_bar", "not_formable", "cannot_be_satisfied"];
@@ -29,6 +30,8 @@ export interface ToolContext {
   record: RunRecord;
   fetchImpl?: typeof fetch;
   spawnScout?: (question: string) => Promise<string>;
+  /** Optional interactive clarification channel; absence must never be treated as an answer. */
+  askUser?: (question: string) => Promise<string | undefined>;
   onExit?: (kind: ExitKind, reasons: string[]) => void;
   /** Phase-local gate evaluated before an exit is recorded. A rejection is returned to the model
    *  as a tool error so it can correct a premature exit without polluting durable outcome evidence. */
@@ -111,6 +114,7 @@ const FACTORIES: Record<string, ToolFactory> = {
   scout: scoutTool,
   note: noteTool,
   exit: exitTool,
+  ask_user: askUserTool,
 };
 
 /**
@@ -122,7 +126,7 @@ const FACTORIES: Record<string, ToolFactory> = {
 export const BUILDER_TOOL_NAMES: readonly string[] = ["read", "write", "edit", "bash", "search", "exit"];
 
 export const PHASE_TOOLS: Record<Phase, readonly string[]> = {
-  frame: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "note", "exit"],
+  frame: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "note", "ask_user", "exit"],
   discover: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "scout", "note", "exit"],
   ideate: ["read", "write", "edit", "search", "web_search", "web_fetch", "scout", "probe_request", "note", "exit"],
   form: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "note", "exit"],
