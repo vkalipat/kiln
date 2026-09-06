@@ -31,7 +31,9 @@ test("an ordinary phase call consumes the measured winner without persisting run
   expect(effortFor(cfg, "brain", model)).toBe("low");
   const run = createRun(home, "insufficient seed"); const record = new RunRecord(run.record);
   await runFrame({ home, cfg, run, record, models: runtime.models, apiKeyFor: runtime.apiKeyFor, streamFn: deps.streamFn, effort: cfg.effort, limiter: new Limiter(1) });
-  expect(record.read().filter((event) => event.t === "model.call").map((event) => event.effortSent)).toEqual(["low"]);
+  // Frame gives a nonempty seed one bounded correction before accepting an underspecified exit.
+  // Both calls must retain the measured winner; the retry must not fall back to configured effort.
+  expect(record.read().filter((event) => event.t === "model.call").map((event) => event.effortSent)).toEqual(["low", "low"]);
   expect(JSON.stringify(cfg)).toBe(configBefore);
   expect(readFileSync(effortPath, "utf8")).toBe(before);
 });
