@@ -1,6 +1,14 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
 import { startTui } from "../../src/tui/app";
+import { AuthStore } from "../../src/providers/auth";
+import { RunRecord } from "../../src/core/record";
+import { currentRunControl } from "../../src/core/run-control";
+import { runPaths, writeStatus } from "../../src/core/run";
+import { RunController, type TuiCli } from "../../src/tui/controller";
 import type {
   TuiCheckpointAnswer,
   TuiConfigEffort,
@@ -14,6 +22,13 @@ import { FakeTerminal } from "./fake-terminal";
 
 const tick = () => new Promise<void>((resolve) => queueMicrotask(resolve));
 const settle = async () => { await tick(); await tick(); await tick(); await tick(); };
+const eventually = async (predicate: () => boolean) => {
+  for (let attempt = 0; attempt < 200; attempt += 1) {
+    if (predicate()) return;
+    await Bun.sleep(1);
+  }
+  throw new Error("condition was not reached");
+};
 const plain = (value: string) => value.replace(/\x1b\[[0-9;]*m/g, "");
 
 class MockController implements TuiControllerPort {
@@ -417,6 +432,43 @@ describe("kiln TUI app", () => {
     await settle();
     expect(controller.starts).toEqual([{ seed: "build a ceramic inventory app" }]);
     expect(lifecycle.app.prompt.getText()).toBe("");
+    await lifecycle.stop();
+  });
+
+  test("one submitted seed crosses real onboarding and controller intake exactly once", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kiln-tui-intake-"));
+    const invocations: string[][] = [];
+    const steered: string[] = [];
+    const cli: TuiCli = async (argv) => {
+      invocations.push(argv);
+      if (argv[0] === "auth") {
+        new AuthStore(join(root, "auth.json")).setApiKey("anthropic", "test-only-credential");
+        return 0;
+      }
+      const run = runPaths(root, argv[2]!);
+      const source = currentRunControl()!.registerSource({ role: "brain", phase: "frame", steer: (text) => steered.push(text) });
+      source.text("working");
+      source.dispose();
+      writeStatus(run, { state: "done", outcome: { kind: "success" } });
+      return 0;
+    };
+    const controller = new RunController({ home: root, cli });
+    const terminal = new FakeTerminal(72, 18);
+    const lifecycle = startTui(controller, { terminal, animations: false });
+    await settle();
+
+    terminal.emitInput("\r");
+    await eventually(() => controller.getSnapshot().auth?.required === false);
+    terminal.emitInput("one ambitious seed");
+    terminal.emitInput("\r");
+    await eventually(() => controller.getSnapshot().state === "done");
+
+    const runCalls = invocations.filter((argv) => argv[0] === "run");
+    expect(runCalls).toHaveLength(1);
+    expect(steered).toEqual([]);
+    const run = runPaths(root, controller.getSnapshot().runId!);
+    expect(new RunRecord(run.record).read().filter((event) => event.t === "run.created")).toHaveLength(1);
+    expect(controller.getSnapshot().transcript.filter((entry) => entry.kind === "user").map((entry) => entry.text)).toEqual(["one ambitious seed"]);
     await lifecycle.stop();
   });
 

@@ -112,11 +112,28 @@ export function createBrain(o: BrainOptions) {
     ? shapingStreamFn({ ...o.shaping, role: o.role, model: o.model }, o.streamFn)
     : o.streamFn;
 
-  const agent = new Agent({
+  const terminalToolNames = new Set(["exit", ...(o.terminalTools ?? [])]);
+  let agent!: Agent;
+  const guardedTools = o.tools.map((tool) => {
+    if (!terminalToolNames.has(tool.name)) return tool;
+    const execute = tool.execute;
+    return {
+      ...tool,
+      async execute(toolCallId, params, signal, onUpdate, context) {
+        // Terminal work must not strand a user message in pi's queue. Defer the side effect and
+        // let the loop inject that message at the boundary; the model can decide again afterward.
+        if (agent.peekSteeringQueue().length > 0) {
+          return { content: [{ type: "text" as const, text: "Deferred because new user steering is pending; reconsider this terminal decision after handling it." }], isError: true };
+        }
+        return execute.call(tool, toolCallId, params, signal, onUpdate, context);
+      },
+    } as AgentTool<any>;
+  });
+  agent = new Agent({
     initialState: {
       systemPrompt: [...o.systemPrompt, ...(addenda.text ? [addenda.text] : []), pinnedBlock(o.pinned)],
       model: o.model,
-      tools: o.tools,
+      tools: guardedTools,
       // `clampEffort` returns the same strings as the catalog's `Effort` const enum, which
       // structurally-identical string unions cannot be assigned to without a cast.
       thinkingLevel: effortSent as AgentState["thinkingLevel"],

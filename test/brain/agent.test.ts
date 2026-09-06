@@ -99,7 +99,7 @@ describe("createBrain", () => {
     expect(r.turns).toBe(1);
     expect(record.read().filter((e) => e.t === "model.call").length).toBe(1);
   });
-  test("live steering waits for the current tool batch instead of skipping it", async () => {
+  test("live steering preserves the current tool batch and defers terminal completion", async () => {
     const first = {
       content: [
         "working",
@@ -109,8 +109,7 @@ describe("createBrain", () => {
     };
     const retry = {
       content: [
-        "retrying skipped tools",
-        { type: "toolCall", id: "note-retry", name: "note", arguments: { text: "retry note" } },
+        "handling the new guidance",
         { type: "toolCall", id: "exit-retry", name: "exit", arguments: { kind: "underspecified", reasons: ["fixture"] } },
       ],
     };
@@ -126,12 +125,17 @@ describe("createBrain", () => {
     const result = await withRunControl(control, () => brain.run("same seed"));
 
     expect(result.stopped).toBe("exit");
-    expect(model.calls).toHaveLength(1);
+    expect(model.calls).toHaveLength(2);
     expect(exits).toEqual(["underspecified"]);
     expect(record.read().filter((event) => event.t === "tool.call").map((event) => event.t === "tool.call" && event.name)).toEqual(["note", "exit"]);
-    expect(tools.filter((event) => event.phase === "end").map((event) => [event.name, event.ok])).toEqual([["note", true], ["exit", true]]);
+    const completedTools = tools.filter((event) => event.phase === "end").map((event) => [event.name, event.ok]);
+    expect(completedTools).toHaveLength(3);
+    expect(completedTools).toContainEqual(["note", true]);
+    expect(completedTools).toContainEqual(["exit", false]);
+    expect(completedTools).toContainEqual(["exit", true]);
     const initialMessages = model.calls[0]!.context.messages.filter((message: { role: string }) => message.role === "user");
     expect(initialMessages).toHaveLength(1);
+    expect(brain.agent.peekSteeringQueue()).toEqual([]);
   });
   test("waited live steering is delivered at the next model boundary", async () => {
     const { brain, model, record } = setup([
