@@ -7,13 +7,13 @@ export function exitTool(ctx: ToolContext): AgentTool<any> {
     name: "exit",
     label: "Exit",
     intent: "omit",
-    description: `Stop the run honestly instead of inventing work. Kinds: ${EXIT_KINDS.join(", ")}. Give the concrete reasons that led here.`,
+    description: `Stop only when no honest, safe bounded artifact is possible after the phase's permitted assumptions or corrections. Kinds: ${EXIT_KINDS.join(", ")}. Give the concrete reasons that led here.`,
     parameters: {
       type: "object",
       properties: { kind: { type: "string", enum: EXIT_KINDS }, reasons: { type: "array", items: { type: "string" } } },
       required: ["kind", "reasons"],
     },
-    examples: [{ caption: "The seed is too thin to shape", call: { kind: "underspecified", reasons: ["no user named", "no outcome named"] } }],
+    examples: [{ caption: "Every permissible artifact violates a hard constraint", call: { kind: "cannot_be_satisfied", reasons: ["the requested result requires violating the stated safety constraint"] } }],
     async execute(_id, p: { kind: string; reasons?: string[] }) {
       if (!EXIT_KINDS.includes(p.kind as ExitKind)) return fail(`unknown exit kind ${p.kind}; expected one of ${EXIT_KINDS.join(", ")}`);
       if (ctx.allowedExitKinds && !ctx.allowedExitKinds.includes(p.kind as ExitKind)) {

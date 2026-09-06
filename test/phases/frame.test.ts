@@ -14,6 +14,36 @@ import { initHome } from "../../src/core/home";
 
 const AXES = "- who it serves: hobbyists | sideliners | commercial\n- mechanism class: sensing | modeling | logistics\n- where the value shows up: prevention | diagnosis | recovery";
 const BRIEF = `# Brief\n\n## Problem\nBeekeepers lose hives to mites.\n\n## Constraints\n- solo developer\n\n## Search success\n- a novel monitoring approach\n\n## Non-goals\n- hardware\n\n## Shape\nproduct\n\n## Axes\n${AXES}\n\n## Discovery questions\n- What mite-monitoring products exist?\n- What has been tried and failed?\n`;
+const BROAD_BRIEF = `# Brief
+
+## Problem
+Find a defensible, high-upside venture direction and produce an executable first artifact without claiming a guaranteed financial outcome.
+
+## Constraints
+- assume a capable generalist founder until evidence favors a specialist wedge
+- prefer an initially capital-light path that can be falsified cheaply
+
+## Search success
+- credible evidence of a large or rapidly expanding value pool
+- a painful unmet need with a reachable first buyer
+- a differentiated wedge and a cheap demand test
+
+## Non-goals
+- guaranteeing wealth or market success
+- committing irreversibly to an invented founder profile
+
+## Shape
+product
+
+## Axes
+- who it serves: business operators | scientific teams | healthcare organizations
+- mechanism class: workflow software | data product | managed service
+- where value appears: new revenue | avoided cost | faster decisions
+
+## Discovery questions
+- Which large value pools combine urgent demand with weak incumbent workflows?
+- Which opportunities admit a cheap demand or feasibility test before major capital?
+`;
 
 function deps(responses: unknown[]) {
   const home = mkdtempSync(join(tmpdir(), "kiln-")); initHome(home);
@@ -79,10 +109,7 @@ describe("runFrame", () => {
           return { content: [{ type: "toolCall", name: "exit", arguments: { kind: "underspecified", reasons: ["no founder profile", "no domain"] } }] };
         }
         if (existsSync(d.run.brief)) return { content: ["brief written"] };
-        return { content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF.replace(
-          "Beekeepers lose hives to mites.",
-          "Find a high-upside venture direction and produce an executable first artifact without claiming a guaranteed financial outcome.",
-        ) } }] };
+        return { content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BROAD_BRIEF } }] };
       },
     } as never);
     useModel(d, model);

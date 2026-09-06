@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { bullets, discoverContract, frameContract, parseAxes, sections, shapeHash, validateBrief } from "../../src/phases/contracts";
 import { parseBrief } from "../../src/phases/frame";
 import { runPaths } from "../../src/core/run";
+import { planWorkflow } from "../../src/workflow/plan";
 
 const AXES = "- who it serves: hobbyists | sideliners | commercial\n- mechanism class: sensing | modeling | logistics\n- where the value shows up: prevention | diagnosis | recovery\n";
 const brief = (o: { shape?: string; axes?: string; questions?: string } = {}) =>
@@ -86,5 +87,20 @@ describe("frameContract", () => {
     expect(text).toContain("make conservative, explicit, reversible working assumptions");
     expect(text).toContain("absent founder profile");
     expect(text).toContain("not sufficient reasons to exit");
+  });
+
+  test("pins the frozen adaptive posture into frame and discovery contracts", () => {
+    const open = planWorkflow("Find an idea that will make me a billionaire and ship it.");
+    expect(frameContract(runPaths("/tmp/home", "r1"), 10, open)).toContain(
+      "Frozen workflow: Open-ended ideation: replace aspirational outcomes with observable search proxies",
+    );
+    expect(discoverContract(runPaths("/tmp/home", "r1"), ["Q1?"], 20, open)).toContain(
+      "Frozen workflow: Open-ended ideation: build a broad but bounded landscape",
+    );
+
+    const supplied = planWorkflow("A marketplace for lab scheduling");
+    expect(frameContract(runPaths("/tmp/home", "r2"), 10, supplied)).toContain(
+      "Supplied concept: preserve the user's concept",
+    );
   });
 });

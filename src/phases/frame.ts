@@ -13,6 +13,7 @@ import { type RunPaths, writeStatus } from "../core/run";
 import { throwIfRunCancelled } from "../core/run-control";
 import type { ProbeSpec } from "../ideation/probe";
 import { effortFor } from "../providers/models";
+import type { WorkflowPlan } from "../workflow/plan";
 import { BRIEF_SECTIONS, bullets, frameContract, parseAxes, sections, shapeHash, validateBrief, type Axis, type BriefFacts } from "./contracts";
 import { runValidatedFile } from "./shared";
 
@@ -33,6 +34,10 @@ export interface PhaseDeps {
   fetchImpl?: typeof fetch;
   onText?: (d: string) => void;
   onTool?: BrainOptions["onTool"];
+  /** Frozen intent and research posture shared by the phase contracts. */
+  workflow?: WorkflowPlan;
+  /** Interactive clarification seam. The ask_user tool enforces its own one-question bound. */
+  askUser?: (question: string) => Promise<string | undefined>;
   /** Shared across islands, scouts, probes and judge pairs (record §3). */
   limiter: Limiter;
   /** Subscription-usage snapshot used for the 95% boundary poll and reactive 429 pause. */
@@ -119,6 +124,7 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
     run: d.run,
     record: d.record,
     fetchImpl: d.fetchImpl,
+    ...(d.askUser ? { askUser: d.askUser } : {}),
     acceptExit: (kind, reasons) => {
       const acceptance = frameExitAcceptance(readFileSync(d.run.seed, "utf8"), kind, exitCorrections);
       if (!acceptance.accepted) exitCorrections += 1;
@@ -136,7 +142,7 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
     getApiKey: () => d.apiKeyFor(String(model.provider)),
     tools: brainTools(ctx, "frame"),
     systemPrompt: [loadPrompt(d.home, "kernel"), loadPrompt(d.home, "brain"), `## Playbook (frame)\n${playbookSection(loadPlaybook(d.home), "frame")}`],
-    pinned: frameContract(d.run, turnCap),
+    pinned: frameContract(d.run, turnCap, d.workflow),
     record: d.record,
     role: "brain",
     phase: "frame",
