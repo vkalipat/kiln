@@ -22,6 +22,10 @@ export function exitTool(ctx: ToolContext): AgentTool<any> {
         return fail(`policy: ${message}`);
       }
       const reasons = p.reasons ?? [];
+      const acceptance = ctx.acceptExit?.(p.kind as ExitKind, reasons);
+      if (acceptance && !acceptance.accepted) {
+        return fail(acceptance.message ?? `exit kind ${p.kind} is premature in this phase`);
+      }
       ctx.record.append({ t: "honest_exit", kind: p.kind, reasons, source: "declared" });
       ctx.onExit?.(p.kind as ExitKind, reasons);
       return ok(`exit recorded: ${p.kind}`);

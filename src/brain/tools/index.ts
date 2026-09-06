@@ -30,6 +30,9 @@ export interface ToolContext {
   fetchImpl?: typeof fetch;
   spawnScout?: (question: string) => Promise<string>;
   onExit?: (kind: ExitKind, reasons: string[]) => void;
+  /** Phase-local gate evaluated before an exit is recorded. A rejection is returned to the model
+   *  as a tool error so it can correct a premature exit without polluting durable outcome evidence. */
+  acceptExit?: (kind: ExitKind, reasons: string[]) => { accepted: boolean; message?: string };
   bashTimeoutMs?: number;
   /** Deadline for a single `web_search`/`web_fetch` request. Default 30s. */
   webTimeoutMs?: number;

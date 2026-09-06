@@ -78,4 +78,13 @@ describe("frameContract", () => {
     expect(text).not.toContain("Turn budget: 10");
     expect(discoverContract(runPaths("/tmp/home", "r1"), ["Q1?"], 20)).not.toContain("Turn budget: 20");
   });
+
+  test("turns a broad aspiration into bounded evidence criteria instead of demanding a biography", () => {
+    const text = frameContract(runPaths("/tmp/home", "r1"), 10);
+    expect(text).toContain("A nonempty broad goal is actionable");
+    expect(text).toContain("never promise wealth, market success, or clinical outcomes");
+    expect(text).toContain("make conservative, explicit, reversible working assumptions");
+    expect(text).toContain("absent founder profile");
+    expect(text).toContain("not sufficient reasons to exit");
+  });
 });

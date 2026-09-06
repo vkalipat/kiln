@@ -1,10 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-catalog";
-import { parseBrief, runFrame, stopFailure, type PhaseDeps } from "../../src/phases/frame";
+import { frameExitAcceptance, parseBrief, runFrame, stopFailure, type PhaseDeps } from "../../src/phases/frame";
 import { shapeHash } from "../../src/phases/contracts";
 import { defaultConfig } from "../../src/core/config";
 import { Limiter } from "../../src/core/limiter";
@@ -58,7 +58,79 @@ describe("stopFailure", () => {
   });
 });
 
+describe("frameExitAcceptance", () => {
+  test("allows one correction for a nonempty underspecified seed but never delays safety exits", () => {
+    expect(frameExitAcceptance("Find a major opportunity and ship it", "underspecified", 0)).toMatchObject({ accepted: false });
+    expect(frameExitAcceptance("Find a major opportunity and ship it", "underspecified", 1)).toEqual({ accepted: true });
+    expect(frameExitAcceptance("Find a major opportunity and ship it", "cannot_be_satisfied", 0)).toEqual({ accepted: true });
+    expect(frameExitAcceptance("  ", "underspecified", 0)).toEqual({ accepted: true });
+  });
+});
+
 describe("runFrame", () => {
+  test("frames a broad commercial ambition into a bounded brief and advances", async () => {
+    const d = deps([]);
+    writeFileSync(d.run.seed, "Find an idea that will make me a billionaire and ship it.\n");
+    const model = createMockModel({
+      id: "mock",
+      handler: async (ctx: unknown) => {
+        const contract = JSON.stringify(ctx);
+        if (!contract.includes("A nonempty broad goal is actionable")) {
+          return { content: [{ type: "toolCall", name: "exit", arguments: { kind: "underspecified", reasons: ["no founder profile", "no domain"] } }] };
+        }
+        if (existsSync(d.run.brief)) return { content: ["brief written"] };
+        return { content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF.replace(
+          "Beekeepers lose hives to mites.",
+          "Find a high-upside venture direction and produce an executable first artifact without claiming a guaranteed financial outcome.",
+        ) } }] };
+      },
+    } as never);
+    useModel(d, model);
+
+    const result = await runFrame(d);
+
+    expect(result).toEqual({ outcome: "ok" });
+    expect(readStatus(d.run)).toMatchObject({ phase: "discover", state: "running", shape: "product" });
+    expect(readFileSync(d.run.brief, "utf8")).toContain("without claiming a guaranteed financial outcome");
+    expect(model.calls).toHaveLength(2);
+    expect(d.record.read().some((event) => event.t === "tool.call" && event.name === "write" && event.ok)).toBe(true);
+  });
+
+  test("corrects one premature underspecified exit without recording a false outcome", async () => {
+    const d = deps([]);
+    writeFileSync(d.run.seed, "Find an idea that will make me a billionaire and ship it.\n");
+    const model = createMockModel({ id: "mock", responses: [
+      { content: [{ type: "toolCall", name: "exit", arguments: { kind: "underspecified", reasons: ["no founder profile", "no domain"] } }] },
+      { content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF } }] },
+      { content: ["brief written"] },
+    ] as never });
+    useModel(d, model);
+
+    const result = await runFrame(d);
+
+    expect(result).toEqual({ outcome: "ok" });
+    expect(model.calls).toHaveLength(3);
+    expect(d.record.read().filter((event) => event.t === "honest_exit")).toHaveLength(0);
+    expect(d.record.read().find((event) => event.t === "tool.call" && event.name === "exit")).toMatchObject({ ok: false });
+  });
+
+  test("still accepts an immediate safety exit for a request with no safe artifact", async () => {
+    const d = deps([]);
+    const model = createMockModel({ id: "mock", responses: [{ content: [{
+      type: "toolCall", name: "exit", arguments: {
+        kind: "cannot_be_satisfied",
+        reasons: ["the requested artifact would require unsafe operational biological instructions"],
+      },
+    }] }] as never });
+    useModel(d, model);
+
+    const result = await runFrame(d);
+
+    expect(result).toMatchObject({ outcome: "honest_exit", kind: "cannot_be_satisfied" });
+    expect(model.calls).toHaveLength(1);
+    expect(readStatus(d.run)).toMatchObject({ state: "done", outcome: { kind: "honest_exit", exitKind: "cannot_be_satisfied" } });
+  });
+
   test("writes brief through the write tool, records the shape, and advances the phase", async () => {
     const d = deps([]);
     useModel(d, createMockModel({ id: "mock", responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF } }] }, { content: ["brief written"] }] as never }));
@@ -93,9 +165,15 @@ describe("runFrame", () => {
   });
   test("honest exit is returned as such", async () => {
     const d = deps([]);
-    useModel(d, createMockModel({ id: "mock", responses: [{ content: [{ type: "toolCall", name: "exit", arguments: { kind: "underspecified", reasons: ["no domain given"] } }] }, { content: ["exited"] }] as never }));
+    const model = createMockModel({ id: "mock", responses: [
+      { content: [{ type: "toolCall", name: "exit", arguments: { kind: "underspecified", reasons: ["no domain given"] } }] },
+      { content: [{ type: "toolCall", name: "exit", arguments: { kind: "underspecified", reasons: ["a decisive fact remains unavailable"] } }] },
+    ] as never });
+    useModel(d, model);
     const r = await runFrame(d);
     expect(r.outcome).toBe("honest_exit"); if (r.outcome === "honest_exit") expect(r.kind).toBe("underspecified");
+    expect(model.calls).toHaveLength(2);
+    expect(d.record.read().filter((event) => event.t === "honest_exit")).toHaveLength(1);
     expect(readStatus(d.run).state).toBe("done");
   });
   test("exhausting the turn cap is a budget failure with no corrective re-prompt", async () => {

@@ -88,12 +88,44 @@ export function parseBrief(md: string): ParsedBrief {
   return { sections: s, missing, shape, shapeRaw, questions: bullets(s["Discovery questions"] ?? ""), axes: parseAxes(s["Axes"] ?? "") };
 }
 
+/**
+ * A model gets one bounded correction before an underspecified exit is accepted. This is a
+ * phase policy rather than a lexical guess about the seed: any nonempty request may admit a
+ * useful bounded artifact once aspirations are separated from acceptance criteria. A second
+ * exit remains available for the decisive gaps the correction cannot honestly bridge, while
+ * impossible and safety exits are never delayed.
+ */
+export function frameExitAcceptance(seed: string, kind: ExitKind, priorCorrections: number): { accepted: boolean; message?: string } {
+  if (kind !== "underspecified" || seed.trim() === "" || priorCorrections > 0) return { accepted: true };
+  return {
+    accepted: false,
+    message: [
+      "This nonempty seed needs one productive framing attempt before an underspecified exit.",
+      "Treat hoped-for outcomes as aspirations, define observable proxy criteria and a bounded deliverable, make explicit reversible assumptions, then write the brief.",
+      "Retry the exit only if a decisive unavailable fact would make every honest, safe artifact invalid; breadth, an absent founder profile, and an unspecified preferred domain are not decisive by themselves.",
+    ].join(" "),
+  };
+}
+
 export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
   throwIfRunCancelled();
   const turnCap = d.cfg.budgets.turns.frame;
   d.record.append({ t: "phase.start", phase: "frame" });
   let exit: { kind: ExitKind; reasons: string[] } | undefined;
-  const ctx: ToolContext = { cwd: d.run.dir, roots: [d.run.dir], run: d.run, record: d.record, fetchImpl: d.fetchImpl, onExit: (kind, reasons) => { exit = { kind, reasons }; } };
+  let exitCorrections = 0;
+  const ctx: ToolContext = {
+    cwd: d.run.dir,
+    roots: [d.run.dir],
+    run: d.run,
+    record: d.record,
+    fetchImpl: d.fetchImpl,
+    acceptExit: (kind, reasons) => {
+      const acceptance = frameExitAcceptance(readFileSync(d.run.seed, "utf8"), kind, exitCorrections);
+      if (!acceptance.accepted) exitCorrections += 1;
+      return acceptance;
+    },
+    onExit: (kind, reasons) => { exit = { kind, reasons }; },
+  };
   // Read through a function rather than the bare `exit` variable: TS's flow analysis for a `let`
   // mutated only inside a closure does not reliably re-widen it across an intervening `await`
   // once it has been narrowed to `undefined`, which would make later `if (exit)` checks unsound.

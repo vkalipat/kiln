@@ -95,13 +95,16 @@ export function shapeHash(b: Pick<BriefFacts, "shape" | "axes">): string {
   });
 }
 
-const EXIT_CLAUSE = "If the seed is too underspecified to search, or no honest output is possible, call the exit tool with the kind and reasons. That is a correct outcome.";
+const EXIT_CLAUSE = "Exit only when no honest, safe artifact is possible after applying the phase's assumption policy. Breadth, an absent founder profile, an unspecified preferred domain, or an aspirational outcome are not sufficient reasons to exit. A genuinely impossible or unsafe request may exit with concrete reasons.";
 
 export function frameContract(run: RunPaths, _turnCap: number): string {
   return [
     `Phase: frame. Output file: ${run.brief}`,
     `Required sections (## headings, in this order): ${BRIEF_SECTIONS.join(", ")}.`,
     `Problem: restate it in one paragraph. Constraints: hard limits as bullets. Search success: what a winning idea must do, as bullets. Non-goals: bullets. Shape: exactly one of ${SHAPES.join(", ")}. Axes: 3 to 5 bullets naming the behavior axes ideas will be spread across (default: who it serves, mechanism class, what it assumes that others do not, where the value shows up). Discovery questions: ${QUESTIONS_MIN} to ${QUESTIONS_MAX} bullets, one precise question each, for scouts.`,
+    "A nonempty broad goal is actionable. Distinguish the user's aspiration from this run's acceptance criteria: never promise wealth, market success, or clinical outcomes. Translate the aspiration into observable proxies and a bounded deliverable that this run can form or build.",
+    "When the seed omits a founder profile, domain preference, budget, or similar preference, make conservative, explicit, reversible working assumptions in Constraints or Non-goals and proceed. Do not silently invent a user fact. Only a missing fact that changes safety, legality, or whether every plausible artifact is valid is decisive enough to block progress.",
+    "Use relevant available tools when they materially reduce uncertainty, and write the brief with the write tool. For biology and medicine, frame safe high-level, literature, computational, workflow, product, or business exploration without clinical promises or risky operational wet-lab instructions.",
     `Every axis bullet is a closed vocabulary written as \`name: v1 | v2 | v3\` with ${AXIS_VALUES_MIN} to ${AXIS_VALUES_MAX} values, lowercase, each a value an idea can actually take. Islands choose from this list and nothing else, so a bare axis name is not accepted.`,
     EXIT_CLAUSE,
   ].join("\n");

@@ -26,6 +26,10 @@ describe("bundled prompts", () => {
     expect(bundled("brain")).toContain(
       "The pinned contract is the task; scouts answer one precise question each.",
     );
+    expect(bundled("kernel")).toContain("A broad ambition is direction, not a promise.");
+    expect(bundled("kernel")).toContain("Missing preferences are not automatically blockers.");
+    expect(bundled("brain")).toContain("A missing founder biography or preferred domain is not by itself a reason to stop.");
+    expect(bundled("brain")).toContain("Treat \"ship it\" as a request for the best executable artifact");
     expect(bundled("scout")).toContain(
       "Each finding is a fact, a number, a name, or a quote, with its source (URL or file path).",
     );
