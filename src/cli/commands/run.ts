@@ -27,18 +27,21 @@ import { printJson, table } from "../output";
 import { askCli, createCliRuntime, firstProbePreview } from "../runtime";
 import { projectSummary } from "../project-summary";
 import { buildProjectionRows } from "../build-projection";
+import { clarificationFor } from "../clarification";
 import { routeResume, type ResumePhase } from "./run-routing";
 import { HeldoutSeedError } from "../../evals/identity";
 import { verifyEvalsManifest } from "../../evals/manifest";
 import { manifestDriftNote, resolveNewSeed, type NewSeedInput } from "./run-seed";
+import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, type WorkflowExecution, type WorkflowPhase } from "../../workflow/plan";
 
-const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id>\n';
+const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous|--interactive] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id>\n';
 const NO_MODEL_HINT = "hint: run `kiln auth login anthropic` or `kiln auth login openai`, or set ANTHROPIC_API_KEY / OPENAI_API_KEY\n";
 
 /** File and directory outputs that exist so far, relative to the run directory. */
 function filesPresent(p: RunPaths): string[] {
   const out: string[] = [];
   for (const [name, path] of [
+    ["workflow.json", join(p.dir, "workflow.json")],
     ["seed.md", p.seed],
     ["brief.md", p.brief],
     ["landscape.md", p.landscape],
@@ -101,12 +104,14 @@ async function confirmBuild(cfg: ReturnType<typeof loadConfig>, record: RunRecor
   return answer === "y" || answer === "yes";
 }
 
-function summaryValue(run: RunPaths, result: PhaseResult) {
+function summaryValue(run: RunPaths, result: PhaseResult, workflowExecution?: WorkflowExecution) {
   const status = readStatus(run); const record = new RunRecord(run.record);
   const formed = existsSync(run.features) ? projectSummary(run) : undefined;
   const cost = (readJsonIfPresent(run.metrics) as { cost?: unknown } | undefined)?.cost;
   return {
     id: run.id, dir: run.dir,
+    workflow: loadWorkflowPlan(run),
+    ...(workflowExecution ? { workflowExecution } : {}),
     ...(formed?.projectDir ? { projectDir: formed.projectDir } : {}),
     status, costUsd: record.costUsd(), outcome: result,
     ...(formed ? { features: formed.features } : {}),
@@ -115,8 +120,8 @@ function summaryValue(run: RunPaths, result: PhaseResult) {
   };
 }
 
-function printRunSummary(run: RunPaths, result: PhaseResult, json: boolean, io: CliIo): void {
-  const summary = summaryValue(run, result);
+function printRunSummary(run: RunPaths, result: PhaseResult, json: boolean, io: CliIo, workflowExecution?: WorkflowExecution): void {
+  const summary = summaryValue(run, result, workflowExecution);
   if (json) printJson(io, summary);
   else io.write(`\nrun ${run.id}: ${summary.status.phase} ${summary.status.state} $${summary.costUsd.toFixed(2)}${formatOutcome(result)}\n`);
 }
@@ -178,10 +183,11 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     }
   }
 
-  const throughRaw = typeof flags.through === "string" ? flags.through : "checkpoint";
-  if (!THROUGH.includes(throughRaw as Through)) { err(`${USAGE}unknown --through value ${throughRaw}\n`); return 2; }
-  const through = throughRaw as Through;
-  let cfg = loadConfig(home); if (flags.autonomous === true) cfg.autonomous = true;
+  const explicitThrough = typeof flags.through === "string" ? flags.through : undefined;
+  if (explicitThrough && !THROUGH.includes(explicitThrough as Through)) { err(`${USAGE}unknown --through value ${explicitThrough}\n`); return 2; }
+  if (flags.autonomous === true && flags.interactive === true) { err("--autonomous and --interactive cannot be used together\n"); return 2; }
+  if (flags.interactive === true && json) { err("--interactive and --json cannot be used together\n"); return 2; }
+  let cfg = loadConfig(home); if (flags.autonomous === true) cfg.autonomous = true; else if (flags.interactive === true) cfg.autonomous = false;
   let seedInput: NewSeedInput | undefined;
   if (cmd[0] === "new") {
     try { seedInput = resolveNewSeed(home, cmd.slice(1), flags); }
@@ -232,6 +238,21 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     record.append({ t: "run.created", seed: seedInput!.text });
     if (drift) record.append({ t: "note", text: drift });
   }
+  let workflow;
+  try {
+    workflow = ensureWorkflowPlan(run);
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    err(`${message}\n`);
+    return 1;
+  }
+  const workflowExecution = compileWorkflow(workflow, {
+    ...(explicitThrough ? { through: explicitThrough as WorkflowPhase } : {}),
+    ...(flags.autonomous === true || (flags.interactive !== true && cfg.autonomous) ? { autonomous: true } : {}),
+    ...(flags.interactive === true ? { interactive: true } : {}),
+  });
+  cfg.autonomous = workflowExecution.checkpointPolicy === "autonomous";
+  const through = workflowExecution.through as Through;
 
   const base: PhaseDeps = {
     home: runHome,
@@ -244,6 +265,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     apiKeyFor: runtime.apiKeyFor,
     streamFn: deps.streamFn,
     effort: cfg.effort,
+    workflow,
     fetchImpl: deps.fetchImpl,
     fetchUsage: runtime.fetchUsage,
     forceLock: flags.force === true,
@@ -251,6 +273,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     onProbePreview: firstProbePreview(io, !json && !cfg.autonomous),
     limiter: new Limiter(cfg.ideation.concurrency),
     onText: json ? undefined : (t: string) => io.write(t),
+    askUser: clarificationFor(io, deps, { interactive: !json && !cfg.autonomous }),
     onTool: json ? undefined : (e: { name: string; phase: "start" | "end"; ok?: boolean }) => {
       if (e.phase === "end") io.write(`\n${e.ok === false ? "✗" : "✓"} ${e.name}\n`);
     },
@@ -284,7 +307,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     if (result.outcome === "ok" && eligible("ideate") && status.phase === "ideate") {
       if (shouldRunIdeate(status, run)) {
         const first = !record.read().some((event) => event.t === "phase.start" && event.phase === "ideate");
-        if (first && !json && flags.yes !== true && !await confirmIdeate(cfg, runtime.models, io, deps)) {
+        if (first && !json && flags.yes !== true && !cfg.autonomous && !await confirmIdeate(cfg, runtime.models, io, deps)) {
           io.write("ideate cancelled before the first round\n");
         } else {
           const injectedIslands = deps.islandModels ?? (deps.models?.generator ? {
@@ -298,9 +321,12 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
       } else result = resultFromStatus(status);
     }
     if (eligible("checkpoint") && status.phase === "ideate" && checkpointReady(status, run)) {
-      result = await (deps.runCheckpoint ?? runCheckpoint)(base, { write: json ? () => {} : io.write, ask: (prompt) => askCli(prompt, io, deps) }, { autonomous: cfg.autonomous });
-      throwIfRunCancelled();
-      status = readStatus(run);
+      if (json && workflowExecution.checkpointPolicy === "human") result = resultFromStatus(status);
+      else {
+        result = await (deps.runCheckpoint ?? runCheckpoint)(base, { write: json ? () => {} : io.write, ask: (prompt) => askCli(prompt, io, deps) }, { autonomous: workflowExecution.checkpointPolicy === "autonomous" });
+        throwIfRunCancelled();
+        status = readStatus(run);
+      }
     }
     if (result.outcome === "ok" && eligible("form") && status.phase === "form" && status.state === "running") {
       result = await (deps.runForm ?? runForm)(base, status.chosenIdeaId ?? lastChosenIdea(record), {
@@ -314,7 +340,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     let ranBuild = false;
     if (result.outcome === "ok" && eligible("build") && status.phase === "build" && status.state !== "paused") {
       const first = !record.read().some((event) => event.t === "feature.pick");
-      if (first && !json && flags.yes !== true && !await confirmBuild(cfg, record, io, deps)) {
+      if (first && !json && flags.yes !== true && !cfg.autonomous && !await confirmBuild(cfg, record, io, deps)) {
         io.write("build cancelled before the first feature\n");
       } else {
         const buildDeps: BuildDeps = { ...base, ...(deps.buildDeps ?? {}), reinit: flags.reinit === true };
@@ -351,7 +377,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   writeStatus(run, { usdSpent: record.costUsd() });
   status = readStatus(run);
 
-  printRunSummary(run, result, json, io);
+  printRunSummary(run, result, json, io, workflowExecution);
 
   return result.outcome === "failed" || status.state === "failed" ? 1 : 0;
 }
