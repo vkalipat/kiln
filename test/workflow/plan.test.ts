@@ -1,10 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRun } from "../../src/core/run";
 import {
   compileWorkflow,
+  ensureWorkflowPlan,
   loadWorkflowPlan,
   planWorkflow,
   saveWorkflowPlan,
@@ -101,5 +102,7 @@ describe("adaptive workflow planning", () => {
     expect(loadWorkflowPlan(run)).toEqual(plan);
     expect(JSON.parse(readFileSync(workflowPath(run), "utf8"))).toEqual(plan);
     expect(() => saveWorkflowPlan(run, planWorkflow("Build a recipe app"))).toThrow("workflow plan is already frozen");
+    writeFileSync(run.seed, "a changed seed\n");
+    expect(() => ensureWorkflowPlan(run)).toThrow("does not match the run seed");
   });
 });
