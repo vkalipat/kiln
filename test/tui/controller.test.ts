@@ -37,7 +37,7 @@ function runId(argv: readonly string[]): string {
 }
 
 describe("RunController lifecycle", () => {
-  test("creates the run and record before using the full CLI resume lifecycle", async () => {
+  test("creates the run and record before delegating routing to CLI resume", async () => {
     const root = home();
     const calls: string[][] = [];
     const cli: TuiCli = async (argv) => {
@@ -52,12 +52,12 @@ describe("RunController lifecycle", () => {
     await controller.start({ seed: "build a small kiln" });
 
     const snapshot = controller.getSnapshot();
-    expect(calls).toEqual([["run", "resume", snapshot.runId!, "--through", "reflect", "--yes", "--home", root]]);
+    expect(calls).toEqual([["run", "resume", snapshot.runId!, "--home", root]]);
     expect(readStatus(runPaths(root, snapshot.runId!))).toMatchObject({ phase: "reflect", state: "done" });
     expect(snapshot).toMatchObject({ phase: "reflect", state: "done", branch: "main" });
   });
 
-  test("uses main's frame-through-reflect phase chain through CliDeps", async () => {
+  test("lets a delivery seed's stored workflow run frame through reflect autonomously", async () => {
     const root = home();
     const phases: string[] = [];
     const model = { provider: "fixture", id: "model" } as Model;
@@ -89,7 +89,7 @@ describe("RunController lifecycle", () => {
       },
     });
 
-    await controller.start({ seed: "real main path" });
+    await controller.start({ seed: "Build and ship the real main path" });
 
     expect(phases).toEqual(["frame", "discover", "ideate", "checkpoint", "form", "build", "reflect"]);
     expect(controller.getSnapshot()).toMatchObject({ phase: "reflect", state: "done" });

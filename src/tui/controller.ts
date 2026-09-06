@@ -84,7 +84,7 @@ export class RunController implements TuiControllerPort {
       run = runPaths(this.home, input.runId!);
     }
     this.#attach(run);
-    await this.#begin(commandWithHome(["run", "resume", run.id, "--through", "reflect", "--yes"], this.home), false, true, run);
+    await this.#begin(commandWithHome(["run", "resume", run.id], this.home), false, true, run);
   }
 
   resume(runId: string): Promise<void> {
