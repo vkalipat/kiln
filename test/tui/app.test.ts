@@ -468,7 +468,7 @@ describe("kiln TUI app", () => {
     expect(steered).toEqual([]);
     const run = runPaths(root, controller.getSnapshot().runId!);
     expect(new RunRecord(run.record).read().filter((event) => event.t === "run.created")).toHaveLength(1);
-    expect(controller.getSnapshot().transcript.filter((entry) => entry.kind === "user").map((entry) => entry.text)).toEqual(["one ambitious seed"]);
+    expect(controller.getSnapshot().transcript.flatMap((entry) => entry.kind === "user" ? [entry.text] : [])).toEqual(["one ambitious seed"]);
     await lifecycle.stop();
   });
 
