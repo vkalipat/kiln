@@ -99,6 +99,72 @@ describe("createBrain", () => {
     expect(r.turns).toBe(1);
     expect(record.read().filter((e) => e.t === "model.call").length).toBe(1);
   });
+  test("live steering waits for the current tool batch instead of skipping it", async () => {
+    const first = {
+      content: [
+        "working",
+        { type: "toolCall", id: "note-first", name: "note", arguments: { text: "first note" } },
+        { type: "toolCall", id: "exit-first", name: "exit", arguments: { kind: "underspecified", reasons: ["fixture"] } },
+      ],
+    };
+    const retry = {
+      content: [
+        "retrying skipped tools",
+        { type: "toolCall", id: "note-retry", name: "note", arguments: { text: "retry note" } },
+        { type: "toolCall", id: "exit-retry", name: "exit", arguments: { kind: "underspecified", reasons: ["fixture"] } },
+      ],
+    };
+    const { brain, exits, model, record, tools } = setup([first, retry]);
+    const control = new RunControl();
+    let delivered = false;
+    control.subscribe((event) => {
+      if (event.type !== "text" || delivered) return;
+      delivered = true;
+      control.steer("same seed");
+    });
+
+    const result = await withRunControl(control, () => brain.run("same seed"));
+
+    expect(result.stopped).toBe("exit");
+    expect(model.calls).toHaveLength(1);
+    expect(exits).toEqual(["underspecified"]);
+    expect(record.read().filter((event) => event.t === "tool.call").map((event) => event.t === "tool.call" && event.name)).toEqual(["note", "exit"]);
+    expect(tools.filter((event) => event.phase === "end").map((event) => [event.name, event.ok])).toEqual([["note", true], ["exit", true]]);
+    const initialMessages = model.calls[0]!.context.messages.filter((message: { role: string }) => message.role === "user");
+    expect(initialMessages).toHaveLength(1);
+  });
+  test("waited live steering is delivered at the next model boundary", async () => {
+    const { brain, model, record } = setup([
+      {
+        content: [
+          "working",
+          { type: "toolCall", id: "note-before-steer", name: "note", arguments: { text: "completed before steering" } },
+        ],
+      },
+      {
+        content: [
+          "steering received",
+          { type: "toolCall", id: "exit-after-steer", name: "exit", arguments: { kind: "underspecified", reasons: ["fixture"] } },
+        ],
+      },
+    ]);
+    const control = new RunControl();
+    let delivered = false;
+    control.subscribe((event) => {
+      if (event.type !== "text" || delivered) return;
+      delivered = true;
+      control.steer("focus on evidence");
+    });
+
+    const result = await withRunControl(control, () => brain.run("initial seed"));
+
+    expect(result.stopped).toBe("exit");
+    expect(model.calls).toHaveLength(2);
+    expect(record.read().filter((event) => event.t === "tool.call").map((event) => event.t === "tool.call" && event.name)).toEqual(["note", "exit"]);
+    const secondContext = JSON.stringify(model.calls[1]!.context.messages);
+    expect(secondContext).toContain("initial seed");
+    expect(secondContext).toContain("focus on evidence");
+  });
   test("turn cap stops a looping agent", async () => {
     const loop = Array.from({ length: 20 }, () => ({ content: [{ type: "toolCall", name: "note", arguments: { text: "again" } }] }));
     const { brain, model, record } = setup(loop);

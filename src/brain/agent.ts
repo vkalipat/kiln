@@ -125,6 +125,12 @@ export function createBrain(o: BrainOptions) {
     getApiKey: async () => (o.getApiKey ? await o.getApiKey() : o.apiKey),
     convertToLlm: toProviderMessages,
     appendOnlyContext: new AppendOnlyContextManager(),
+    // A live TUI message belongs at the next model boundary. Pi's immediate mode skips
+    // not-yet-started calls from an already-completed assistant tool batch, which can turn a
+    // repeated seed into synthetic failures and a needless paid retry. Wait mode preserves the
+    // full tool/result pairing and still delivers the queued steering before the next model call;
+    // external cancellation uses the separate abort signal and remains immediate.
+    interruptMode: "wait",
     transformProviderContext: (context) => {
       pendingHash = contextInputHash(context);
       pendingRequests += 1;
