@@ -56,7 +56,10 @@ export function refuseOutsideRoots(ctx: ToolContext, action: string, path: strin
 export function isProtectedRunFile(ctx: ToolContext, path: string): boolean {
   const abs = realPath(resolve(ctx.cwd, path));
   const run = ctx.run;
-  for (const f of [run.record, run.status, run.tournament, run.frontier, run.metrics, run.lock, run.features, run.acceptanceLock, run.featureState, ...(ctx.protectedPaths ?? [])]) {
+  // The workflow planner owns workflow.json, but RunPaths does not: derive its canonical run-local
+  // location here so every current and future ToolContext protects the frozen plan by default.
+  const workflow = join(run.dir, "workflow.json");
+  for (const f of [run.record, run.status, run.tournament, run.frontier, run.metrics, run.lock, workflow, run.features, run.acceptanceLock, run.featureState, ...(ctx.protectedPaths ?? [])]) {
     if (abs === realPath(f)) return true;
   }
   // `run.dir` is `<home>/runs/<id>` for ordinary and staged eval homes. Deriving the home here

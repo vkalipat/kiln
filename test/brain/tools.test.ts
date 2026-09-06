@@ -241,6 +241,26 @@ describe("tools", () => {
     expect(record.read().filter((e) => e.t === "failure" && e.class === "policy").length).toBe(6);
     expect(readFileSync(run.status, "utf8")).toContain('"id"');
   });
+  test("the frozen workflow is immutable through write and edit, including symlink aliases", async () => {
+    const { call, run } = ctx();
+    const workflow = join(run.dir, "workflow.json");
+    const alias = join(run.dir, "workflow-alias.json");
+    const frozen = '{"version":1,"intent":"open_ended_ideation"}\n';
+    writeFileSync(workflow, frozen);
+    symlinkSync(workflow, alias);
+
+    for (const path of [workflow, alias]) {
+      const write = await call("write", { path, content: "{}\n" });
+      expect(write.isError).toBe(true);
+      expect(write.text).toMatch(/policy/);
+      expect(readFileSync(workflow, "utf8")).toBe(frozen);
+
+      const edit = await call("edit", { path, old: "open_ended_ideation", new: "supplied_concept" });
+      expect(edit.isError).toBe(true);
+      expect(edit.text).toMatch(/policy/);
+      expect(readFileSync(workflow, "utf8")).toBe(frozen);
+    }
+  });
   test("caller-supplied protected files and directories are refused", async () => {
     const root = mkdtempSync(join(tmpdir(), "kiln-protected-"));
     const file = join(root, "project.json");
