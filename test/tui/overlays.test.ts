@@ -45,7 +45,7 @@ describe("command palette", () => {
       "run: new", "run: resume", "run: show record", "ideas: frontier", "ideas: pick",
       "ideas: another round", "project: form", "build: start", "build: pause", "evolve: eval",
       "evolve: promote", "evolve: rollback", "evals: calibrate", "auth: login anthropic",
-      "auth: login openai", "auth: status", "auth: logout", "model: roles", "mode: toggle",
+      "auth: login openai", "auth: status", "auth: logout", "model: roles", "model: adaptive", "model: manual", "model: preview", "mode: toggle",
     ]);
     expect(commandToArgv("ideas: another round", ["run-7", "try local"])).toEqual(["ideas", "another", "run-7", "try local"]);
     expect(commandToArgv("run: show record", ["run-7"])).toEqual(["run", "record", "run-7"]);

@@ -56,6 +56,8 @@ export interface RunOutcome {
 
 export interface RunStatus {
   id: string;
+  /** Written at creation so a crash before routing.json cannot silently turn an adaptive run manual. */
+  routingRequired?: boolean;
   phase: Phase;
   state: "running" | "paused" | "stopped" | "done" | "failed";
   outcome?: RunOutcome;
@@ -128,13 +130,14 @@ export function runPaths(home: string, id: string): RunPaths {
   };
 }
 
-export function createRun(home: string, seedText: string, opts: { id?: string; projectDir?: string } = {}): RunPaths {
+export function createRun(home: string, seedText: string, opts: { id?: string; projectDir?: string; routingRequired?: boolean } = {}): RunPaths {
   const p = runPaths(home, opts.id ?? newRunId());
   for (const d of [p.dir, p.discoveryDir, p.ideasDir, p.rawIdeasDir, p.renderedDir, p.toolOutputDir, p.criteriaDir, p.probesDir, p.reflectDir]) ensureDir(d);
   writeAtomic(p.seed, seedText.endsWith("\n") ? seedText : `${seedText}\n`);
   const now = new Date().toISOString();
   const status: RunStatus = {
     id: p.id,
+    ...(opts.routingRequired ? { routingRequired: true } : {}),
     phase: "frame",
     state: "running",
     usdSpent: 0,

@@ -20,6 +20,7 @@ export type Role =
 export type Effort = "low" | "medium" | "high" | "xhigh";
 export type CacheRetention = "short" | "long";
 export type ReminderPolicy = "turn_scoped" | "text_block" | "auto";
+export type RoutingMode = "adaptive" | "manual";
 export type Phase = "frame" | "discover" | "ideate" | "form" | "build" | "reflect";
 /** The closed set of idea shapes; frozen at frame exit and recorded in `status.json`. */
 export type IdeaShape = "research" | "product" | "creative";
@@ -77,6 +78,8 @@ export interface KilnConfig {
   build: BuildConfig;
   evals: EvalsConfig;
   seating: SeatingConfig;
+  /** Manual preserves the configured seats exactly; adaptive derives a per-seed run plan. */
+  routing?: { mode: RoutingMode };
 }
 
 export interface SeatingConfig {
@@ -283,6 +286,7 @@ export function defaultConfig(): KilnConfig {
         caps: { builderUsdCap: 2.512, auditorUsdCap: 0.6654, expectedAttemptUsd: 2.069, maxFeatures: 4 },
       },
     },
+    routing: { mode: "manual" },
   };
 }
 
@@ -336,6 +340,11 @@ export function loadConfig(home: string): KilnConfig {
   const seating = raw.seating ?? {};
   const share = { ...d.budgets.share, ...(raw.budgets?.share ?? {}) };
   validateBudgetShare(share);
+  if (raw.routing !== undefined) {
+    if (!raw.routing || typeof raw.routing !== "object" || !["adaptive", "manual"].includes(raw.routing.mode as string)) {
+      throw new Error('routing.mode must be "adaptive" or "manual"');
+    }
+  }
   return {
     roles: { ...d.roles, ...(raw.roles ?? {}) },
     effort: raw.effort ?? d.effort,
@@ -376,6 +385,7 @@ export function loadConfig(home: string): KilnConfig {
         caps: { ...d.seating.frontier.caps, ...(seating.frontier?.caps ?? {}) },
       },
     },
+    routing: { mode: raw.routing?.mode ?? d.routing!.mode },
   };
 }
 

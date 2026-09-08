@@ -7,6 +7,7 @@ import { currentRunControl, throwIfRunCancelled, type RunSourceRegistration } fr
 import { clampEffort, modelCostUsd, modelFamily } from "../providers/models";
 import { shapingStreamFn, type ShapingOptions } from "../providers/shaping";
 import { composeAddenda, type ComposedAddenda } from "./addenda";
+import { adaptiveEvidencePrompt } from "./adaptive-evidence";
 import { contextPressure } from "./context";
 import { contractMessage, reminder, toProviderMessages } from "./history";
 import { contextInputHash, fallbackWasServed, toolExcerpt } from "./telemetry";
@@ -104,6 +105,14 @@ export function createBrain(o: BrainOptions) {
   const addenda = o.addenda ?? (o.shaping
     ? composeAddenda(o.model, o.phase === "form" ? "form" : o.role, o.shaping.cfg)
     : { family: modelFamily(o.model), ids: [], text: "", hash: hashInput({ ids: [], text: "" }) });
+  const adaptiveEvidence = o.shaping ? adaptiveEvidencePrompt({
+    cfg: o.shaping.cfg,
+    role: o.role,
+    phase: o.phase,
+    toolNames: o.tools.map((tool) => tool.name),
+    systemPrompt: o.systemPrompt,
+    recordPath: o.record.path,
+  }) : undefined;
   const rawEffort = o.effort ? clampEffort(o.model, o.effort) : undefined;
   const effortSent: Effort | undefined = rawEffort === undefined ? undefined
     : rawEffort === "low" || rawEffort === "medium" || rawEffort === "high" || rawEffort === "xhigh" ? rawEffort
@@ -131,7 +140,7 @@ export function createBrain(o: BrainOptions) {
   });
   agent = new Agent({
     initialState: {
-      systemPrompt: [...o.systemPrompt, ...(addenda.text ? [addenda.text] : []), pinnedBlock(o.pinned)],
+      systemPrompt: [...o.systemPrompt, ...(adaptiveEvidence ? [adaptiveEvidence] : []), ...(addenda.text ? [addenda.text] : []), pinnedBlock(o.pinned)],
       model: o.model,
       tools: guardedTools,
       // `clampEffort` returns the same strings as the catalog's `Effort` const enum, which

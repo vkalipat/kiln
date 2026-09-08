@@ -8,7 +8,8 @@ const words = (draft: string) => draft.trim().split(/\s+/).filter(Boolean);
 /** Bind run-scoped palette actions to the attached run and take remaining values from the prompt draft. */
 export function paletteInvocation(commandId: string, runId: string | undefined, draft: string): PaletteInvocation {
   const values = words(draft);
-  if (["auth: login anthropic", "auth: login openai", "auth: status", "model: roles", "mode: toggle", "build: pause"].includes(commandId)) return { args: [] };
+  if (["auth: login anthropic", "auth: login openai", "auth: status", "model: roles", "model: adaptive", "model: manual", "mode: toggle", "build: pause"].includes(commandId)) return { args: [] };
+  if (commandId === "model: preview") return draft.trim() ? { args: [draft.trim()] } : { missing: "type a seed, then preview its model routing" };
   if (commandId === "auth: logout") return { args: values.length ? values : ["all"] };
   if (commandId === "evals: calibrate") return values.length ? { args: values } : { missing: "type --labels human|agent --budget USD, then reopen the command palette" };
   if (commandId === "run: new") return values.length > 0 ? { args: values } : { missing: "type a seed, then reopen the command palette" };

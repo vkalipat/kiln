@@ -22,6 +22,7 @@ import { buildProjectionRows } from "../build-projection";
 import { latestAudits, projectSummary } from "../project-summary";
 import { printJson, table } from "../output";
 import { askCli, createCliRuntime } from "../runtime";
+import { applyFrozenRouting, loadFrozenRouting } from "../../workflow/routing";
 
 const USAGE = "usage: kiln project form <run> [--out DIR] [--force] | kiln project build <run> [--autonomous] [--reinit] [--single-session] [--yes] [--json] | kiln project status <run> [--json] | kiln project audit <run> [--json] | kiln project relock <run> --confirm\n";
 const NO_MODEL_HINT = "hint: run `kiln auth login anthropic` or `kiln auth login openai`, or set ANTHROPIC_API_KEY / OPENAI_API_KEY\n";
@@ -52,8 +53,8 @@ function phaseExit(result: PhaseResult, run: RunPaths): number {
 }
 
 async function formCommand(run: RunPaths, flags: Record<string, string | boolean>, io: CliIo, deps: CliDeps, home: string): Promise<number> {
-  const cfg = loadConfig(home); if (flags.autonomous === true) cfg.autonomous = true;
-  const runtime = await createCliRuntime(home, cfg, deps);
+  const cfg = applyFrozenRouting(loadConfig(home), run); if (flags.autonomous === true) cfg.autonomous = true;
+  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false } } : deps);
   const base = baseDeps(home, run, cfg, runtime, flags, io, deps);
   const status = readStatus(run); const record = base.record;
   const ideaId = status.chosenIdeaId ?? lastChosenIdea(record);
@@ -82,8 +83,8 @@ async function reflectAfterBuild(base: PhaseDeps, deps: CliDeps): Promise<void> 
 }
 
 async function buildCommand(run: RunPaths, flags: Record<string, string | boolean>, io: CliIo, deps: CliDeps, home: string): Promise<number> {
-  const cfg = loadConfig(home); if (flags.autonomous === true) cfg.autonomous = true;
-  const runtime = await createCliRuntime(home, cfg, deps);
+  const cfg = applyFrozenRouting(loadConfig(home), run); if (flags.autonomous === true) cfg.autonomous = true;
+  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false } } : deps);
   const base = baseDeps(home, run, cfg, runtime, flags, io, deps);
   const record = base.record;
   let result: PhaseResult = { outcome: "ok" };

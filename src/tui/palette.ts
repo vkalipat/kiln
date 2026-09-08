@@ -30,6 +30,9 @@ export const PALETTE_COMMANDS: readonly PaletteCommand[] = [
   { id: "auth: status", label: "auth: status", description: "Show connected providers", argv: ["auth", "status"] },
   { id: "auth: logout", label: "auth: logout", description: "Disconnect a provider", argv: ["auth", "logout"] },
   { id: "model: roles", label: "model: roles", description: "Show model role routing", argv: ["model", "roles"] },
+  { id: "model: adaptive", label: "model: adaptive", description: "Adapt models and budget allocation for new runs", argv: ["model", "routing", "adaptive"] },
+  { id: "model: manual", label: "model: manual", description: "Use configured model lists for new runs", argv: ["model", "routing", "manual"] },
+  { id: "model: preview", label: "model: preview", description: "Preview routing for the prompt draft without model calls", argv: ["model", "plan"] },
   { id: "mode: toggle", label: "mode: toggle", description: "Cycle the effort mode", argv: ["mode", "toggle"] },
 ] as const;
 

@@ -41,10 +41,11 @@ See [docs/usage.md](docs/usage.md) for the full CLI, TUI controls, recovery rule
 - The full-screen TUI and scriptable CLI share the same lifecycle. The TUI supports live steering and an effort dial; CLI commands cover pause, resume, inspection, per-role model effort, and structured JSON output.
 - Reflection proposes small playbook changes; operators can also propose prompt variants. Promotion requires isolated development and held-out evaluation, integrity checks, statistical gates, and a reversible Git transaction.
 - Claude and ChatGPT subscription OAuth use the provider flows from the pi libraries. API keys can be entered with a masked prompt and are stored locally.
+- Optional [adaptive model routing](docs/adaptive-routing.md) selects task-relevant models from reviewed benchmark evidence, checks provider and budget fit, adds evidence guidance, and freezes an auditable plan per run.
 
 ## Evidence and limits
 
-The clean standalone checkout passes 1,376 automated tests, including dedicated onboarding coverage and [two provider-free autonomy demonstrations](docs/testing/usecases.md). Both use production CLI, build, and reflect orchestration with real filesystem tools, shell checks, Git commits and trailers, detached audit snapshots, journals, and recovery. One resumes a post-commit interruption without another builder call; the other records a failed check, repairs it in a fresh attempt, and finishes with one clean commit.
+The automated suite includes onboarding, adaptive routing and resume coverage, and [two provider-free autonomy demonstrations](docs/testing/usecases.md). Both demonstrations use production CLI, build, and reflect orchestration with real filesystem tools, shell checks, Git commits and trailers, detached audit snapshots, journals, and recovery. One resumes a post-commit interruption without another builder call; the other records a failed check, repairs it in a fresh attempt, and finishes with one clean commit.
 
 The demonstrations mock builder, auditor, and reflector responses, credentials, and usage. No paid provider experiment has been run yet, so Kiln has been tested as software but has not established live-model coding quality or an advantage over a one-shot model. Evaluation commands require an explicit budget and confirmation.
 

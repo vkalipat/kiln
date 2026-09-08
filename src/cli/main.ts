@@ -75,7 +75,7 @@ export interface CliDeps {
 
 export const VERSION = "0.1.0";
 
-const USAGE = 'usage: kiln [tui] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
+const USAGE = 'usage: kiln [tui] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
 
 /** `--k v` and `--k=v` set string flags; a bare `--k` sets `true`. Everything else is a command word. */
 export function parseArgs(argv: string[]): { cmd: string[]; flags: Record<string, string | boolean> } {

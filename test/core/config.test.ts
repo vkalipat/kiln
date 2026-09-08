@@ -22,6 +22,22 @@ describe("config", () => {
     expect(loadConfig(home).autonomous).toBe(true);
     expect(loadConfig(home).budgets.turns.build).toBe(40);
     expect(loadConfig(home).budgets.phaseBudgetUsd("ideate")).toBe(10.5);
+    expect(loadConfig(home).routing).toEqual({ mode: "manual" });
+  });
+
+  test("round trips adaptive and manual routing modes and rejects invalid modes", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-routing-"));
+    const cfg = defaultConfig();
+    cfg.routing = { mode: "adaptive" };
+    saveConfig(home, cfg);
+    expect(loadConfig(home).routing).toEqual({ mode: "adaptive" });
+
+    cfg.routing.mode = "manual";
+    saveConfig(home, cfg);
+    expect(loadConfig(home).routing).toEqual({ mode: "manual" });
+
+    writeFileSync(join(home, "config.json"), JSON.stringify({ routing: { mode: "automatic" } }));
+    expect(() => loadConfig(home)).toThrow(/routing\.mode/);
   });
 
   test("defaults and deep-merges evaluation and seating profiles", () => {

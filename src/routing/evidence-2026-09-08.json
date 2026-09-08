@@ -1,0 +1,84 @@
+{
+  "version": 1,
+  "id": "benchmark-leaders-2026-09-08",
+  "asOf": "2026-09-08",
+  "maxAgeDays": 90,
+  "verification": {
+    "status": "verified",
+    "verifiedAt": "2026-09-08",
+    "method": "manual-primary-source-check"
+  },
+  "sources": [
+    { "id": "aa-overall", "url": "https://artificialanalysis.ai/leaderboards/models", "observedAt": "2026-09-08" },
+    { "id": "aa-hle", "url": "https://artificialanalysis.ai/evaluations/humanitys-last-exam", "observedAt": "2026-09-08" },
+    { "id": "aa-scicode", "url": "https://artificialanalysis.ai/evaluations/scicode", "observedAt": "2026-09-08" },
+    { "id": "aa-briefcase", "url": "https://artificialanalysis.ai/evaluations/aa-briefcase", "observedAt": "2026-09-08" },
+    { "id": "terminal-bench-4", "url": "https://www.tbench.ai/leaderboard/terminal-bench/4.0", "observedAt": "2026-09-08" },
+    { "id": "aa-omniscience", "url": "https://artificialanalysis.ai/evaluations/omniscience", "observedAt": "2026-09-08" }
+  ],
+  "rankings": [
+    {
+      "category": "general_reasoning",
+      "sourceId": "aa-overall",
+      "metric": "index",
+      "higherIsBetter": true,
+      "entries": [
+        { "modelRef": "anthropic/claude-fable-5-1", "score": 54 },
+        { "modelRef": "openai-codex/gpt-6-astra", "score": 53 },
+        { "modelRef": "anthropic/claude-opus-5", "score": 51 }
+      ]
+    },
+    {
+      "category": "expert_knowledge",
+      "sourceId": "aa-hle",
+      "metric": "percent",
+      "higherIsBetter": true,
+      "entries": [
+        { "modelRef": "anthropic/claude-fable-5-1", "score": 59.1 },
+        { "modelRef": "anthropic/claude-opus-5", "score": 54.9 },
+        { "modelRef": "openai-codex/gpt-6-astra", "score": 54.7 }
+      ]
+    },
+    {
+      "category": "business",
+      "sourceId": "aa-briefcase",
+      "metric": "elo",
+      "higherIsBetter": true,
+      "entries": [
+        { "modelRef": "anthropic/claude-fable-5-1", "score": 1662 },
+        { "modelRef": "anthropic/claude-opus-5", "score": 1645 },
+        { "modelRef": "openai-codex/gpt-6-astra", "score": 1562 }
+      ]
+    },
+    {
+      "category": "scientific_coding",
+      "sourceId": "aa-scicode",
+      "metric": "percent",
+      "higherIsBetter": true,
+      "entries": [
+        { "modelRef": "anthropic/claude-fable-5-1", "score": 63.1 }
+      ]
+    },
+    {
+      "category": "tool_execution",
+      "sourceId": "terminal-bench-4",
+      "metric": "percent",
+      "higherIsBetter": true,
+      "entries": [
+        { "modelRef": "openai-codex/gpt-6-astra", "score": 58.2 },
+        { "modelRef": "anthropic/claude-fable-5-1", "score": 57.9 },
+        { "modelRef": "anthropic/claude-opus-5", "score": 51.8 }
+      ]
+    },
+    {
+      "category": "knowledge_calibration",
+      "sourceId": "aa-omniscience",
+      "metric": "index",
+      "higherIsBetter": true,
+      "entries": [
+        { "modelRef": "openai-codex/gpt-6-astra", "score": 44 },
+        { "modelRef": "anthropic/claude-fable-5-1", "score": 43 }
+      ]
+    }
+  ]
+}

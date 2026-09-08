@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { loadConfig } from "../../core/config";
 import { classifyFailure } from "../../core/failure";
@@ -33,6 +33,9 @@ import { HeldoutSeedError } from "../../evals/identity";
 import { verifyEvalsManifest } from "../../evals/manifest";
 import { manifestDriftNote, resolveNewSeed, type NewSeedInput } from "./run-seed";
 import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, type WorkflowExecution, type WorkflowPhase } from "../../workflow/plan";
+import { applyFrozenRouting, freezeRouting, loadFrozenRouting } from "../../workflow/routing";
+import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../routing/adaptive";
+import { registerRuntimeEffort } from "../../providers/effort-runtime";
 
 const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous|--interactive] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id>\n';
 const NO_MODEL_HINT = "hint: run `kiln auth login anthropic` or `kiln auth login openai`, or set ANTHROPIC_API_KEY / OPENAI_API_KEY\n";
@@ -42,6 +45,7 @@ function filesPresent(p: RunPaths): string[] {
   const out: string[] = [];
   for (const [name, path] of [
     ["workflow.json", join(p.dir, "workflow.json")],
+    ["routing.json", join(p.dir, "routing.json")],
     ["seed.md", p.seed],
     ["brief.md", p.brief],
     ["landscape.md", p.landscape],
@@ -111,6 +115,7 @@ function summaryValue(run: RunPaths, result: PhaseResult, workflowExecution?: Wo
   return {
     id: run.id, dir: run.dir,
     workflow: loadWorkflowPlan(run),
+    routing: loadFrozenRouting(run)?.report,
     ...(workflowExecution ? { workflowExecution } : {}),
     ...(formed?.projectDir ? { projectDir: formed.projectDir } : {}),
     status, costUsd: record.costUsd(), outcome: result,
@@ -199,6 +204,10 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   const evalManifest = manifestAtEntry ?? verifyEvalsManifest(home);
   const drift = manifestDriftNote(evalManifest);
   const resumedRun = cmd[0] === "resume" ? runPaths(home, cmd[1]!) : undefined;
+  if (resumedRun) {
+    try { cfg = applyFrozenRouting(cfg, resumedRun); }
+    catch (error) { err(`${error instanceof Error ? error.message : String(error)}\n`); return 1; }
+  }
   const resumedStatus = resumedRun ? readStatus(resumedRun) : undefined;
   if (resumedRun && drift) {
     let noteLock: RunLock;
@@ -226,12 +235,33 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     ? stageHome(home, flags.eval, "manual").home
     : home;
   if (runHome !== home) cfg = loadConfig(runHome);
-  const runtime = await createCliRuntime(home, cfg, deps);
+  const runtime = await createCliRuntime(home, cfg, resumedRun && loadFrozenRouting(resumedRun)
+    ? { ...deps, runtimeEffort: { enabled: false } } : deps);
+  let routingReport: unknown;
+  // Evaluator seats and embedding-supplied models remain authoritative, never auto-reselected.
+  if (!resumedRun && cfg.routing?.mode === "adaptive" && flags.eval === undefined
+    && !seedInput?.identity && deps.runtimeEffort?.enabled !== false
+    && !deps.models && !deps.brainModel && !deps.scoutModel && !deps.islandModels) {
+    try {
+      const now = new Date();
+      const snapshotPath = join(home, "routing", "benchmarks.json");
+      const evidence = existsSync(snapshotPath)
+        ? validateEvidenceSnapshot(JSON.parse(readFileSync(snapshotPath, "utf8")), now)
+        : DEFAULT_EVIDENCE_SNAPSHOT;
+      const planned = planAdaptiveRouting(cfg, runtime.available, seedInput!.text, now, evidence);
+      Object.assign(cfg, planned.config);
+      registerRuntimeEffort(cfg);
+      routingReport = planned.report;
+    } catch (error) { err(`adaptive routing: ${error instanceof Error ? error.message : String(error)}\n`); return 3; }
+  }
   if (!resumedRun) {
     try { runtime.models("brain"); }
     catch (e) { if (e instanceof NoModelError) { err(`${e.message}\n${NO_MODEL_HINT}`); return 3; } throw e; }
   }
-  const run = resumedRun ?? createRun(runHome, seedInput!.text, { projectDir: typeof flags.out === "string" ? resolve(flags.out) : undefined });
+  const run = resumedRun ?? createRun(runHome, seedInput!.text, {
+    projectDir: typeof flags.out === "string" ? resolve(flags.out) : undefined,
+    ...(routingReport !== undefined ? { routingRequired: true } : {}),
+  });
   const record = new RunRecord(run.record);
   if (cmd[0] === "new") {
     if (seedInput!.identity) writeStatus(run, { seed: seedInput!.identity });
@@ -287,6 +317,11 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   try { commandLock = acquireRunLock(run, { force: flags.force === true }); }
   catch (error) { if (error instanceof RunLockedError) { err(`${error.message}\n`); return 2; } throw error; }
   try {
+    if (routingReport !== undefined) {
+      freezeRouting(run, cfg, routingReport);
+      record.append({ t: "note", text: "Adaptive model routing frozen in routing.json; costs are planning estimates, not measured reliability or spend." });
+      if (!json) io.write(`Adaptive routing: ${cfg.roles.generator[0]} ideas; ${cfg.roles.judge[0]} review; ${cfg.roles.builder[0]} build. ${cfg.ideation.rounds} planned ideation round(s), $${cfg.budgets.phaseBudgetUsd("ideate").toFixed(2)} ideation allocation. Details: ${join(run.dir, "routing.json")}\n`);
+    }
     deps.onRun?.(run);
     if (route?.kind === "phase" && route.wake) {
       writeStatus(run, { state: "running", outcome: undefined, pausedReason: undefined, wakeAt: undefined });
