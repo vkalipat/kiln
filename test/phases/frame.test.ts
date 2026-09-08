@@ -226,6 +226,14 @@ describe("runFrame", () => {
     expect(readStatus(d.run).state).toBe("failed");
     expect(readStatus(d.run).outcome?.failureClass).toBe("budget");
   });
+  test("a valid brief written on the final allowed turn completes without another provider call", async () => {
+    const d = deps([]); d.cfg.budgets.turns.frame = 1;
+    const model = createMockModel({ id: "mock", responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF } }] }] as never });
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "ok" });
+    expect(model.calls).toHaveLength(1);
+    expect(readStatus(d.run)).toMatchObject({ phase: "discover", shape: "product" });
+  });
   test("a model error is classified, not hardcoded transient", async () => {
     const d = deps([]);
     useModel(d, createMockModel({ id: "mock", responses: [{ throw: "policy: refused" }] as never }));

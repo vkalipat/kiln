@@ -1,5 +1,11 @@
 # Using Kiln
 
+## Coding-assistant plugin and recovery
+
+The [local Codex/Claude Code plugin](../plugins/kiln/README.md) can launch, watch, pause, and resume durable jobs. Its stable request IDs map to explicit `kiln run new --id ID` run IDs; an existing directory is never overwritten by the CLI.
+
+For older runs marked failed by a frame turn cap even though `brief.md` was complete, `kiln run recover-frame ID` validates the existing brief and restores the discovery cursor without provider calls. It refuses other failures, invalid briefs, and active locks. Recovery does not execute discovery; use `kiln run resume ID` only when ready to authorize more provider work. New runs accept a contract-valid brief on the final allowed frame turn without requiring an extra model call.
+
 ## Install and start
 
 Kiln requires Bun 1.3.14 or newer and Git.

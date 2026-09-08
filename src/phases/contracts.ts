@@ -98,9 +98,11 @@ export function shapeHash(b: Pick<BriefFacts, "shape" | "axes">): string {
 
 const EXIT_CLAUSE = "Exit only when no honest, safe artifact is possible after applying the phase's assumption policy. Breadth, an absent founder profile, an unspecified preferred domain, or an aspirational outcome are not sufficient reasons to exit. A genuinely impossible or unsafe request may exit with concrete reasons.";
 
-export function frameContract(run: RunPaths, _turnCap: number, workflow?: WorkflowPlan): string {
+export function frameContract(run: RunPaths, turnCap: number, workflow?: WorkflowPlan): string {
   return [
     `Phase: frame. Output file: ${run.brief}`,
+    `This phase has at most ${turnCap} model turns. Its deliverable is a bounded search brief, not the research findings or winning idea. Write a complete brief early enough to validate it within that limit.`,
+    "Use only the targeted orientation needed to frame honest questions. Defer broad searches, paper-by-paper verification, comparative reviews, and candidate evaluation to discovery and ideation. Mark unresolved factual claims as questions or assumptions instead of trying to settle the whole literature here.",
     ...(workflow ? [`Frozen workflow: ${workflowGuidance(workflow, "frame")}`] : []),
     `Required sections (## headings, in this order): ${BRIEF_SECTIONS.join(", ")}.`,
     `Problem: restate it in one paragraph. Constraints: hard limits as bullets. Search success: what a winning idea must do, as bullets. Non-goals: bullets. Shape: exactly one of ${SHAPES.join(", ")}. Axes: 3 to 5 bullets naming the behavior axes ideas will be spread across (default: who it serves, mechanism class, what it assumes that others do not, where the value shows up). Discovery questions: ${QUESTIONS_MIN} to ${QUESTIONS_MAX} bullets, one precise question each, for scouts.`,

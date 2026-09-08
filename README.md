@@ -31,6 +31,10 @@ kiln run new "A local tool to compare household energy use" --through reflect
 
 See [docs/usage.md](docs/usage.md) for the full CLI, TUI controls, recovery rules, and evaluation commands.
 
+### Run from Codex or Claude Code
+
+The [Kiln plugin](plugins/kiln/README.md) lets your coding assistant launch a detached run, watch its logs, and pause or resume the same job. Claude Code can load it with `claude --plugin-dir ./plugins/kiln`, then `/kiln:run <directive>`. Codex uses the same operator skill through its plugin system. Installation does not start provider work.
+
 ## What is implemented
 
 - Three isolated idea islands search with different lenses. A quality-diversity archive rejects near duplicates, scouts check prior art, and short executable probes test feasibility when possible.

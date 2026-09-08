@@ -1,0 +1,8 @@
+{
+  "name": "kiln",
+  "version": "0.1.0",
+  "description": "Launch, monitor, pause, and resume durable Kiln ideation runs.",
+  "author": { "name": "Kiln" },
+  "repository": "https://github.com/vkalipat/kiln",
+  "skills": ["./skills/"]
+}

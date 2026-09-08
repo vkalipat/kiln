@@ -36,8 +36,9 @@ import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, type WorkflowExe
 import { applyFrozenRouting, freezeRouting, loadFrozenRouting } from "../../workflow/routing";
 import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../routing/adaptive";
 import { registerRuntimeEffort } from "../../providers/effort-runtime";
+import { recoverCompletedFrame } from "../../phases/frame-recovery";
 
-const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous|--interactive] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id>\n';
+const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--id ID] [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous|--interactive] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id> | kiln run recover-frame <id>\n';
 const NO_MODEL_HINT = "hint: run `kiln auth login anthropic` or `kiln auth login openai`, or set ANTHROPIC_API_KEY / OPENAI_API_KEY\n";
 
 /** File and directory outputs that exist so far, relative to the run directory. */
@@ -171,6 +172,18 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     return 0;
   }
 
+  if (cmd[0] === "recover-frame") {
+    const id = cmd[1];
+    if (!id || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(id) || !runExists(home, id)) { err("usage: kiln run recover-frame <run-id> [--json]\n"); return 2; }
+    const run = runPaths(home, id);
+    try {
+      recoverCompletedFrame(run);
+      if (json) printJson(io, { id, recovered: true, status: readStatus(run), providerCalls: 0 });
+      else io.write(`${id}: recovered validated brief; ready to resume at discovery. No model calls made.\n`);
+      return 0;
+    } catch (error) { err(`${error instanceof Error ? error.message : String(error)}\n`); return 1; }
+  }
+
   if (cmd[0] !== "new" && cmd[0] !== "resume") {
     err(USAGE);
     return 2;
@@ -189,6 +202,9 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   }
 
   const explicitThrough = typeof flags.through === "string" ? flags.through : undefined;
+  if (flags.id !== undefined && (cmd[0] !== "new" || typeof flags.id !== "string" || !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(flags.id))) {
+    err("--id is only valid for new runs and must be 1..128 letters, digits, underscores or hyphens, starting with a letter or digit\n"); return 2;
+  }
   if (explicitThrough && !THROUGH.includes(explicitThrough as Through)) { err(`${USAGE}unknown --through value ${explicitThrough}\n`); return 2; }
   if (flags.autonomous === true && flags.interactive === true) { err("--autonomous and --interactive cannot be used together\n"); return 2; }
   if (flags.interactive === true && json) { err("--interactive and --json cannot be used together\n"); return 2; }
@@ -235,6 +251,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     ? stageHome(home, flags.eval, "manual").home
     : home;
   if (runHome !== home) cfg = loadConfig(runHome);
+  if (typeof flags.id === "string" && existsSync(runPaths(runHome, flags.id).dir)) { err(`run ${flags.id} already exists; inspect or resume it instead\n`); return 2; }
   const runtime = await createCliRuntime(home, cfg, resumedRun && loadFrozenRouting(resumedRun)
     ? { ...deps, runtimeEffort: { enabled: false } } : deps);
   let routingReport: unknown;
@@ -258,10 +275,16 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     try { runtime.models("brain"); }
     catch (e) { if (e instanceof NoModelError) { err(`${e.message}\n${NO_MODEL_HINT}`); return 3; } throw e; }
   }
-  const run = resumedRun ?? createRun(runHome, seedInput!.text, {
-    projectDir: typeof flags.out === "string" ? resolve(flags.out) : undefined,
-    ...(routingReport !== undefined ? { routingRequired: true } : {}),
-  });
+  let run: RunPaths;
+  try {
+    run = resumedRun ?? createRun(runHome, seedInput!.text, {
+      ...(typeof flags.id === "string" ? { id: flags.id } : {}), exclusive: true,
+      projectDir: typeof flags.out === "string" ? resolve(flags.out) : undefined,
+      ...(routingReport !== undefined ? { routingRequired: true } : {}),
+    });
+  } catch (error) {
+    err(`could not reserve new run: ${error instanceof Error ? error.message : String(error)}\n`); return 2;
+  }
   const record = new RunRecord(run.record);
   if (cmd[0] === "new") {
     if (seedInput!.identity) writeStatus(run, { seed: seedInput!.identity });

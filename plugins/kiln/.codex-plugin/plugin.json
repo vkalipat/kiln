@@ -1,0 +1,17 @@
+{
+  "name": "kiln",
+  "version": "0.1.0",
+  "description": "Launch and operate durable Kiln ideation and delivery runs from your coding assistant.",
+  "author": { "name": "Kiln" },
+  "repository": "https://github.com/vkalipat/kiln",
+  "skills": "./skills/",
+  "interface": {
+    "displayName": "Kiln",
+    "shortDescription": "Run, watch, pause, and resume Kiln.",
+    "longDescription": "Operate local Kiln runs with live logs, adaptive model routing, stable request IDs, and explicit spending authorization.",
+    "developerName": "Kiln",
+    "category": "Productivity",
+    "capabilities": [],
+    "defaultPrompt": "Use Kiln to explore an idea and keep me updated."
+  }
+}

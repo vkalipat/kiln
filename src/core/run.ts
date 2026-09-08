@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { join } from "node:path";
 import type { IdeaShape, Phase } from "./config";
@@ -130,8 +130,13 @@ export function runPaths(home: string, id: string): RunPaths {
   };
 }
 
-export function createRun(home: string, seedText: string, opts: { id?: string; projectDir?: string; routingRequired?: boolean } = {}): RunPaths {
+export function createRun(home: string, seedText: string, opts: { id?: string; projectDir?: string; routingRequired?: boolean; exclusive?: boolean } = {}): RunPaths {
+  if (opts.id !== undefined && !/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(opts.id)) throw new Error("invalid run id");
   const p = runPaths(home, opts.id ?? newRunId());
+  if (opts.exclusive) {
+    ensureDir(runsDir(home));
+    mkdirSync(p.dir); // Atomic reservation: concurrent operators cannot overwrite a run.
+  }
   for (const d of [p.dir, p.discoveryDir, p.ideasDir, p.rawIdeasDir, p.renderedDir, p.toolOutputDir, p.criteriaDir, p.probesDir, p.reflectDir]) ensureDir(d);
   writeAtomic(p.seed, seedText.endsWith("\n") ? seedText : `${seedText}\n`);
   const now = new Date().toISOString();

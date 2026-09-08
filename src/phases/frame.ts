@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { createBrain, type BrainOptions, type BrainResult } from "../brain/agent";
@@ -176,6 +176,15 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
 
   const exited = takeExit();
   if (exited) return finish({ outcome: "honest_exit", ...exited });
+  // A dispatch cap prevents another model turn, not acceptance of an artifact already produced.
+  // Keep refusals/errors authoritative; only a turn-cap stop can take this no-call validation path.
+  if (v.result.stopped === "turn_cap" && existsSync(d.run.brief)) {
+    const parsed = parseBrief(readFileSync(d.run.brief, "utf8"));
+    if (validateBrief(parsed).length === 0) {
+      d.record.append({ t: "note", text: "Frame reached its turn cap with a contract-valid brief; accepted the existing artifact without another model call." });
+      return finish({ outcome: "ok" }, parsed);
+    }
+  }
   const stop = stopFailure("frame", turnCap, v.result);
   if (stop) return finish(stop);
   if (v.problems.length > 0) return finish({ outcome: "failed", failureClass: "verify", message: `brief is not usable: ${v.problems.join("; ")}` });
