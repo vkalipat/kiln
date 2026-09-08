@@ -1,0 +1,14 @@
+{
+  "roles": {
+    "brain": ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-6-astra"],
+    "generator": ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5"],
+    "prober": ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5"],
+    "builder": ["openai-codex/gpt-6-astra", "anthropic/claude-fable-5-1", "anthropic/claude-opus-5"],
+    "scout": ["openai-codex/gpt-6-astra", "anthropic/claude-fable-5-1", "anthropic/claude-opus-5"],
+    "judge": ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5", "openai-codex/gpt-5.5"],
+    "critic": ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5", "openai-codex/gpt-5.5"],
+    "auditor": ["anthropic/claude-fable-5-1", "anthropic/claude-opus-5", "openai-codex/gpt-5.5"],
+    "arbiter": ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5", "openai-codex/gpt-5.5"],
+    "reflector": ["openai-codex/gpt-6-astra", "anthropic/claude-opus-5", "openai-codex/gpt-5.5"]
+  }
+}
