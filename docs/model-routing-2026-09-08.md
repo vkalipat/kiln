@@ -30,12 +30,15 @@ The kernel now requires separating sourced facts, inferences, and hypotheses; in
 
 Generator and prober lists stay on Anthropic so ideation islands do not use the Astra judge as their generator. Astra critiques Fable's proposals; Fable audits Astra's builds. Existing strict decision-tool gates remain enabled. The existing producer-only Opus fallback policy is preserved. These controls reduce opportunities for unsupported claims; they do not eliminate hallucinations or constitute measured reliability gains.
 
+This profile requires Anthropic access for ideation. All three islands use Fable with different lenses; the configured cheap island is no longer cheaper or model-diverse. Role-list alternatives are catalog/provider-selection fallbacks, not automatic retries after a model request fails.
+
 ## Local application and verification
 
 - Updated the four direct pi packages together to 18.1.14 so the installed catalog recognizes Astra. Type checking and the full offline suite passed: 1,400 tests. No paid provider calls were made, and account-level model entitlement remains untested.
 - Applied role lists to `~/.kiln/config.json` and its `seating.default` mirror. The separate experimental frontier seating is unchanged. Connected-provider metadata shows Anthropic and OpenAI Codex; credentials were not copied or displayed.
 - Preserved the $25 total planning target, effort settings, turn limits, and per-unit build caps. Shifted phase shares from ideate 42% / build 47.5% to ideate 50% / build 39.5%, leaving other shares unchanged. Shares affect both phase dollar and wall-time allocations; the overall wall-time setting is unchanged.
 - At current catalog prices and the planner's assumed token counts, one ideation round projects to $11.46. Its former $10.50 allocation would fail the startup floor; the new allocation is $12.50. These are estimates, not observed spend or a hard ceiling. Less build allocation can mean fewer completed features.
+- This funds one full projected round (30 generated candidates), not all three configured rounds. Later rounds require actual spending substantially below projection. Under current build assumptions, the derived maximum feature count drops from seven to six despite preserving the stored maximum and per-unit caps.
 - Backed up the prior local config and kernel under `~/.kiln/evolution/work/config-backups/benchmarks-20260908T072341/`. Unrelated local fields were preserved. Restart Kiln after the current run to load the updated dependencies and routing.
 
 The profile contains only role lists. Applying it elsewhere requires merging into both `roles` and `seating.default`, checking provider access, and checking that the local ideation allocation covers the projected round. It does not import credentials or change budgets by itself.
