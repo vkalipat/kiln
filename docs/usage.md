@@ -2,6 +2,8 @@
 
 ## Coding-assistant plugin and recovery
 
+If every discovery scout fails with a transient provider/network error (such as DNS `ENOTFOUND`), Kiln stops discovery resumably and preserves the diagnostic. Once connectivity returns, explicitly run `kiln run resume ID` to retry that same phase. It does not automatically retry, switch models, or classify missing research as valid findings. Refusals, mixed failure batches, integrity failures, and invalid output are not cleared by this path.
+
 The [local Codex/Claude Code plugin](../plugins/kiln/README.md) can launch, watch, pause, and resume durable jobs. Its stable request IDs map to explicit `kiln run new --id ID` run IDs; an existing directory is never overwritten by the CLI.
 
 For older runs marked failed by a frame turn cap even though `brief.md` was complete, `kiln run recover-frame ID` validates the existing brief and restores the discovery cursor without provider calls. It refuses other failures, invalid briefs, and active locks. Recovery does not execute discovery; use `kiln run resume ID` only when ready to authorize more provider work. New runs accept a contract-valid brief on the final allowed frame turn without requiring an extra model call.

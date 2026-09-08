@@ -48,6 +48,23 @@ function deps(base: { home: string; run: RunPaths; record: RunRecord }, brainMod
 }
 
 describe("runDiscover", () => {
+  test("all-scout DNS errors stop resumably without invoking the synthesis brain or auto-retrying", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "scout", handler: async () => ({ throw: "getaddrinfo ENOTFOUND chatgpt.com" }) } as never);
+    const brain = createMockModel({ id: "brain", handler: async () => ({ content: ["must not run"] }) } as never);
+    expect(await runDiscover(deps(base, brain, scout))).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+    expect(readStatus(base.run)).toMatchObject({ phase: "discover", state: "stopped", outcome: { stopKind: "transient", message: expect.stringContaining("ENOTFOUND") } });
+    expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(0);
+  });
+  test("a mixed DNS/refusal batch is not treated as a resumable network-only stop", async () => {
+    const base = setup(); let calls = 0;
+    const scout = createMockModel({ id: "scout", handler: async () => calls++ === 0
+      ? { throw: "getaddrinfo ENOTFOUND chatgpt.com" }
+      : { stopReason: "error", errorMessage: "Refusal (safety)", stopDetails: { type: "refusal", category: "safety" } } } as never);
+    const brain = createMockModel({ id: "brain", responses: [] } as never);
+    expect((await runDiscover(deps(base, brain, scout))).outcome).toBe("failed");
+    expect(readStatus(base.run).state).toBe("failed"); expect(brain.calls).toHaveLength(0);
+  });
   test("runs one scout per question, then the brain writes the landscape", async () => {
     const base = setup();
     const { run, record } = base;

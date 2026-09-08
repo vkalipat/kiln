@@ -36,12 +36,12 @@ function scoutFailure(r: ScoutResult): { class: FailureClass; message: string; c
 export async function runDiscover(d: PhaseDeps): Promise<PhaseResult> {
   throwIfRunCancelled();
   const turnCap = d.cfg.budgets.turns.discover;
-  const finish = (res: PhaseResult): PhaseResult => {
+  const finish = (res: PhaseResult, message?: string): PhaseResult => {
     d.record.append({ t: "phase.end", phase: "discover", outcome: res.outcome });
     if (res.outcome === "ok") writeStatus(d.run, { phase: "ideate" });
     else if (res.outcome === "honest_exit") writeStatus(d.run, { state: "done", outcome: { kind: "honest_exit", exitKind: res.kind, reasons: res.reasons } });
     else if (res.outcome === "failed") writeStatus(d.run, { state: "failed", outcome: { kind: "failure", failureClass: res.failureClass, message: res.message } });
-    else writeStatus(d.run, { state: "stopped", outcome: { kind: "stopped", stopKind: res.stopKind, truncatedRound: res.truncatedRound, frontierEmpty: res.frontierEmpty } });
+    else writeStatus(d.run, { state: "stopped", outcome: { kind: "stopped", stopKind: res.stopKind, truncatedRound: res.truncatedRound, frontierEmpty: res.frontierEmpty, ...(message ? { message } : {}) } });
     return res;
   };
 
@@ -84,6 +84,12 @@ export async function runDiscover(d: PhaseDeps): Promise<PhaseResult> {
   );
   if (outcomes.length > 0 && outcomes.every((o) => o !== undefined)) {
     const classes = new Set(outcomes.map((o) => o!.class));
+    if (classes.size === 1 && classes.has("transient")) {
+      const message = `all ${outcomes.length} scouts failed in discover: ${outcomes[0]!.message}`;
+      d.record.append({ t: "note", text: `${message}. Discovery is resumable; no automatic retry or model substitution was attempted.` });
+      d.onText?.(`\nDiscovery stopped on a temporary provider error: ${outcomes[0]!.message}. Check connectivity, then explicitly resume this same run.\n`);
+      return finish({ outcome: "stopped", stopKind: "transient" }, message);
+    }
     // Scouts that failed for the same reason name it; a mixed batch is reported as transient,
     // the class that says "the same run could go differently".
     const failureClass = classes.size === 1 ? [...classes][0]! : "transient";

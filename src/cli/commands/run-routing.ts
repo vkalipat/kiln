@@ -34,6 +34,7 @@ export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnCo
   }
 
   const stop = status.outcome?.stopKind;
+  if (status.phase === "discover" && stop === "transient") return { kind: "phase", phase: "discover", wake: true };
   if (status.phase === "ideate") {
     if (stop === "rounds" || stop === "stagnant") return { kind: "phase", phase: "checkpoint" };
     if (stop === "stalled") return { kind: "phase", phase: "ideate" };

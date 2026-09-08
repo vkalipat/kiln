@@ -44,6 +44,22 @@ function io() {
 }
 
 describe("kiln run", () => {
+  test("explicit resume wakes transient discovery without rerunning frame", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-")); initHome(home);
+    const run = createRun(home, "seed");
+    writeStatus(run, { phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "transient", message: "DNS unavailable" } });
+    let discovered = 0; let framed = 0; const output = io();
+    expect(await main(["run", "resume", run.id, "--home", home, "--through", "discover", "--json"], output.io, {
+      ...deps(), runFrame: async () => { framed++; return { outcome: "ok" }; },
+      runDiscover: async (d) => {
+        discovered++; expect(readStatus(d.run)).toMatchObject({ phase: "discover", state: "running" });
+        expect(readStatus(d.run).outcome).toBeUndefined();
+        writeStatus(d.run, { phase: "ideate" }); return { outcome: "ok" };
+      },
+    })).toBe(0);
+    expect(discovered).toBe(1); expect(framed).toBe(0);
+    expect(readStatus(run)).toMatchObject({ state: "running", phase: "ideate" });
+  });
   test("rejects an unknown through value before creating a run", async () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-")); const a = io();
     expect(await main(["run", "new", "seed", "--home", home, "--through", "nonsense"], a.io, {})).toBe(2);

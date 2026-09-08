@@ -12,6 +12,9 @@ function status(patch: Partial<RunStatus>): RunStatus {
 }
 
 describe("routeResume", () => {
+  test("an explicit resume re-enters a transient discovery stop and clears its stopped state", () => {
+    expect(routeResume(status({ phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "transient" } }), false, defaultConfig())).toEqual({ kind: "phase", phase: "discover", wake: true });
+  });
   test.each(["frame", "discover", "ideate", "form", "build", "reflect"] as const)("re-enters a running %s phase", (phase) => {
     expect(routeResume(status({ phase }), false, defaultConfig(), 0)).toEqual({ kind: "phase", phase });
   });
