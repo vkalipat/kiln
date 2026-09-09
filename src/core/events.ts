@@ -55,7 +55,7 @@ export type RecordEvent =
       model: string;
       effort?: string;
       /** Clamped effort actually sent to the provider. */
-      effortSent?: Effort;
+      effortSent?: Effort | "minimal" | "max";
       /** Hash of the model-family prompt addenda composed for this call. */
       addendaHash?: string;
       inputHash: string;

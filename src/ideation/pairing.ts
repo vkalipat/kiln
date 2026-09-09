@@ -129,9 +129,86 @@ export function schedulePairs(input: SchedulePairsInput): [string, string][] {
     bump(ctx, b);
   }
   if (ids.length < 2 || ctx.cap === 0) return [];
+  const anchors = ids.filter((id) => ctx.anchors.has(id));
+  const fresh = ids.filter((id) => !ctx.anchors.has(id));
+  const hasMixedHistory = [...ctx.played].some((pair) => {
+    const [a, b] = pair.split("|");
+    return ctx.anchors.has(a!) !== ctx.anchors.has(b!);
+  });
+  // Returning ideas anchor the new field's scale only when at least one component bridge exists.
+  // Historical counts may already satisfy every anchor and otherwise make Swiss ignore them all.
+  if (!hasMixedHistory && anchors.length > 0 && fresh.length > 0) {
+    const a = seatingOrder(anchors, ctx)[0]!;
+    const b = bestPartner(ctx, a, fresh.filter((id) => !ctx.played.has(key(a, id))));
+    if (b) add(ctx, a, b);
+  }
   if (ids.length <= ROUND_ROBIN_MAX) roundRobin(ctx);
   swiss(ctx);
+  if (ctx.pairs.length <= ctx.cap && ids.some((id) => ctx.counts.get(id)! < ctx.min) && (input.existing?.length ?? 0) === 0) {
+    const balanced = balancedMinimumGraph(ids, ctx.min);
+    if (balanced && balanced.length <= ctx.cap) return balanced;
+  }
   return ctx.pairs;
+}
+
+/** A deterministic simple graph with the minimum possible edge count and degree at least `min`. */
+function balancedMinimumGraph(ids: readonly string[], min: number): [string, string][] | undefined {
+  const n = ids.length;
+  if (min <= 0) return [];
+  if (min >= n) return undefined;
+  const out: [string, string][] = [];
+  const seen = new Set<string>();
+  const put = (a: string, b: string) => {
+    const k = key(a, b);
+    if (a === b || seen.has(k)) return;
+    seen.add(k);
+    out.push(a < b ? [a, b] : [b, a]);
+  };
+  const evenDegree = min - (min % 2);
+  for (let offset = 1; offset <= evenDegree / 2; offset++) {
+    for (let i = 0; i < n; i++) put(ids[i]!, ids[(i + offset) % n]!);
+  }
+  if (min % 2 === 0) return out;
+  if (n % 2 === 0) {
+    for (let i = 0; i < n / 2; i++) put(ids[i]!, ids[i + n / 2]!);
+    return out;
+  }
+  // Odd n/odd degree needs a near-perfect matching in the unused complement, plus one edge for
+  // the unmatched vertex. Backtracking is bounded and cheap here because the complement is a
+  // regular graph of degree at least two.
+  const target = Math.floor(n / 2);
+  let matching: [string, string][] | undefined;
+  let searchBudget = 200_000;
+  const search = (remaining: readonly string[], picked: [string, string][]): void => {
+    if (matching || searchBudget-- <= 0) return;
+    if (picked.length === target) { matching = [...picked]; return; }
+    if (picked.length + Math.floor(remaining.length / 2) < target) return;
+    const ordered = [...remaining].sort((a, b) => {
+      const degree = (x: string) => remaining.filter((q) => q !== x && !seen.has(key(x, q))).length;
+      return degree(a) - degree(b) || a.localeCompare(b);
+    });
+    const a = ordered[0]!;
+    const rest = ordered.slice(1);
+    for (const b of rest.filter((candidate) => !seen.has(key(a, candidate)))) {
+      picked.push([a, b]);
+      search(rest.filter((candidate) => candidate !== b), picked);
+      picked.pop();
+      if (matching) return;
+    }
+    search(rest, picked);
+  };
+  search(ids, []);
+  if (!matching) return undefined;
+  for (const [a, b] of matching) put(a, b);
+  const covered = new Set(matching.flat());
+  const leftover = ids.find((id) => !covered.has(id));
+  if (leftover) {
+    const a = leftover;
+    const b = ids.find((candidate) => candidate !== a && !seen.has(key(a, candidate)));
+    if (!b) return undefined;
+    put(a, b);
+  }
+  return out;
 }
 
 function key(a: string, b: string): string {

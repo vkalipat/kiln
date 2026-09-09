@@ -8,6 +8,10 @@ export const WORKFLOW_PHASES = ["frame", "discover", "ideate", "checkpoint", "fo
 export type WorkflowPhase = (typeof WORKFLOW_PHASES)[number];
 export type WorkflowIntent = "open_ended_ideation" | "supplied_concept" | "existing_artifact";
 export type WorkflowGoal = "explore" | "deliver";
+export interface WorkflowStrategy {
+  mode: "exploratory" | "focused" | "direct";
+  research: "broad" | "targeted" | "none";
+}
 
 export interface WorkflowPlan {
   version: 1;
@@ -22,6 +26,8 @@ export interface WorkflowPlan {
   artifactContext: "not_applicable" | "not_supplied" | "declared";
   seedSha256: string;
   rationale: string[];
+  /** Absent on historical/evaluator plans, which retain their original full phase chain. */
+  strategy?: WorkflowStrategy;
 }
 
 export interface WorkflowControls {
@@ -38,7 +44,7 @@ export interface WorkflowExecution {
 }
 
 const OPEN_ENDED = [
-  /\b(?:find|discover|generate|suggest|brainstorm|identify|explore|give|come up with)\b[^.!?\n]{0,100}\bideas?\b/i,
+  /\b(?:find|discover|generate|suggest|brainstorm|identify|explore|give|come up with|develop|create|propose|design)\b[^.!?\n]{0,100}\bideas?\b/i,
   /\b(?:find|discover|identify|explore)\s+(?:me\s+)?(?:a|the|some)\s+(?:way|opportunity|business|startup|product)\b/i,
   /\bwhat\s+(?:business|company|product|project|thing)?\s*should\s+i\s+(?:build|start|pursue|make)\b/i,
   /\bmake\s+me\s+(?:a\s+)?(?:billionaire|millionaire)\b/i,
@@ -51,7 +57,7 @@ const EXISTING_ARTIFACT = [
   /\b(?:fix|update|extend|refactor)\s+(?:this|the|my)\b/i,
 ];
 
-const DELIVERY = /\b(?:ship|implement|prototype|launch|deliver|build|develop|create|fix|finish|complete)\b/i;
+const DELIVERY = /\b(?:ship|implement|prototype|launch|deliver|build|develop|create|write|make|fix|finish|complete)\b/i;
 const OPEN_DELIVERY = /\b(?:ship|implement|prototype|launch|deliver|build|develop|fix|finish|complete)\b/i;
 
 function seedHash(seed: string): string {
@@ -68,9 +74,12 @@ export function classifyWorkflowIntent(seed: string): WorkflowIntent {
   return "supplied_concept";
 }
 
-export function planWorkflow(seed: string): WorkflowPlan {
+export function planWorkflow(seed: string, options: { adaptive?: boolean } = {}): WorkflowPlan {
   const intent = classifyWorkflowIntent(seed);
-  const goal: WorkflowGoal = (intent === "open_ended_ideation" ? OPEN_DELIVERY : DELIVERY).test(seed) ? "deliver" : "explore";
+  // Negated/deferred delivery and output requests for a plan are not authorization to build.
+  const noDelivery = /\b(?:do not|don['’]t|without|not yet|never)\s+(?:\w+\s+){0,2}(?:build|implement|ship|deploy|launch|write|make)\b|\b(?:plan|ideas?|research|analysis|recommendations?|report)\s+only\b|\b(?:plan|design|explain)\s+(?:how|for|to)\b/i.test(seed);
+  const deliveryText = seed.replace(/\b(?:develop|create|design|build|write|make)\b[^.!?\n]{0,80}\b(?:ideas?|concepts?|hypotheses|plans?|proposals?)\b/gi, "");
+  const goal: WorkflowGoal = !noDelivery && (intent === "open_ended_ideation" ? OPEN_DELIVERY : DELIVERY).test(deliveryText) ? "deliver" : "explore";
   const missingArtifact = intent === "existing_artifact";
   const rationale: string[] = [];
   if (intent === "open_ended_ideation") {
@@ -86,6 +95,19 @@ export function planWorkflow(seed: string): WorkflowPlan {
       ? "Artifact delivery cannot start without an explicit readable source, so the default route stops at a human checkpoint."
       : "The seed asks for exploration, so the default route ends at the idea checkpoint.");
 
+  const directTask = intent === "supplied_concept" && goal === "deliver"
+    && /\b(cli|script|utility|function|parser|converter|calculator|command.line|unit tests?|csv|json|markdown|directory|files?)\b/i.test(seed)
+    && !/\b(ideas?|brainstorm|alternatives?|explore|discover|novel)\b/i.test(seed);
+  const researchText = seed.replace(/\b(?:no|without|do not|don['’]t)\s+(?:external\s+|web\s+|online\s+)?research\b/gi, "");
+  const researchDeclined = /\b(?:no|without|do not|don['’]t)\s+(?:external\s+|web\s+|online\s+)?(?:research|browsing|web search)\b/i.test(seed);
+  const needsExternalFacts = !researchDeclined && /\b(research|market|customers?|biology|medicine|medical|clinical|protein|scientific|api|integration|online|web service|pricing)\b|\b(?:latest|current)\s+(?:papers?|prices?|versions?|releases?|news|guidelines|regulations|trends)\b/i.test(researchText);
+  const strategy: WorkflowStrategy = directTask
+    ? { mode: "direct", research: needsExternalFacts ? "targeted" : "none" }
+    : { mode: intent === "open_ended_ideation" ? "exploratory" : "focused", research: intent === "open_ended_ideation" ? "broad" : "targeted" };
+  if (options.adaptive !== false) rationale.push(strategy.mode === "direct"
+    ? `The user supplied a concrete implementation task; competitive ideation is unnecessary. Research is ${strategy.research}; formation and external acceptance checks still apply.`
+    : `${strategy.mode === "exploratory" ? "Broad idea search" : "Focused refinement"} needs evidence collection and comparison before selection.`);
+
   return {
     version: 1,
     intent,
@@ -97,6 +119,7 @@ export function planWorkflow(seed: string): WorkflowPlan {
     artifactContext: intent !== "existing_artifact" ? "not_applicable" : "not_supplied",
     seedSha256: seedHash(seed),
     rationale,
+    ...(options.adaptive !== false ? { strategy } : {}),
   };
 }
 
@@ -111,8 +134,25 @@ export function compileWorkflow(plan: WorkflowPlan, controls: WorkflowControls):
       : controls.autonomous === undefined
       ? plan.checkpointDefault
       : controls.autonomous ? "autonomous" : "human",
-    phases: WORKFLOW_PHASES.slice(0, WORKFLOW_PHASES.indexOf(through) + 1),
+    phases: WORKFLOW_PHASES.slice(0, WORKFLOW_PHASES.indexOf(through) + 1).filter((phase) => {
+      if (plan.strategy?.mode !== "direct") return true;
+      if (phase === "discover") return plan.strategy.research !== "none";
+      return phase !== "ideate" && phase !== "checkpoint";
+    }),
   };
+}
+
+/** A brief explanation of task intent, not a promise of completion or extra authority. */
+export function workflowInterpretation(plan: WorkflowPlan): string {
+  if (plan.intent === "existing_artifact") return plan.artifactContext === "declared"
+    ? "I understand this as work on an existing artifact, starting with its supplied context."
+    : "I understand this as work on an existing artifact; I need its readable source before making artifact-specific changes.";
+  if (plan.intent === "open_ended_ideation") return plan.goal === "deliver"
+    ? "I understand this as finding a promising idea and carrying it through implementation and verification."
+    : "I understand this as exploring and comparing ideas to give you an evidence-backed choice.";
+  return plan.goal === "deliver"
+    ? "I understand this as implementing your supplied concept and checking it against its requirements."
+    : "I understand this as developing your supplied concept and evaluating its assumptions and risks.";
 }
 
 export function workflowPath(run: RunPaths): string {
@@ -132,6 +172,9 @@ function validateWorkflowPlan(value: unknown): WorkflowPlan {
   if (!(["not_applicable", "not_supplied", "declared"] as unknown[]).includes(plan.artifactContext)) throw new Error("workflow plan has an invalid artifactContext");
   if (typeof plan.seedSha256 !== "string" || !/^[a-f0-9]{64}$/.test(plan.seedSha256)) throw new Error("workflow plan has an invalid seedSha256");
   if (!Array.isArray(plan.rationale) || plan.rationale.some((line) => typeof line !== "string")) throw new Error("workflow plan has invalid rationale");
+  if (plan.strategy !== undefined && (!plan.strategy || !["exploratory", "focused", "direct"].includes(plan.strategy.mode)
+    || !["broad", "targeted", "none"].includes(plan.strategy.research)
+    || (plan.strategy.mode !== "direct" && plan.strategy.research === "none"))) throw new Error("workflow plan has invalid strategy");
   return plan as WorkflowPlan;
 }
 
@@ -142,14 +185,14 @@ export function loadWorkflowPlan(run: RunPaths): WorkflowPlan | undefined {
 }
 
 /** Create the run's plan once; later invocations reuse it and reject seed drift. */
-export function ensureWorkflowPlan(run: RunPaths): WorkflowPlan {
+export function ensureWorkflowPlan(run: RunPaths, options: { adaptive?: boolean } = {}): WorkflowPlan {
   const seed = readFileSync(run.seed, "utf8");
   const current = loadWorkflowPlan(run);
   if (current) {
     if (current.seedSha256 !== seedHash(seed)) throw new Error("workflow plan does not match the run seed");
     return current;
   }
-  const plan = planWorkflow(seed);
+  const plan = planWorkflow(seed, options);
   saveWorkflowPlan(run, plan);
   return plan;
 }

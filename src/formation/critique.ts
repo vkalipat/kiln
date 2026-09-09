@@ -3,7 +3,7 @@ import { createBrain, type BrainResult } from "../brain/agent";
 import { loadPrompt } from "../brain/prompts";
 import { fail, ok } from "../brain/tools/shape";
 import type { CritiqueItem } from "../core/events";
-import { effortFor, NoModelError, otherProvider, parseModelRef } from "../providers/models";
+import { effortFor, NoModelError, parseModelRef, providerVendor } from "../providers/models";
 import type { PhaseDeps } from "../phases/frame";
 import { isTrivialCommand, type FeaturesFile } from "./features";
 
@@ -25,6 +25,8 @@ export interface CritiqueOptions {
   formationCeilingUsd: number;
   spentUsd: () => number;
   onResult: (result: BrainResult) => void;
+  /** Turns already spent by this critic stage in the current formation attempt. */
+  priorTurns?: () => number;
 }
 
 export class CritiqueRunError extends Error {
@@ -34,22 +36,33 @@ export class CritiqueRunError extends Error {
   }
 }
 
+function independentRef(candidate: string, requestedProvider: string, brainRef: string): void {
+  const selected = parseModelRef(candidate);
+  const producer = parseModelRef(brainRef);
+  if (selected.provider !== requestedProvider) throw new NoModelError(`resolver returned ${candidate} outside requested provider ${requestedProvider}`);
+  if (selected.modelId === producer.modelId && providerVendor(selected.provider) === providerVendor(producer.provider)) {
+    throw new NoModelError(`resolver returned producer model identity ${candidate}`);
+  }
+}
+
 function resolveCritic(deps: PhaseDeps, brainRef: string) {
   if (!deps.modelsOn || !deps.availableProviders) throw new NoModelError("critic requires an admitted provider-restricted model resolver");
   const producer = parseModelRef(brainRef).provider;
   const errors: string[] = [];
-  const provider = otherProvider(producer, new Set(deps.availableProviders));
-  if (provider && provider !== producer) {
+  const alternatives = [...deps.availableProviders]
+    .filter((provider) => provider !== producer)
+    .sort((a, b) => Number(providerVendor(a) === providerVendor(producer)) - Number(providerVendor(b) === providerVendor(producer)));
+  for (const provider of alternatives) {
     try {
-      const seat = deps.modelsOn("critic", provider);
-      if (seat.ref === brainRef) throw new NoModelError(`resolver returned producer ref ${brainRef}`);
+      const seat = deps.modelsOn("critic", provider, brainRef);
+      independentRef(seat.ref, provider, brainRef);
       return { ...seat, crossProvider: true };
     }
     catch (error) { errors.push((error as Error).message); }
   }
   try {
     const seat = deps.modelsOn("critic", producer, brainRef);
-    if (seat.ref === brainRef) throw new NoModelError(`resolver returned producer ref ${brainRef}`);
+    independentRef(seat.ref, producer, brainRef);
     return { ...seat, crossProvider: false };
   }
   catch (error) { errors.push((error as Error).message); }
@@ -113,6 +126,7 @@ export async function runCritique(deps: PhaseDeps, options: CritiqueOptions): Pr
     role: "critic",
     phase: "form",
     turnCap: 2,
+    priorTurns: options.priorTurns,
     usdCap: options.formationCeilingUsd,
     spentUsd: options.spentUsd,
     effort: effortFor(deps.cfg, "critic", chosen.model),

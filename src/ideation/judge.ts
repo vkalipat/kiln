@@ -6,6 +6,7 @@ import type { Model } from "@oh-my-pi/pi-catalog";
 import { createBrain } from "../brain/agent";
 import { loadPrompt } from "../brain/prompts";
 import type { IdeaShape, KilnConfig, Role } from "../core/config";
+import { classifyFailure, type FailureClass } from "../core/failure";
 import type { PairOrder } from "../core/events";
 import { writeAtomic } from "../core/paths";
 import type { RunRecord } from "../core/record";
@@ -50,6 +51,9 @@ export interface PairVerdict {
   judgeModel: string;
   costUsd: number;
   retried: boolean;
+  /** Only a schema-valid verdict is comparison evidence; missing/refused outputs remain diagnostic ties. */
+  evidence?: "verdict" | "missing" | "refused";
+  failureClass?: FailureClass;
 }
 
 export const VERDICT_SCHEMA = {
@@ -172,6 +176,7 @@ export async function judgePair(deps: JudgeDeps, criteria: Criteria, aRender: st
   };
   let retried = false;
   let refusal: string | undefined;
+  let workerFailure: { message: string; failureClass: FailureClass } | undefined;
   for (let attempt = 0; attempt < 2 && !captured; attempt += 1) {
     retried = attempt === 1;
     const brain = judgeBrain(deps, { tools: [verdictTool], pinned: `Criteria (written before any candidate, round ${criteria.round}):\n${criteria.text}`, turnCap: 1, shape: criteria.shape, terminalTools: ["verdict"] });
@@ -181,9 +186,19 @@ export async function judgePair(deps: JudgeDeps, criteria: Criteria, aRender: st
       refusal = r.stopDetails?.category?.trim() || "unknown";
       break;
     }
+    if (r.stopped === "error" || r.stopped === "turn_cap" || r.stopped === "usd_cap") {
+      const message = r.error ?? `judge stopped: ${r.stopped}`;
+      workerFailure = {
+        message,
+        failureClass: r.stopped === "turn_cap" || r.stopped === "usd_cap" ? "budget" : classifyFailure({ message, status: r.errorStatus, stopDetails: r.stopDetails }),
+      };
+    }
   }
-  if (!captured) return { valueWinner: "tie", feasibilityWinner: "tie", reason: refusal ? `refused:${refusal}` : "no verdict after retry", judgeModel, costUsd, retried };
-  return { valueWinner: canonical(captured.valueWinner, order), feasibilityWinner: canonical(captured.feasibilityWinner, order), reason: captured.reason, judgeModel, costUsd, retried };
+  if (!captured) {
+    if (refusal) return { valueWinner: "tie", feasibilityWinner: "tie", reason: `refused:${refusal}`, judgeModel, costUsd, retried, evidence: "refused", failureClass: "refusal" };
+    return { valueWinner: "tie", feasibilityWinner: "tie", reason: workerFailure?.message ?? "no verdict after retry", judgeModel, costUsd, retried, evidence: "missing", failureClass: workerFailure?.failureClass ?? "verify" };
+  }
+  return { valueWinner: canonical(captured.valueWinner, order), feasibilityWinner: canonical(captured.feasibilityWinner, order), reason: captured.reason, judgeModel, costUsd, retried, evidence: "verdict" };
 }
 
 function truncateWords(text: string, max: number): string {

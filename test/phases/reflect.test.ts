@@ -11,6 +11,7 @@ import type { RecordEvent } from "../../src/core/events";
 import { candidatePath } from "../../src/core/paths";
 import { hashInput } from "../../src/core/record";
 import { readStatus, writeStatus } from "../../src/core/run";
+import { RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
 import type { PhaseDeps } from "../../src/phases/frame";
 import { runReflect, type ReflectDeps } from "../../src/phases/reflect";
 import { setupLoop } from "../build/loop-fixture";
@@ -25,13 +26,15 @@ const BAD: PlaybookDelta = { op: "add", section: "build", text: "x", evidence: [
 const USAGE = { input: 1_000, output: 1_000 };
 const CALL_COST = 0.018;
 
-type Step = PlaybookDelta | PlaybookDelta[] | "text" | "error";
+type Step = PlaybookDelta | PlaybookDelta[] | "text" | "length" | "error" | "transient";
 
 function reflector(script: Step[]) {
   let index = 0;
   return createMockModel({ id: "reflector", cost: { input: 3, output: 15, cacheRead: 0, cacheWrite: 0 }, handler: () => {
     const step = script[Math.min(index++, script.length - 1)] ?? "text";
     if (step === "error") return { content: [], stopReason: "error" as const, errorMessage: "boom" };
+    if (step === "transient") return { throw: "provider overloaded", responseStatus: 503 };
+    if (step === "length") return { content: ["partial reflection"], stopReason: "length" as const, usage: USAGE };
     if (step === "text") return { content: ["no lesson"], usage: USAGE };
     const deltas = Array.isArray(step) ? step : [step];
     return { content: deltas.map((delta) => ({ type: "toolCall" as const, name: "playbook_delta", arguments: delta })), usage: USAGE };
@@ -84,6 +87,18 @@ describe("runReflect context", () => {
     expect(pinned).toContain('"costByPhase"');
     for (const sentinel of ["SENTINEL_RECORD", "SENTINEL_EVALS", "SENTINEL_PROMPT"]) expect(everything).not.toContain(sentinel);
     expect(everything.toLowerCase()).not.toMatch(/turns? left|remaining budget|budget remaining/);
+  });
+
+  test("never supplies a stale metrics file when the current metrics fold fails", async () => {
+    const s = setup(["text"]);
+    buildStop(s.deps, "budget");
+    writeFileSync(s.deps.run.metrics, '{"stale":"STALE-METRICS-SENTINEL"}\n');
+    writeFileSync(s.deps.run.featureState, "{corrupt\n");
+
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    const context = JSON.stringify(s.model.calls[0]!.context);
+    expect(context).not.toContain("STALE-METRICS-SENTINEL");
+    expect(s.model.calls[0]!.context.systemPrompt?.at(-1)).toContain('"available": false');
   });
 });
 
@@ -154,6 +169,20 @@ describe("runReflect digest and candidate", () => {
     expect(s.metrics().deltaProposed).toEqual({ accepted: 1, rejected: 1 });
   });
 
+  test("never journals an accepted delta when its candidate artifact cannot be persisted", async () => {
+    const s = setup([GOOD]);
+    s.deps.cfg.budgets.turns.reflect = 1;
+    mkdirSync(s.candidate);
+    buildSuccess(s.deps);
+
+    expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed", failureClass: "verify", message: expect.stringContaining("candidate persistence failed") });
+    expect(s.model.calls).toHaveLength(1);
+    expect(s.events().filter((event) => event.t === "delta")).toEqual([
+      expect.objectContaining({ accepted: false, reason: expect.stringContaining("candidate persistence failed") }),
+    ]);
+    expect(s.events().some((event) => event.t === "delta" && event.accepted)).toBe(false);
+  });
+
   test("returns ok without a delta when the reflector proposes nothing", async () => {
     const s = setup(["text"]);
     buildHonest(s.deps, ["cannot"]);
@@ -219,6 +248,123 @@ describe("runReflect metrics", () => {
     expect(await runReflect(roomy.deps)).toEqual({ outcome: "ok" });
     expect(roomy.model.calls).toHaveLength(2);
     expect(existsSync(roomy.candidate)).toBe(true);
+  });
+
+  test("charges interrupted reflect calls to the same protected dollar cap on resume", async () => {
+    const s = setup([GOOD], { usd: 1, spend: 1.5 });
+    buildFail(s.deps, "integrity", "acceptance lock mismatch");
+    s.record.append({ t: "phase.start", phase: "reflect" });
+    s.record.append({
+      t: "model.call", role: "reflector", provider: "p", model: "m", inputHash: "prior",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, costUsd: 0.25,
+      stopReason: "error", excerpt: "", error: "service unavailable", errorStatus: 503,
+    });
+    writeStatus(s.deps.run, { cursor: { step: "reflect" } });
+
+    expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed", failureClass: "budget" });
+    expect(s.model.calls).toHaveLength(0);
+    expect(s.events().filter((event) => event.t === "model.call" && event.role === "reflector")).toHaveLength(1);
+  });
+});
+
+describe("runReflect retry and completion caps", () => {
+  test("retries transient provider failures within one bounded reflect and then accepts the candidate", async () => {
+    const s = setup(["transient", "transient", GOOD]);
+    buildSuccess(s.deps);
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.model.calls).toHaveLength(3);
+    expect(existsSync(s.candidate)).toBe(true);
+    expect(s.events().filter((event) => event.t === "phase.start" && event.phase === "reflect")).toHaveLength(1);
+    expect(s.events().filter((event) => event.t === "phase.end" && event.phase === "reflect")).toHaveLength(1);
+  });
+
+  test("stops after three transient provider failures instead of retrying forever", async () => {
+    const s = setup(["transient"]);
+    buildStop(s.deps, "budget");
+    expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed", failureClass: "transient" });
+    expect(s.model.calls).toHaveLength(3);
+    expect(existsSync(s.candidate)).toBe(false);
+  });
+
+  test("keeps transient and output-length retry ceilings across process restarts", async () => {
+    const transient = setup([GOOD]);
+    buildStop(transient.deps, "budget");
+    transient.record.append({ t: "phase.start", phase: "reflect" });
+    for (let i = 1; i <= 3; i += 1) {
+      transient.record.append({ t: "turn", role: "reflector", phase: "reflect", n: i });
+      transient.record.append({
+        t: "model.call", role: "reflector", provider: "p", model: "m", inputHash: `transient-${i}`,
+        usage: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0,
+        stopReason: "error", excerpt: "", error: "provider overloaded", errorStatus: 503,
+      });
+    }
+    writeStatus(transient.deps.run, { cursor: { step: "reflect" } });
+    expect(await runReflect(transient.deps)).toMatchObject({ outcome: "failed", failureClass: "transient" });
+    expect(transient.model.calls).toHaveLength(0);
+
+    const length = setup([GOOD]);
+    buildStop(length.deps, "budget");
+    length.record.append({ t: "phase.start", phase: "reflect" });
+    for (let i = 1; i <= 2; i += 1) {
+      length.record.append({ t: "turn", role: "reflector", phase: "reflect", n: i });
+      length.record.append({
+        t: "model.call", role: "reflector", provider: "p", model: "m", inputHash: `length-${i}`,
+        usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, costUsd: 0,
+        stopReason: "length", excerpt: "partial",
+      });
+    }
+    writeStatus(length.deps.run, { cursor: { step: "reflect" } });
+    expect(await runReflect(length.deps)).toMatchObject({ outcome: "failed", failureClass: "budget", message: expect.stringContaining("output limit") });
+    expect(length.model.calls).toHaveLength(0);
+  });
+
+  test("honors turns already spent by an interrupted reflect attempt", async () => {
+    const s = setup([GOOD]);
+    s.deps.cfg.budgets.turns.reflect = 1;
+    buildStop(s.deps, "budget");
+    s.record.append({ t: "phase.start", phase: "reflect" });
+    s.record.append({ t: "turn", role: "reflector", phase: "reflect", n: 1 });
+    writeStatus(s.deps.run, { cursor: { step: "reflect" } });
+
+    expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed", failureClass: "budget", message: "turn cap 1 reached in reflect" });
+    expect(s.model.calls).toHaveLength(0);
+  });
+
+  test("honors wall time already spent by an interrupted reflect attempt", async () => {
+    let now = Date.now();
+    const s = setup([GOOD], { now: () => now });
+    s.deps.cfg.budgets.wallSeconds = 100;
+    buildStop(s.deps, "budget");
+    s.record.append({ t: "phase.start", phase: "reflect" });
+    writeStatus(s.deps.run, { cursor: { step: "reflect" } });
+    now += 101_000;
+
+    expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed", failureClass: "deadline", message: "wall budget exhausted before reflect" });
+    expect(s.model.calls).toHaveLength(0);
+  });
+
+  test("accepts a valid candidate produced on the final allowed turn", async () => {
+    const s = setup([GOOD]);
+    s.deps.cfg.budgets.turns.reflect = 1;
+    buildSuccess(s.deps);
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.model.calls).toHaveLength(1);
+    expect(existsSync(s.candidate)).toBe(true);
+  });
+
+  test("retries one output-length stop concisely but never accepts repeated truncation as completion", async () => {
+    const recovered = setup(["length", GOOD]);
+    buildSuccess(recovered.deps);
+    expect(await runReflect(recovered.deps)).toEqual({ outcome: "ok" });
+    expect(recovered.model.calls).toHaveLength(2);
+    expect(JSON.stringify(recovered.model.calls[1]!.context.messages)).toContain("Finish concisely now");
+    expect(existsSync(recovered.candidate)).toBe(true);
+
+    const truncated = setup(["length"]);
+    buildSuccess(truncated.deps);
+    expect(await runReflect(truncated.deps)).toMatchObject({ outcome: "failed", failureClass: "budget", message: expect.stringContaining("output limit") });
+    expect(truncated.model.calls).toHaveLength(2);
+    expect(existsSync(truncated.candidate)).toBe(false);
   });
 });
 
@@ -312,6 +458,14 @@ describe("runReflect status contract", () => {
     expect(s.model.calls).toHaveLength(0);
     expect(existsSync(s.deps.run.digest)).toBe(false);
   });
+
+  test("never converts reflect/running into delivered success without a successful build terminal", async () => {
+    const s = setup([GOOD]);
+    writeStatus(s.deps.run, { phase: "reflect", state: "running", outcome: undefined, cursor: { step: "complete" } });
+    expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed", failureClass: "integrity", message: expect.stringContaining("successful build terminal") });
+    expect(s.model.calls).toHaveLength(0);
+    expect(readStatus(s.deps.run)).toMatchObject({ phase: "reflect", state: "failed", outcome: { kind: "failure", failureClass: "integrity" } });
+  });
 });
 
 describe("runReflect idempotency", () => {
@@ -357,5 +511,80 @@ describe("runReflect idempotency", () => {
     expect(await runReflect(s.deps)).toMatchObject({ outcome: "failed" });
     expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
     expect(s.model.calls).toHaveLength(1);
+  });
+
+  test("recovers a candidate accepted immediately before cancellation without a second provider call", async () => {
+    const s = setup([GOOD, GOOD2]);
+    buildSuccess(s.deps);
+    const control = new RunControl();
+    s.deps.onTool = (event) => { if (event.phase === "end" && event.name === "playbook_delta") control.cancel("cancel after durable candidate"); };
+
+    await expect(withRunControl(control, () => runReflect(s.deps))).rejects.toBeInstanceOf(RunCancelledError);
+    expect(existsSync(s.candidate)).toBe(true);
+    expect(s.events().filter((event) => event.t === "phase.end" && event.phase === "reflect")).toHaveLength(0);
+    s.deps.onTool = undefined;
+
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.model.calls).toHaveLength(1);
+    expect(s.events().filter((event) => event.t === "phase.end" && event.phase === "reflect")).toEqual([
+      expect.objectContaining({ outcome: "ok" }),
+    ]);
+    expect(JSON.parse(readFileSync(s.candidate, "utf8")).delta).toEqual(GOOD);
+    expect(readStatus(s.deps.run)).toMatchObject({ state: "done", outcome: { kind: "success" }, cursor: { step: "reflected" } });
+  });
+
+  test("recovers a completed no-lesson response after a phase-end crash without another provider call", async () => {
+    const s = setup(["text", GOOD]);
+    buildSuccess(s.deps);
+    const append = s.record.append.bind(s.record);
+    let crashed = false;
+    s.record.append = ((event: RecordEvent) => {
+      if (!crashed && event.t === "phase.end" && event.phase === "reflect") {
+        crashed = true;
+        throw new Error("crash before reflect phase end");
+      }
+      return append(event);
+    }) as typeof s.record.append;
+
+    await expect(runReflect(s.deps)).rejects.toThrow("crash before reflect phase end");
+    expect(s.model.calls).toHaveLength(1);
+    expect(s.events().filter((event) => event.t === "phase.end" && event.phase === "reflect")).toHaveLength(0);
+
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.model.calls).toHaveLength(1);
+    expect(s.events().filter((event) => event.t === "phase.end" && event.phase === "reflect")).toHaveLength(1);
+    expect(existsSync(s.candidate)).toBe(false);
+  });
+
+  test("does not mistake a rejected tool-only response for a durable no-lesson answer", async () => {
+    const s = setup([BAD, "text"]);
+    buildSuccess(s.deps);
+    const control = new RunControl();
+    s.deps.onTool = (event) => { if (event.phase === "end" && event.name === "playbook_delta") control.cancel("cancel after rejected delta"); };
+
+    await expect(withRunControl(control, () => runReflect(s.deps))).rejects.toBeInstanceOf(RunCancelledError);
+    expect(s.model.calls).toHaveLength(1);
+    s.deps.onTool = undefined;
+
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.model.calls).toHaveLength(2);
+    expect(s.events().filter((event) => event.t === "delta" && event.accepted)).toHaveLength(0);
+    expect(s.events().filter((event) => event.t === "phase.end" && event.phase === "reflect")).toHaveLength(1);
+  });
+
+  test("does not recover an empty stopped call as a completed no-lesson response", async () => {
+    const s = setup(["text"]);
+    buildSuccess(s.deps);
+    s.record.append({ t: "phase.start", phase: "reflect" });
+    s.record.append({
+      t: "model.call", role: "reflector", provider: "p", model: "m", inputHash: "tool-only",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, costUsd: 0.01, stopReason: "stop", excerpt: "",
+    });
+    s.record.append({ t: "delta", op: "add", section: "build", accepted: false, reason: "invalid", source: "reflector" });
+    writeStatus(s.deps.run, { cursor: { step: "reflect" } });
+
+    expect(await runReflect(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.model.calls).toHaveLength(1);
+    expect(s.events().filter((event) => event.t === "model.call" && event.role === "reflector")).toHaveLength(2);
   });
 });

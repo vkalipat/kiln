@@ -20,7 +20,7 @@ export interface IdeationMetrics {
   tokensByRole: Record<Role, { input: number; output: number; cacheRead: number; cacheWrite: number }>;
   refusals: { byRole: Record<Role, number>; byCategory: Record<string, number> };
   addendaHashes: string[];
-  effortByRole: Record<Role, Effort | null>;
+  effortByRole: Record<Role, ExecutedEffort | null>;
   arbiterCalls: { novelty: number; collision: number };
   similarity: { count: number; min: number | null; max: number | null; mean: number | null; p50: number | null };
   searchHealth: { healthy: number; total: number; rate: number; floor: number };
@@ -116,7 +116,8 @@ function phaseAt(events: readonly StoredEvent[]): Map<number, Phase> {
   return out;
 }
 
-const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh"];
+type ExecutedEffort = Effort | "minimal" | "max";
+const EFFORTS: readonly ExecutedEffort[] = ["minimal", "low", "medium", "high", "xhigh", "max"];
 
 /** Final executed passes visible in the record; build/metrics supplies its reconciled count. */
 function recordedExecutedPasses(events: readonly StoredEvent[]): number {
@@ -165,16 +166,16 @@ function refusalMetrics(events: readonly StoredEvent[]): IdeationMetrics["refusa
   return { byRole, byCategory };
 }
 
-function effortModes(events: readonly StoredEvent[]): Record<Role, Effort | null> {
-  const counts = Object.fromEntries(ROLES.map((role) => [role, zeros(EFFORTS)])) as Record<Role, Record<Effort, number>>;
+function effortModes(events: readonly StoredEvent[]): Record<Role, ExecutedEffort | null> {
+  const counts = Object.fromEntries(ROLES.map((role) => [role, zeros(EFFORTS)])) as Record<Role, Record<ExecutedEffort, number>>;
   for (const event of events) if (event.t === "model.call" && event.effortSent !== undefined) counts[event.role][event.effortSent] += 1;
   return Object.fromEntries(ROLES.map((role) => {
-    let mode: Effort | null = null;
+    let mode: ExecutedEffort | null = null;
     let maximum = 0;
     // Fixed semantic order makes ties deterministic (the lower effort wins a tie).
     for (const effort of EFFORTS) if (counts[role][effort] > maximum) { mode = effort; maximum = counts[role][effort]; }
     return [role, mode];
-  })) as Record<Role, Effort | null>;
+  })) as Record<Role, ExecutedEffort | null>;
 }
 
 /** Fold only durable artifacts. No in-memory orchestration state can improve this answer. */

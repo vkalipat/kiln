@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { trigramJaccard } from "../../src/ideation/novelty";
 import { loadSeeds, verifySplit } from "../../src/evals/seeds";
+import { copyFixtureTree } from "../helpers/copy-fixture-tree";
 
 const bundledHome = join(import.meta.dir, "../..");
 
@@ -46,7 +47,7 @@ describe("bundled eval seeds", () => {
 
   test("detects a byte change and a directory file absent from split.json", () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-seeds-"));
-    cpSync(join(bundledHome, "evals"), join(home, "evals"), { recursive: true });
+    copyFixtureTree(join(bundledHome, "evals"), join(home, "evals"));
     const seed = join(home, "evals", "seeds", "heldout", "heldout-research-01.md");
     writeFileSync(seed, `${readFileSync(seed, "utf8")}Changed.\n`);
     writeFileSync(join(home, "evals", "seeds", "dev", "unlisted.md"), "not listed\n");

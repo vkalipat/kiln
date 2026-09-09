@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { copyFileSync, existsSync, readFileSync, renameSync, rmSync } from "node:fs";
+import { copyFileSync, existsSync, lstatSync, readFileSync, renameSync, rmSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { ensureDir, writeAtomic } from "../core/paths";
 import type { RunPaths } from "../core/run";
@@ -29,6 +29,16 @@ export interface BlockedManifest {
 
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 
+function ensureRealDirectory(path: string, label: string): void {
+  try {
+    if (!lstatSync(path).isDirectory()) throw new Error(`${label} must be a real directory`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    ensureDir(path);
+    if (!lstatSync(path).isDirectory()) throw new Error(`${label} must be a real directory`);
+  }
+}
+
 function sha256(path: string): string {
   return createHash("sha256").update(readFileSync(path)).digest("hex");
 }
@@ -47,8 +57,10 @@ function missing(sourcePath: string | null = null, sourceEventSeq: number | null
 /** Preserve the last machine evidence at stored caps for later human adjudication. */
 export function archiveBlocked(paths: RunPaths, featureId: string, sources: BlockedSources = {}): BlockedManifest {
   if (!SAFE_ID.test(featureId)) throw new Error(`invalid blocked feature id ${featureId}`);
-  const dir = join(projectPaths(paths.project).blockedDir, featureId);
-  ensureDir(dir);
+  const root = projectPaths(paths.project).blockedDir;
+  ensureRealDirectory(root, "blocked archive root");
+  const dir = join(root, featureId);
+  ensureRealDirectory(dir, "blocked feature archive");
 
   let check = missing(sources.check?.path ?? null, sources.check?.eventSeq ?? null);
   if (sources.check && existsSync(sources.check.path)) {

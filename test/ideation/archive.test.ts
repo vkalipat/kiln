@@ -132,6 +132,15 @@ describe("Archive.insert", () => {
     expect(resumed.seedable()).toEqual([]);
     expect(record.read().filter((e) => e.t === "idea.insert")).toHaveLength(1);
   });
+
+  test("collision rejection and its prior-art evidence land in one sidecar update", () => {
+    const { run, record, archive } = setup();
+    archive.insert(dossier("r1-i1-1"));
+    const priorArt = { status: "collided" as const, artifact: { title: "Held", url: "https://example.com/held" }, distance: "same" };
+    archive.markRejected("r1-i1-1", "collided", priorArt.artifact.url, { priorArt });
+    expect(evidenceOf(run, "r1-i1-1")).toMatchObject({ status: "rejected", rejectReason: "collided", priorArt });
+    expect(rejects(record)).toContainEqual({ id: "r1-i1-1", reason: "collided", against: priorArt.artifact.url });
+  });
 });
 
 describe("Archive queries", () => {
@@ -162,6 +171,14 @@ describe("Archive queries", () => {
     expect(archive.champions()).toEqual(["b", "c", "d"]);
     archive.markRejected("b", "collided");
     expect(archive.champions()).toEqual(["c", "a", "d"]);
+  });
+
+  test("a collided sidecar is never seedable even if a crash left its status unranked", () => {
+    const { archive } = stocked();
+    archive.mergeEvidence("a", { status: "unranked", priorArt: { status: "collided", artifact: { title: "Held", url: "https://example.com/held" } } });
+    expect(archive.seedable()).not.toContain("a");
+    expect(archive.unranked()).not.toContain("a");
+    expect(archive.champions()).not.toContain("a");
   });
 
   test("mergeEvidence never clobbers a probe result written straight to disk", () => {

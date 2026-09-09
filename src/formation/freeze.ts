@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { lstatSync, mkdirSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 import type { GitRunner } from "../build/git";
 import { writeAtomic } from "../core/paths";
 import { hashInput } from "../core/record";
@@ -22,8 +23,78 @@ export interface FreezeOptions {
   afterStep?: (step: number) => void;
 }
 
+export interface FormationApproval {
+  version: 1;
+  ideaId: string;
+  featuresHash: string;
+  specHash: string;
+}
+
 function render(value: unknown): string {
   return `${JSON.stringify(value, null, 2)}\n`;
+}
+
+function regularFileExists(path: string, label: string): boolean {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isFile()) throw new Error(`integrity: ${label} must be a regular file`);
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function ensureRealDirectory(path: string, label: string): void {
+  try {
+    const stat = lstatSync(path);
+    if (!stat.isDirectory()) throw new Error(`integrity: ${label} must be a real directory`);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+    mkdirSync(path, { recursive: true });
+  }
+}
+
+/**
+ * Durable proof that the exact spec and feature plan passed the second critique. The receipt lives
+ * outside the form brain's writable project root, so a merely present features.json cannot pose as
+ * an interrupted freeze after a crash.
+ */
+export function formationApprovalPath(deps: Pick<PhaseDeps, "run">): string {
+  return join(deps.run.dir, "formation.approval.json");
+}
+
+export function writeFormationApproval(
+  deps: Pick<PhaseDeps, "run">,
+  ideaId: string,
+  file: FeaturesFile,
+  specHash: string,
+): FormationApproval {
+  const approval: FormationApproval = { version: 1, ideaId, featuresHash: hashInput(file), specHash };
+  writeAtomic(formationApprovalPath(deps), render(approval));
+  return approval;
+}
+
+export function verifyFormationApproval(
+  deps: Pick<PhaseDeps, "run">,
+  ideaId: string,
+  file: FeaturesFile,
+  specHash: string,
+): FormationApproval {
+  const path = formationApprovalPath(deps);
+  if (!regularFileExists(path, "formation approval")) throw new Error("integrity: formation approval is missing");
+  let value: unknown;
+  try { value = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`integrity: cannot read formation approval: ${(error as Error).message}`); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("integrity: formation approval is malformed");
+  const approval = value as Record<string, unknown>;
+  const changed: string[] = [];
+  if (approval.version !== 1) changed.push("version");
+  if (approval.ideaId !== ideaId) changed.push("ideaId");
+  if (approval.featuresHash !== hashInput(file)) changed.push("featuresHash");
+  if (approval.specHash !== specHash) changed.push("specHash");
+  if (changed.length > 0) throw new Error(`integrity: formation approval mismatch (${changed.join(", ")})`);
+  return approval as unknown as FormationApproval;
 }
 
 function readFeatures(path: string): FeaturesFile {
@@ -77,7 +148,7 @@ export async function freeze(
   throwIfRunCancelled();
   let reconciled = false;
   let file = proposed;
-  if (existsSync(deps.run.features)) {
+  if (regularFileExists(deps.run.features, "authoritative features.json")) {
     file = readFeatures(deps.run.features);
     if (hashInput(file) !== hashInput(proposed)) throw new Error("integrity: authoritative features differ from the plan being frozen");
     reconciled = true;
@@ -86,7 +157,7 @@ export async function freeze(
   throwIfRunCancelled();
 
   let lock = writeAcceptanceLock(file, specHash);
-  if (existsSync(deps.run.acceptanceLock)) {
+  if (regularFileExists(deps.run.acceptanceLock, "acceptance lock")) {
     const held = readLock(deps.run.acceptanceLock);
     let verified;
     try { verified = verifyAcceptanceLock(file, held, specHash); }
@@ -98,15 +169,15 @@ export async function freeze(
   options.afterStep?.(2);
   throwIfRunCancelled();
 
-  if (!existsSync(deps.run.featureState)) writeAtomic(deps.run.featureState, "");
+  if (!regularFileExists(deps.run.featureState, "feature state")) writeAtomic(deps.run.featureState, "");
   else reconciled = true;
   options.afterStep?.(3);
   throwIfRunCancelled();
 
   const project = projectPaths(deps.run.project);
-  mkdirSync(project.repo, { recursive: true });
-  mkdirSync(project.checksDir, { recursive: true });
-  mkdirSync(project.blockedDir, { recursive: true });
+  ensureRealDirectory(project.repo, "project repository");
+  ensureRealDirectory(project.checksDir, "project checks directory");
+  ensureRealDirectory(project.blockedDir, "project blocked directory");
   await git.init(project.repo);
   options.afterStep?.(4);
   throwIfRunCancelled();

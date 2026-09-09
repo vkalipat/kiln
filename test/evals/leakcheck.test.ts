@@ -1,23 +1,13 @@
 import { describe, expect, test } from "bun:test";
-import { lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { buildEvalsManifest } from "../../src/evals/manifest";
 import { leakcheck, sharesWordShingle, wordShingles } from "../../src/evals/leakcheck";
 import { loadSeeds } from "../../src/evals/seeds";
+import { copyFixtureTree } from "../helpers/copy-fixture-tree";
 
 const bundledHome = join(import.meta.dir, "../..");
-
-/** Avoid macOS clonefileat: under parallel Bun workers cpSync can block here for tens of seconds. */
-function copyFixtureTree(source: string, target: string): void {
-  mkdirSync(target, { recursive: true });
-  for (const name of readdirSync(source)) {
-    const from = join(source, name); const to = join(target, name); const stat = lstatSync(from);
-    if (stat.isDirectory()) copyFixtureTree(from, to);
-    else if (stat.isFile()) writeFileSync(to, readFileSync(from));
-    else throw new Error(`fixture source must contain only real files and directories: ${from}`);
-  }
-}
 
 function fixture(): string {
   const home = mkdtempSync(join(tmpdir(), "kiln-leaks-"));

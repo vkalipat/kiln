@@ -41,7 +41,7 @@ describe("runCritique", () => {
     const s = setup(model, { modelsOn: (role, provider, exclude) => { calls.push({ role, provider, exclude }); return { model: model as never, ref: `${provider}/critic` }; } });
     const result = await runCritique(s.deps, options());
     expect(result).toMatchObject({ verdict: "ok", crossProvider: true });
-    expect(calls).toEqual([{ role: "critic", provider: "other", exclude: undefined }]);
+    expect(calls).toEqual([{ role: "critic", provider: "other", exclude: "producer/brain" }]);
     expect((seen.tools ?? []).map((tool: { name: string }) => tool.name)).toEqual(["critique"]);
     const system = (seen.systemPrompt ?? []).join("\n");
     for (const text of ["SPEC-ONLY", "FEATURES-ONLY", "DOSSIER-ONLY", "BRIEF-ONLY"]) expect(system).toContain(text);
@@ -58,19 +58,47 @@ describe("runCritique", () => {
     expect(calls).toEqual(["producer:producer/brain"]);
   });
 
-  test("tries only the one otherProvider policy choice before same-provider fallback", async () => {
+  test("tries every other provider before same-provider fallback", async () => {
     const model = createMockModel({ id: "critic", responses: [verdict()] as never }); const calls: string[] = [];
     const s = setup(model, {
       availableProviders: new Set(["producer", "other-one", "other-two"]),
       modelsOn: (_role, provider, exclude) => {
         calls.push(`${provider}:${exclude ?? ""}`);
         if (provider === "other-one") throw new NoModelError("first other unavailable");
-        if (provider === "other-two") throw new Error("the second alternative must not be scanned");
+        if (provider === "other-two") return { model: model as never, ref: "other-two/critic" };
         return { model: model as never, ref: "producer/critic" };
       },
     });
-    expect((await runCritique(s.deps, options())).crossProvider).toBe(false);
-    expect(calls).toEqual(["other-one:", "producer:producer/brain"]);
+    expect((await runCritique(s.deps, options())).crossProvider).toBe(true);
+    expect(calls).toEqual(["other-one:producer/brain", "other-two:producer/brain"]);
+  });
+
+  test("tries a later provider when a resolver violates producer-model exclusion", async () => {
+    const model = createMockModel({ id: "critic", responses: [verdict()] as never }); const calls: string[] = [];
+    const s = setup(model, {
+      availableProviders: new Set(["producer", "broken", "healthy"]),
+      modelsOn: (_role, provider, exclude) => {
+        calls.push(`${provider}:${exclude ?? ""}`);
+        if (provider === "broken") return { model: model as never, ref: "producer/brain" };
+        if (provider === "healthy") return { model: model as never, ref: "healthy/critic" };
+        throw new NoModelError("producer fallback must not run");
+      },
+    });
+    expect((await runCritique(s.deps, options())).crossProvider).toBe(true);
+    expect(calls).toEqual(["broken:producer/brain", "healthy:producer/brain"]);
+  });
+
+  test("does not reuse one model identity through an alternate provider transport", async () => {
+    const model = createMockModel({ id: "critic", responses: [verdict()] as never }); const calls: string[] = [];
+    const s = setup(model, {
+      availableProviders: new Set(["openai-codex", "openai"]),
+      modelsOn: (_role, provider) => {
+        calls.push(provider);
+        return { model: model as never, ref: provider === "openai" ? "openai/shared-model" : "openai-codex/distinct-critic" };
+      },
+    });
+    expect((await runCritique(s.deps, { ...options(), brainRef: "openai-codex/shared-model" })).crossProvider).toBe(false);
+    expect(calls).toEqual(["openai", "openai-codex"]);
   });
 
   test("fails typed when no independent admitted critic exists", async () => {

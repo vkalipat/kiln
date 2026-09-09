@@ -94,6 +94,7 @@ async function abortable<T>(work: Promise<T>, signal?: AbortSignal): Promise<T> 
 export class AuthStore {
   private creds: Record<string, StoredCredential> = {};
   private readonly oauthResolutions = new Map<string, Promise<string | undefined>>();
+  private readonly revisions = new Map<string, number>();
   private readonly deps: AuthDeps;
 
   constructor(
@@ -117,10 +118,35 @@ export class AuthStore {
     }
   }
 
-  private save(): void {
+  private persisted(): Record<string, StoredCredential> | undefined {
+    if (!existsSync(this.path)) return {};
+    try {
+      const parsed: unknown = JSON.parse(readFileSync(this.path, "utf8"));
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) return undefined;
+      return Object.fromEntries(Object.entries(parsed).filter(([provider, credential]) => validCredential(provider, credential)));
+    } catch { return undefined; }
+  }
+
+  private writeProvider(provider: string, credential: StoredCredential | undefined): void {
+    // Re-read before each provider-scoped mutation so a long-lived second AuthStore cannot erase
+    // unrelated credentials written since it was constructed.
+    const next = { ...(this.persisted() ?? this.creds) };
+    if (credential) next[provider] = credential; else delete next[provider];
+    this.creds = next;
     // The mode is applied to the temp file before the rename, so the credential is never
     // world-readable, not even for the instant between write and chmod.
     writeAtomic(this.path, `${JSON.stringify(this.creds, null, 2)}\n`, { mode: AUTH_FILE_MODE });
+  }
+
+  private bump(provider: string): void {
+    this.revisions.set(provider, (this.revisions.get(provider) ?? 0) + 1);
+  }
+
+  private replaceResolved(provider: string, expected: StoredCredential, credential: StoredCredential, revision: number): boolean {
+    const current = this.persisted()?.[provider];
+    if ((this.revisions.get(provider) ?? 0) !== revision || JSON.stringify(current) !== JSON.stringify(expected)) return false;
+    this.writeProvider(provider, credential);
+    return true;
   }
 
   providers(): string[] {
@@ -141,8 +167,8 @@ export class AuthStore {
   }
 
   set(cred: StoredCredential): void {
-    this.creds[cred.provider] = cred;
-    this.save();
+    this.bump(cred.provider);
+    this.writeProvider(cred.provider, cred);
   }
 
   setApiKey(provider: string, key: string): StoredCredential {
@@ -154,8 +180,8 @@ export class AuthStore {
   }
 
   remove(provider: string): void {
-    delete this.creds[provider];
-    this.save();
+    this.bump(provider);
+    this.writeProvider(provider, undefined);
   }
 
   async login(provider: string, ui: LoginUi): Promise<StoredCredential> {
@@ -195,7 +221,7 @@ export class AuthStore {
     if (stored?.type === "oauth") {
       const existing = this.oauthResolutions.get(provider);
       if (existing) return (await existing) ?? env;
-      const pending = this.resolveOAuth(provider, stored);
+      const pending = this.resolveOAuth(provider, stored, this.revisions.get(provider) ?? 0);
       this.oauthResolutions.set(provider, pending);
       try { return (await pending) ?? env; }
       finally { if (this.oauthResolutions.get(provider) === pending) this.oauthResolutions.delete(provider); }
@@ -204,19 +230,22 @@ export class AuthStore {
     return env;
   }
 
-  private async resolveOAuth(provider: string, stored: Extract<StoredCredential, { type: "oauth" }>): Promise<string | undefined> {
+  private async resolveOAuth(provider: string, stored: Extract<StoredCredential, { type: "oauth" }>, revision: number): Promise<string | undefined> {
     try {
       const { type: _type, provider: _provider, ...rest } = stored;
       let oauth = rest as OAuthCredentials;
+      let expected: StoredCredential = stored;
       const now = this.deps.now ?? Date.now;
       if (now() >= oauth.expires - REFRESH_BUFFER_MS) {
         oauth = { ...oauth, ...await this.deps.refreshOAuthToken(provider, oauth) };
-        this.creds[provider] = { type: "oauth", provider, ...oauth }; this.save();
+        const refreshed: StoredCredential = { type: "oauth", provider, ...oauth };
+        if (!this.replaceResolved(provider, expected, refreshed, revision)) return undefined;
+        expected = refreshed;
       }
       const result = await this.deps.getOAuthApiKey(provider, { [provider]: oauth });
       if (!result) return undefined;
       const merged = { ...oauth, ...result.newCredentials };
-      this.creds[provider] = { type: "oauth", provider, ...merged }; this.save();
+      if (!this.replaceResolved(provider, expected, { type: "oauth", provider, ...merged }, revision)) return undefined;
       return result.apiKey;
     } catch {
       // A transient refresh/exchange failure never deletes the durable credential.

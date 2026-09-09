@@ -25,7 +25,10 @@ export function parseModelRef(ref: string): { provider: string; modelId: string 
 
 /** Look up a bundled catalog model. `getBundledModel` never throws for an unknown provider/id — it returns `undefined`. */
 function catalogModel(provider: string, modelId: string): Model | undefined {
-  return getBundledModel(provider as GeneratedProvider, modelId) ?? undefined;
+  const model = getBundledModel(provider as GeneratedProvider, modelId) ?? undefined;
+  // Every harness seat receives tools. Catalog entries that explicitly disable them can produce
+  // text, but cannot satisfy Kiln's decision, research, or delivery contracts.
+  return model?.supportsTools === false || model?.toolMode === "code_mode_only" ? undefined : model;
 }
 
 export async function availableProviders(auth: AuthStore, cfg: KilnConfig): Promise<Set<string>> {
@@ -67,12 +70,13 @@ export function resolveRole(role: Role, cfg: KilnConfig, available: Set<string>)
  */
 export function resolveRoleOn(role: Role, provider: string, cfg: KilnConfig, available: ReadonlySet<string>, excludeRef?: string): { model: Model; ref: string } {
   const tried: string[] = [];
+  const excluded = excludeRef ? parseModelRef(excludeRef) : undefined;
   if (available.has(provider)) {
     for (const ref of cfg.roles[role]) {
       const parsed = parseModelRef(ref);
       if (parsed.provider !== provider) continue;
       tried.push(ref);
-      if (ref === excludeRef) continue;
+      if (excluded && parsed.modelId === excluded.modelId && providerVendor(parsed.provider) === providerVendor(excluded.provider)) continue;
       const model = catalogModel(provider, parsed.modelId);
       if (model) return { model, ref };
     }
@@ -83,10 +87,17 @@ export function resolveRoleOn(role: Role, provider: string, cfg: KilnConfig, ava
   );
 }
 
-/** Prefers a provider different from `provider`; falls back to `provider` itself if it's the only one available. */
+/** Provider identity for review independence; API and Codex are transports for the same vendor. */
+export function providerVendor(provider: string): string {
+  return provider === "openai-codex" ? "openai" : provider;
+}
+
+/** Prefers a different vendor, then the exact provider, then an alternate transport as last resort. */
 export function otherProvider(provider: string, available: Set<string>): string | undefined {
-  for (const p of available) if (p !== provider) return p;
-  return available.has(provider) ? provider : undefined;
+  for (const candidate of available) if (providerVendor(candidate) !== providerVendor(provider)) return candidate;
+  if (available.has(provider)) return provider;
+  for (const candidate of available) if (providerVendor(candidate) === providerVendor(provider)) return candidate;
+  return undefined;
 }
 
 /**

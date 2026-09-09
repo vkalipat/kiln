@@ -130,6 +130,15 @@ describe("assignIslands", () => {
     expect(plans.every((p) => !p.cheap)).toBe(true);
   });
 
+  test("disables a judge-only cheap seat when a non-judge generator exists", () => {
+    const plans = assignIslands(1, cfg, PLAYBOOK, "a/judge", {
+      generator: choices("b/generator"),
+      cheap: choices("a/judge"),
+    });
+    expect(plans.map((p) => p.ref)).toEqual(["b/generator", "b/generator", "b/generator"]);
+    expect(plans.every((p) => !p.cheap)).toBe(true);
+  });
+
   test("rounds after the first rotate through the mutation operators without repeating one", () => {
     expect(assignIslands(2, cfg, PLAYBOOK, "a/strong", models).map((p) => p.operator?.id)).toEqual(["M1", "M2", "M3"]);
     expect(assignIslands(3, cfg, PLAYBOOK, "a/strong", models).map((p) => p.operator?.id)).toEqual(["M4", "M5", "M1"]);
@@ -158,6 +167,16 @@ describe("assignIslands", () => {
     expect(events).toHaveLength(3);
     expect(events.map((e) => (e.t === "island.assign" ? e.operator : undefined))).toEqual(["M1", "M2", "M3"]);
     expect(events.map((e) => (e.t === "island.assign" ? e.model : ""))).toEqual(["b/strong", "b/cheap", "b/strong"]);
+  });
+
+  test("resume fills assignment records missing after a partial journal write", () => {
+    const { record } = setup([]);
+    const plans = assignIslands(2, cfg, PLAYBOOK, "a/strong", models);
+    recordIslandAssignments(record, plans.slice(0, 1));
+    recordIslandAssignments(record, plans);
+    recordIslandAssignments(record, plans);
+    const events = record.read().filter((e) => e.t === "island.assign" && e.round === 2);
+    expect(events.map((e) => e.t === "island.assign" ? e.island : 0)).toEqual([1, 2, 3]);
   });
 });
 
@@ -200,6 +219,12 @@ describe("validateBatch", () => {
 
   test("minUnder: 0 turns the distribution rule off for the second batch", () => {
     const c = validateBatch(batch(6, 5, 5), { count: 5, minUnder: 0, axes: AXES });
+    expect(c.problems).toEqual([]);
+    expect(c.bounded).toBe(true);
+  });
+
+  test("a focused three-idea batch keeps one plausible slot in its probability distribution", () => {
+    const c = validateBatch(batch(1, 3, 1), { count: 3, axes: AXES });
     expect(c.problems).toEqual([]);
     expect(c.bounded).toBe(true);
   });
@@ -284,6 +309,38 @@ describe("runIsland", () => {
     expect(r.error).toBeDefined();
     expect(r.batches).toHaveLength(1);
     expect(r).toMatchObject({ stopped: "error", errorStatus: 503, errorId: "req-island" });
+  });
+
+  test("a model refusal ends the island instead of committing empty successful batches", async () => {
+    const model = createMockModel({ id: "refusing-island", cost: COST, responses: [{
+      stopReason: "error",
+      errorMessage: "request refused",
+      stopDetails: { type: "refusal", category: "safety" },
+      usage: USAGE,
+    }] as never });
+    const { deps } = setup([]);
+    const r = await runIsland(deps, plan(model), INPUTS);
+    expect(r).toMatchObject({ stopped: "refused", error: "request refused" });
+    expect(r.batches).toEqual([]);
+    expect(r.raw).not.toContain("kiln batch");
+  });
+
+  test("caps an over-generated repaired batch before downstream work is derived", async () => {
+    const { deps, model } = setup([batch(1, 8, 2), batch(1, 8, 2), batch(9, 5, 5)]);
+    const r = await runIsland(deps, plan(model), INPUTS);
+    expect(r.error).toBeUndefined();
+    expect(r.batches[0]).toHaveLength(5);
+    expect(deriveIdeas(r.raw, 1, 1, AXES)).toHaveLength(10);
+    expect(r.bounded[0]).toBe(false);
+  });
+
+  test("fails verification when required dossier fields remain missing after the re-ask", async () => {
+    const invalid = [idea(1, { drop: "Mechanism" }), batch(2, 4, 0)].join("\n");
+    const { deps, model } = setup([invalid, invalid]);
+    const r = await runIsland(deps, plan(model), INPUTS);
+    expect(r.stopped).toBe("verify");
+    expect(r.error).toContain("missing");
+    expect(r.raw).not.toContain("kiln batch");
   });
 
   test("surfaces context pressure from any batch", async () => {

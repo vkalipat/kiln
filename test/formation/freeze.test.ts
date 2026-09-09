@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel } from "@oh-my-pi/pi-ai";
@@ -8,7 +8,7 @@ import { Limiter } from "../../src/core/limiter";
 import { hashInput, RunRecord } from "../../src/core/record";
 import { createRun } from "../../src/core/run";
 import { RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
-import { freeze } from "../../src/formation/freeze";
+import { formationApprovalPath, freeze, verifyFormationApproval, writeFormationApproval } from "../../src/formation/freeze";
 import type { FeaturesFile } from "../../src/formation/features";
 import { writeAcceptanceLock } from "../../src/formation/lock";
 import { materializeProjectPath } from "../../src/formation/paths";
@@ -41,6 +41,42 @@ function assertComplete(s: ReturnType<typeof setup>) {
 }
 
 describe("freeze", () => {
+  test("formation approval binds the exact idea, feature plan and spec", () => {
+    const s = setup();
+    const approval = writeFormationApproval(s.deps, "idea-a", s.file, "spec-hash");
+    expect(JSON.parse(readFileSync(formationApprovalPath(s.deps), "utf8"))).toEqual(approval);
+    expect(verifyFormationApproval(s.deps, "idea-a", s.file, "spec-hash")).toEqual(approval);
+
+    const changed = structuredClone(s.file);
+    changed.features[0]!.description = "not critic approved";
+    expect(() => verifyFormationApproval(s.deps, "idea-a", changed, "spec-hash")).toThrow(/featuresHash/);
+    expect(() => verifyFormationApproval(s.deps, "idea-b", s.file, "spec-hash")).toThrow(/ideaId/);
+    expect(() => verifyFormationApproval(s.deps, "idea-a", s.file, "other-spec")).toThrow(/specHash/);
+    writeFileSync(formationApprovalPath(s.deps), "not-json");
+    expect(() => verifyFormationApproval(s.deps, "idea-a", s.file, "spec-hash")).toThrow(/cannot read formation approval/);
+  });
+
+  test("refuses non-file durable state and symlinked project infrastructure", async () => {
+    const cases: Array<{ label: string; corrupt: (s: ReturnType<typeof setup>) => void }> = [
+      { label: "features directory", corrupt: (s) => { mkdirSync(s.run.features); } },
+      { label: "lock directory", corrupt: (s) => { mkdirSync(s.run.acceptanceLock); } },
+      { label: "state directory", corrupt: (s) => { mkdirSync(s.run.featureState); } },
+      { label: "repo file", corrupt: (s) => { writeFileSync(s.project.repo, "not a directory"); } },
+      { label: "checks symlink", corrupt: (s) => {
+        const outside = mkdtempSync(join(tmpdir(), "kiln-freeze-outside-"));
+        symlinkSync(outside, s.project.checksDir, "dir");
+      } },
+      { label: "blocked file", corrupt: (s) => { writeFileSync(s.project.blockedDir, "not a directory"); } },
+    ];
+    for (const item of cases) {
+      const s = setup(); item.corrupt(s);
+      await expect(freeze(s.deps, s.file, "spec-hash", s.git), item.label).rejects.toThrow(/integrity:/);
+      expect(s.git.commits, item.label).toHaveLength(0);
+      expect(s.record.read().filter((event) => event.t === "freeze"), item.label).toHaveLength(0);
+    }
+  });
+
+
   test("cancellation after a durable step stops the suffix and remains resumable", async () => {
     const s = setup();
     const control = new RunControl();

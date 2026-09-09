@@ -10,10 +10,34 @@ import {
   planWorkflow,
   saveWorkflowPlan,
   workflowGuidance,
+  workflowInterpretation,
   workflowPath,
 } from "../../src/workflow/plan";
 
 describe("adaptive workflow planning", () => {
+  test("ordinary requests to write or make an implementation need no delivery flags", () => {
+    for (const seed of ["Write a Python script to convert CSV to JSON", "Make a command-line calculator"]) {
+      const plan = planWorkflow(seed);
+      expect(plan.goal).toBe("deliver");
+      expect(plan.strategy).toEqual({ mode: "direct", research: "none" });
+      expect(compileWorkflow(plan, {}).phases).toEqual(["frame", "form", "build", "reflect"]);
+    }
+    for (const seed of ["Write a plan for a Python script", "Do not write a script; research only", "Make a proposal for a CLI"]) {
+      expect(planWorkflow(seed).goal).toBe("explore");
+    }
+  });
+  test("brief interpretations distinguish delivery, exploration, and missing artifact context", () => {
+    expect(workflowInterpretation(planWorkflow("Build a CSV parser"))).toContain("implementing your supplied concept");
+    expect(workflowInterpretation(planWorkflow("Find a startup idea and ship it"))).toContain("implementation and verification");
+    expect(workflowInterpretation(planWorkflow("Explore startup ideas"))).toContain("exploring and comparing ideas");
+    expect(workflowInterpretation(planWorkflow("A local scheduling service"))).toContain("assumptions and risks");
+    expect(workflowInterpretation(planWorkflow("Fix this repository"))).toContain("need its readable source");
+  });
+  test("a concrete local implementation does not request research merely because it forbids research", () => {
+    const plan = planWorkflow("Create and ship a dependency-free Python CLI to slugify text. No external research, hosted service, installation, or deployment is needed. Use the current directory only.");
+    expect(plan.strategy).toEqual({ mode: "direct", research: "none" });
+    expect(compileWorkflow(plan, {}).phases).toEqual(["frame", "form", "build", "reflect"]);
+  });
   test("treats an ambitious wish as an open-ended search and derives a complete delivery path", () => {
     const plan = planWorkflow("Find an idea that will make me a billionaire and ship it.");
 

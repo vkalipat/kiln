@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, isAbsolute, join, normalize, relative, resolve } from "node:path";
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createBrain } from "../brain/agent";
@@ -10,6 +10,7 @@ import { runProcess } from "../core/process";
 import type { RunRecord } from "../core/record";
 import type { RunPaths } from "../core/run";
 import { throwIfRunCancelled } from "../core/run-control";
+import { classifyFailure, type FailureClass } from "../core/failure";
 import { redactEnv } from "../core/secrets";
 import type { PhaseDeps } from "../phases/frame";
 import { effortFor } from "../providers/models";
@@ -78,6 +79,8 @@ export interface ProbeResult {
   /** The prober's own failure text when no spec could be written. */
   error?: string;
   costUsd?: number;
+  /** A model worker failed before producing semantic probe evidence; callers must not persist it as not-probeable. */
+  workerFailure?: FailureClass;
 }
 
 export function probeDir(run: RunPaths, ideaId: string): string {
@@ -124,6 +127,18 @@ export function checkNeeds(needs: string[], opts: { env?: Record<string, string 
 
 function tail(text: string): string {
   return text.length <= TAIL_CHARS ? text : text.slice(text.length - TAIL_CHARS);
+}
+
+function refuseSymlinkComponents(base: string, target: string): void {
+  const rel = relative(base, target);
+  const parts = rel === "" ? [] : rel.split(/[\\/]/);
+  let current = base;
+  for (const part of ["", ...parts]) {
+    if (part) current = join(current, part);
+    if (existsSync(current) && lstatSync(current).isSymbolicLink()) {
+      throw new Error(`materialize refused symbolic link: ${current}`);
+    }
+  }
 }
 
 export { predicateMatches, type Predicate } from "../core/predicate";
@@ -175,7 +190,9 @@ export async function runProbe(run: RunPaths, spec: ProbeSpec, cfg: { timeoutSec
       const target = resolve(dir, f.path);
       const rel = relative(dir, target);
       if (rel.startsWith("..") || isAbsolute(rel)) throw new Error(`file path ${f.path} would escape the probe directory`);
+      refuseSymlinkComponents(dir, target);
       mkdirSync(dirname(target), { recursive: true });
+      refuseSymlinkComponents(dir, target);
       writeFileSync(target, f.content);
     }
   } catch (e) {
@@ -199,7 +216,7 @@ export async function runProbe(run: RunPaths, spec: ProbeSpec, cfg: { timeoutSec
 }
 
 /** Ask the prober role for a spec; the dossier is all it sees (never the archive standing). */
-export async function writeProbe(deps: PhaseDeps, dossier: Dossier, _evidence?: Evidence): Promise<{ spec?: ProbeSpec; costUsd: number; error?: string }> {
+export async function writeProbe(deps: PhaseDeps, dossier: Dossier, _evidence?: Evidence): Promise<{ spec?: ProbeSpec; costUsd: number; error?: string; stopped?: "done" | "turn_cap" | "usd_cap" | "exit" | "error" | "refused"; workerFailure?: FailureClass }> {
   const { model } = deps.models("prober");
   let captured: ProbeSpec | undefined;
   let problem: string | undefined;
@@ -235,11 +252,23 @@ export async function writeProbe(deps: PhaseDeps, dossier: Dossier, _evidence?: 
     turnCap: 2,
     effort: effortFor(deps.cfg, "prober", model),
     streamFn: deps.streamFn,
+    terminalTools: ["probe_spec"],
     shaping: { cfg: deps.cfg, runId: deps.run.id },
   });
-  const { costUsd } = await brain.run("Write the cheapest probe that could plainly fail for this idea's testable claim. Call probe_spec.");
-  if (captured) return { spec: captured, costUsd };
-  return { costUsd, error: problem ? `invalid probe spec: ${problem}` : "prober did not call probe_spec" };
+  const result = await brain.run("Write the cheapest probe that could plainly fail for this idea's testable claim. Call probe_spec.");
+  if (captured) return { spec: captured, costUsd: result.costUsd, stopped: result.stopped };
+  const category = result.stopDetails?.category?.trim();
+  const error = problem ? `invalid probe spec: ${problem}`
+    : result.stopped === "refused" ? `refused${category ? `:${category}` : ""}`
+    : result.stopped === "error" ? result.error ?? "prober provider error"
+    : result.stopped === "turn_cap" || result.stopped === "usd_cap" ? `prober ${result.stopped}`
+    : "prober did not call probe_spec";
+  const workerFailure = result.stopped === "done" ? undefined
+    : problem ? "verify"
+    : result.stopped === "refused" ? "refusal"
+    : result.stopped === "turn_cap" || result.stopped === "usd_cap" ? "budget"
+    : classifyFailure({ message: error, status: result.errorStatus, stopDetails: result.stopDetails });
+  return { costUsd: result.costUsd, error, stopped: result.stopped, workerFailure };
 }
 
 export interface ProbeBatchOptions {
@@ -280,7 +309,10 @@ export async function runProbeBatch(deps: PhaseDeps, ideas: { dossier: Dossier; 
     const job = limiter
       .run(async () => {
         const w = await writeProbe(deps, dossier, evidence);
-        if (!w.spec) return { ...finish(deps.run, deps.record, { ideaId: id, status: "not_run", reason: "not_probeable", durationMs: 0 }, true), error: w.error, costUsd: w.costUsd };
+        if (!w.spec) {
+          if (w.workerFailure) return { ideaId: id, status: "not_run" as const, reason: `worker_${w.stopped ?? "error"}`, durationMs: 0, error: w.error, costUsd: w.costUsd, workerFailure: w.workerFailure };
+          return { ...finish(deps.run, deps.record, { ideaId: id, status: "not_run", reason: "not_probeable", durationMs: 0 }, true), error: w.error, costUsd: w.costUsd };
+        }
         // Fresh snapshot, taken as late as possible: a stale one from enqueue time can no longer
         // be trusted once this idea's slot has actually opened.
         const remainingNowMs = remaining();
@@ -299,6 +331,8 @@ export async function runProbeBatch(deps: PhaseDeps, ideas: { dossier: Dossier; 
       });
     jobs.push(job);
   }
-  await Promise.all(jobs);
+  const settled = await Promise.allSettled(jobs);
+  const rejected = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+  if (rejected) throw rejected.reason;
   return out;
 }

@@ -89,6 +89,13 @@ describe("schedulePairs", () => {
       }
     }
   });
+
+  test("keeps the minimum-degree guarantee for a dense thirteen-entrant field", () => {
+    const entrants = Array.from({ length: 13 }, (_, i) => `e${String(i).padStart(2, "0")}`);
+    const pairs = schedulePairs({ entrants, pairCap: 65, minComparisons: 10 });
+    expect(pairs).toHaveLength(65);
+    for (const id of entrants) expect(countsOf(pairs)[id]).toBeGreaterThanOrEqual(10);
+  });
   test("never repeats a pair already in the log", () => {
     const entrants = Array.from({ length: 8 }, (_, i) => `e${i}`);
     const existing: [string, string][] = [
@@ -134,6 +141,14 @@ describe("schedulePairs", () => {
     });
     const anchorOnly = pairs.filter(([x, y]) => x.startsWith("a") && y.startsWith("a"));
     expect(anchorOnly).toEqual([]);
+  });
+
+  test("adds a bridge from returning anchors to new entrants even when anchors already meet the minimum", () => {
+    const anchors = ["a1", "a2", "a3", "a4"];
+    const fresh = Array.from({ length: 12 }, (_, i) => `n${i + 1}`);
+    const existing = [["a1", "a2"], ["a1", "a3"], ["a1", "a4"], ["a2", "a3"], ["a2", "a4"], ["a3", "a4"]] as [string, string][];
+    const pairs = schedulePairs({ entrants: [...anchors, ...fresh], anchors, existing, pairCap: 24, minComparisons: 3 });
+    expect(pairs.some(([x, y]) => x.startsWith("a") !== y.startsWith("a"))).toBe(true);
   });
   test("stops at the cap and returns nothing when there is nothing to schedule", () => {
     const entrants = Array.from({ length: 10 }, (_, i) => `e${i}`);

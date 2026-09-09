@@ -42,3 +42,17 @@ export function toolExcerpt(result: unknown, maxChars = 400): string | undefined
 export function fallbackWasServed(message: Pick<AssistantMessage, "model" | "content">, requestedModel: string): boolean {
   return message.model !== requestedModel || message.content.some((block) => block.type === "fallback");
 }
+
+/**
+ * Pi prices a fallback response from its per-attempt usage and served model. Top-level token
+ * totals cannot reconstruct waived attempts or fallback credits, so only malformed fallback
+ * telemetry may fall back to requested-model catalog pricing.
+ */
+export function fallbackCostUsd(
+  message: Pick<AssistantMessage, "model" | "content" | "usage">,
+  requestedModel: string,
+): number | undefined {
+  if (!fallbackWasServed(message, requestedModel)) return undefined;
+  const total = message.usage.cost?.total;
+  return typeof total === "number" && Number.isFinite(total) && total >= 0 ? total : undefined;
+}

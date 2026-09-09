@@ -23,6 +23,8 @@ import type { runIdeate } from "../phases/ideate";
 import type { runBare } from "../ideation/bare";
 import type { runCheckpoint } from "../phases/checkpoint";
 import type { AuthStore } from "../providers/auth";
+import { initHome } from "../core/home";
+import { kilnHome } from "../core/paths";
 
 export interface CliIo {
   write: (s: string) => void;
@@ -35,7 +37,9 @@ export interface CliIo {
 /** Test/embedding seams: skip network auth and role resolution, and never block on real stdin. */
 export interface CliDeps {
   /** Staged evaluators disable this because their per-seat effort table is already frozen. */
-  runtimeEffort?: { enabled?: boolean; profile?: string };
+  runtimeEffort?: { enabled?: boolean; profile?: string; frozen?: Partial<Record<Role, string | null>> };
+  /** Exercise task-adaptive orchestration with injected provider models in offline integrations. */
+  adaptiveWorkflow?: boolean;
   /** Eval runner injection and vehicle seams; production defaults remain available. */
   evals?: EvalsCommandDeps;
   /** Evolution lifecycle injection seams. */
@@ -111,6 +115,9 @@ export async function main(
     return 0;
   }
   const { cmd, flags } = parseArgs(argv);
+  if (cmd[0] !== "evals" && cmd[0] !== "evolve") {
+    initHome(typeof flags.home === "string" ? flags.home : kilnHome(), { plugAndPlay: true });
+  }
   if (cmd.length === 0 || cmd[0] === "tui") return tuiCommand(flags, io, deps);
   if (cmd[0] === "evals") return evalsCommand(cmd.slice(1), flags, io, { ...(deps.evals ?? {}), cli: deps.evals?.cli ?? deps });
   if (cmd[0] === "evolve") return evolveCommand(cmd.slice(1), flags, io, { ...(deps.evolve ?? {}), cli: deps.evolve?.cli ?? deps });

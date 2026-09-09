@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { createBrain, type BrainOptions, type BrainResult } from "../brain/agent";
+import { clarificationContext, clarificationPath } from "../brain/clarification";
 import { loadPlaybook, loadPrompt, playbookSection } from "../brain/prompts";
 import { brainTools, type ExitKind, type ToolContext } from "../brain/tools";
 import type { KilnConfig, Phase, Role } from "../core/config";
@@ -15,7 +16,7 @@ import type { ProbeSpec } from "../ideation/probe";
 import { effortFor } from "../providers/models";
 import type { WorkflowPlan } from "../workflow/plan";
 import { BRIEF_SECTIONS, bullets, frameContract, parseAxes, sections, shapeHash, validateBrief, type Axis, type BriefFacts } from "./contracts";
-import { runValidatedFile } from "./shared";
+import { createDisposableDeadline, remainingRunWallMs, runValidatedFile, type ValidatedFileResult } from "./shared";
 
 export interface PhaseDeps {
   home: string;
@@ -116,11 +117,35 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
   throwIfRunCancelled();
   const turnCap = d.cfg.budgets.turns.frame;
   d.record.append({ t: "phase.start", phase: "frame" });
+  const finish = (res: PhaseResult, parsed?: ParsedBrief, message?: string): PhaseResult => {
+    d.record.append({ t: "phase.end", phase: "frame", outcome: res.outcome });
+    const usdSpent = d.record.costUsd();
+    // The shape is frozen here and nowhere else: later phases refuse to start on a mismatch.
+    if (res.outcome === "ok") writeStatus(d.run, { phase: "discover", state: "running", outcome: undefined, pausedReason: undefined, wakeAt: undefined, usdSpent, shape: parsed?.shape, shapeHash: parsed ? shapeHash(parsed) : undefined });
+    else if (res.outcome === "honest_exit") writeStatus(d.run, { state: "done", usdSpent, outcome: { kind: "honest_exit", exitKind: res.kind, reasons: res.reasons } });
+    else if (res.outcome === "failed") writeStatus(d.run, { state: "failed", usdSpent, outcome: { kind: "failure", failureClass: res.failureClass, message: res.message } });
+    else writeStatus(d.run, { state: "stopped", usdSpent, outcome: { kind: "stopped", stopKind: res.stopKind, truncatedRound: res.truncatedRound, frontierEmpty: res.frontierEmpty, budgetTargetUsd: res.budgetTargetUsd, wallTargetSeconds: res.wallTargetSeconds, ...(message ? { message } : {}) } });
+    return res;
+  };
+  if (d.record.costUsd() >= d.cfg.budgets.usd) {
+    const message = `run budget target $${d.cfg.budgets.usd.toFixed(2)} is exhausted before frame dispatch`;
+    d.record.append({ t: "note", text: `${message}; no model call was attempted.` });
+    return finish({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: d.cfg.budgets.usd }, undefined, message);
+  }
+  const remainingWallMs = remainingRunWallMs(d.cfg.budgets, d.record);
+  if (remainingWallMs <= 0) {
+    const message = `run wall target ${d.cfg.budgets.wallSeconds}s is exhausted before frame dispatch`;
+    d.record.append({ t: "note", text: `${message}; no model call was attempted.` });
+    return finish({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: d.cfg.budgets.wallSeconds }, undefined, message);
+  }
+  const deadline = createDisposableDeadline(remainingWallMs);
+  try {
   let exit: { kind: ExitKind; reasons: string[] } | undefined;
   let exitCorrections = 0;
   const ctx: ToolContext = {
     cwd: d.run.dir,
     roots: [d.run.dir],
+    protectedPaths: [clarificationPath(d.run)],
     run: d.run,
     record: d.record,
     fetchImpl: d.fetchImpl,
@@ -137,56 +162,81 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
   // once it has been narrowed to `undefined`, which would make later `if (exit)` checks unsound.
   const takeExit = (): { kind: ExitKind; reasons: string[] } | undefined => exit;
   const { model } = d.models("brain");
-  const brain = createBrain({
+  let externalSpentUsd = d.record.costUsd();
+  const priorBrainTurns = d.record.read().filter((event) => event.t === "turn" && event.phase === "frame" && event.role === "brain").length;
+  const rawBrain = createBrain({
     model,
     getApiKey: () => d.apiKeyFor(String(model.provider)),
     tools: brainTools(ctx, "frame"),
     systemPrompt: [loadPrompt(d.home, "kernel"), loadPrompt(d.home, "brain"), `## Playbook (frame)\n${playbookSection(loadPlaybook(d.home), "frame")}`],
-    pinned: frameContract(d.run, turnCap, d.workflow),
+    pinned: [frameContract(d.run, turnCap, d.workflow), clarificationContext(d.run)].filter(Boolean).join("\n\n"),
     record: d.record,
     role: "brain",
     phase: "frame",
     turnCap,
+    priorTurns: () => priorBrainTurns,
+    usdCap: d.cfg.budgets.usd,
+    spentUsd: () => externalSpentUsd,
+    signal: deadline.signal,
     effort: effortFor(d.cfg, "brain", model),
     streamFn: d.streamFn,
     onText: d.onText,
     onTool: d.onTool,
     shaping: { cfg: d.cfg, runId: d.run.id },
   });
-  const finish = (res: PhaseResult, parsed?: ParsedBrief): PhaseResult => {
-    d.record.append({ t: "phase.end", phase: "frame", outcome: res.outcome });
-    // The shape is frozen here and nowhere else: later phases refuse to start on a mismatch.
-    if (res.outcome === "ok") writeStatus(d.run, { phase: "discover", shape: parsed?.shape, shapeHash: parsed ? shapeHash(parsed) : undefined });
-    else if (res.outcome === "honest_exit") writeStatus(d.run, { state: "done", outcome: { kind: "honest_exit", exitKind: res.kind, reasons: res.reasons } });
-    else if (res.outcome === "failed") writeStatus(d.run, { state: "failed", outcome: { kind: "failure", failureClass: res.failureClass, message: res.message } });
-    else writeStatus(d.run, { state: "stopped", outcome: { kind: "stopped", stopKind: res.stopKind, truncatedRound: res.truncatedRound, frontierEmpty: res.frontierEmpty } });
-    return res;
+  const brain = {
+    async run(prompt: string): Promise<BrainResult> {
+      const result = await rawBrain.run(prompt);
+      externalSpentUsd += result.costUsd;
+      return result;
+    },
   };
 
   const seed = readFileSync(d.run.seed, "utf8");
-  const v = await runValidatedFile({
-    brain,
-    path: d.run.brief,
-    parse: parseBrief,
-    validate: validateBrief,
-    prompt: `Seed:\n${seed}\nWrite ${d.run.brief} now.`,
-    fix: (problems, path) => `${path} is not usable yet:\n${problems.map((p) => `- ${p}`).join("\n")}\nRewrite the whole file with every required section, fixed.`,
-    halt: (r) => takeExit() !== undefined || stopFailure("frame", turnCap, r) !== undefined,
-  });
+  let v: ValidatedFileResult<ParsedBrief>;
+  try {
+    v = await runValidatedFile({
+      brain,
+      path: d.run.brief,
+      parse: parseBrief,
+      validate: validateBrief,
+      prompt: `Seed:\n${seed}\nWrite ${d.run.brief} now.`,
+      fix: (problems, path) => `${path} is not usable yet:\n${problems.map((p) => `- ${p}`).join("\n")}\nRewrite the whole file with every required section, fixed.`,
+      halt: (r) => takeExit() !== undefined || stopFailure("frame", turnCap, r) !== undefined,
+    });
+  } catch (error) {
+    throwIfRunCancelled();
+    if (deadline.signal.aborted) {
+      const message = `frame reached the run wall target of ${d.cfg.budgets.wallSeconds}s`;
+      return finish({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: d.cfg.budgets.wallSeconds }, undefined, message);
+    }
+    throw error;
+  }
 
   const exited = takeExit();
   if (exited) return finish({ outcome: "honest_exit", ...exited });
   // A dispatch cap prevents another model turn, not acceptance of an artifact already produced.
-  // Keep refusals/errors authoritative; only a turn-cap stop can take this no-call validation path.
-  if (v.result.stopped === "turn_cap" && existsSync(d.run.brief)) {
-    const parsed = parseBrief(readFileSync(d.run.brief, "utf8"));
-    if (validateBrief(parsed).length === 0) {
-      d.record.append({ t: "note", text: "Frame reached its turn cap with a contract-valid brief; accepted the existing artifact without another model call." });
+  // Keep refusals/errors authoritative; only turn/dollar caps can take this no-call path.
+  if ((v.result.stopped === "turn_cap" || v.result.stopped === "usd_cap") && v.parsed !== undefined && v.problems.length === 0) {
+    const parsed = v.parsed;
+    if (existsSync(d.run.brief)) {
+      d.record.append({ t: "note", text: `Frame reached its ${v.result.stopped === "turn_cap" ? "turn" : "dollar"} cap with a contract-valid brief; accepted the existing artifact without another model call.` });
       return finish({ outcome: "ok" }, parsed);
     }
   }
   const stop = stopFailure("frame", turnCap, v.result);
+  if (stop?.outcome === "failed" && stop.failureClass === "transient") {
+    d.record.append({ t: "note", text: `${stop.message}. Frame is resumable; no automatic retry or model substitution was attempted.` });
+    d.onText?.(`\nFrame stopped on a temporary provider error: ${stop.message}. Check connectivity, then explicitly resume this same run.\n`);
+    return finish({ outcome: "stopped", stopKind: "transient" }, undefined, stop.message);
+  }
+  if (stop?.outcome === "failed" && v.result.stopped === "usd_cap") {
+    return finish({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: d.cfg.budgets.usd }, undefined, stop.message);
+  }
   if (stop) return finish(stop);
   if (v.problems.length > 0) return finish({ outcome: "failed", failureClass: "verify", message: `brief is not usable: ${v.problems.join("; ")}` });
   return finish({ outcome: "ok" }, v.parsed);
+  } finally {
+    deadline.dispose();
+  }
 }

@@ -19,9 +19,10 @@ import type { CliDeps } from "../cli/main";
 import type { Metrics } from "../build/metrics";
 import { writeMetrics } from "../build/metrics";
 import type { SeedIdentity } from "./identity";
-import type { EvalCloneAfter, Effort } from "../core/config";
+import type { EvalCloneAfter } from "../core/config";
+import type { EffortName } from "../providers/models";
 
-export interface ResolvedEffort { level: Effort; source: "profile" | "swept" | "config" | "fallback" }
+export interface ResolvedEffort { level: EffortName; source: "profile" | "swept" | "config" | "fallback" }
 
 export interface RunExecutorSpec {
   home: string;

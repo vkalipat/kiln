@@ -11,7 +11,7 @@ import { recorded, type ToolContext } from "../brain/tools";
 import { fail, ok } from "../brain/tools/shape";
 import type { AuditVerdict } from "../core/events";
 import { rethrowIfRunCancelled, throwIfRunCancelled } from "../core/run-control";
-import { effortFor, NoModelError, otherProvider, parseModelRef } from "../providers/models";
+import { effortFor, NoModelError, parseModelRef, providerVendor } from "../providers/models";
 import type { PhaseDeps } from "../phases/frame";
 import type { Feature } from "../formation/features";
 import type { ProjectPaths } from "../formation/paths";
@@ -94,21 +94,41 @@ interface Evidence {
 
 interface SpendLedger { total: number }
 
+/** Turns in the current audit segment that survived a crash before its disposition was durable. */
+function priorAuditorTurns(deps: PhaseDeps, featureId: string, attempt: number): number {
+  const events = deps.record.read();
+  const pick = events.findLast((event) => event.t === "feature.pick" && event.featureId === featureId && event.attempt === attempt);
+  const disposition = events.findLast((event) => event.t === "audit.disposition" && event.featureId === featureId && event.attempt === attempt);
+  const after = Math.max(pick?.seq ?? 0, disposition?.seq ?? 0);
+  return events.filter((event) => event.seq > after && event.t === "turn" && event.role === "auditor" && event.phase === "build").length;
+}
+
+function independentRef(candidate: string, requestedProvider: string, builderRef: string): void {
+  const selected = parseModelRef(candidate);
+  const producer = parseModelRef(builderRef);
+  if (selected.provider !== requestedProvider) throw new NoModelError(`resolver returned ${candidate} outside requested provider ${requestedProvider}`);
+  if (selected.modelId === producer.modelId && providerVendor(selected.provider) === providerVendor(producer.provider)) {
+    throw new NoModelError(`resolver returned producer model identity ${candidate}`);
+  }
+}
+
 function resolveAuditor(deps: PhaseDeps, builderRef: string): ChosenAuditor {
   if (!deps.modelsOn || !deps.availableProviders) throw new NoModelError("auditor requires an admitted provider-restricted model resolver");
   const producer = parseModelRef(builderRef).provider;
   const errors: string[] = [];
-  const other = otherProvider(producer, new Set(deps.availableProviders));
-  if (other && other !== producer) {
+  const alternatives = [...deps.availableProviders]
+    .filter((provider) => provider !== producer)
+    .sort((a, b) => Number(providerVendor(a) === providerVendor(producer)) - Number(providerVendor(b) === providerVendor(producer)));
+  for (const provider of alternatives) {
     try {
-      const seat = deps.modelsOn("auditor", other);
-      if (seat.ref === builderRef) throw new NoModelError(`resolver returned producer ref ${builderRef}`);
+      const seat = deps.modelsOn("auditor", provider, builderRef);
+      independentRef(seat.ref, provider, builderRef);
       return { ...seat, crossProvider: true };
     } catch (error) { errors.push((error as Error).message); }
   }
   try {
     const seat = deps.modelsOn("auditor", producer, builderRef);
-    if (seat.ref === builderRef) throw new NoModelError(`resolver returned producer ref ${builderRef}`);
+    independentRef(seat.ref, producer, builderRef);
     return { ...seat, crossProvider: false };
   } catch (error) { errors.push((error as Error).message); }
   throw new NoModelError(`no independent auditor model available for ${builderRef}: ${errors.join("; ")}`);
@@ -149,6 +169,7 @@ function auditTool(
       : "Record verified and unverified claims, regressions, check quality, and a verdict.",
     parameters: short ? {
       type: "object",
+      additionalProperties: false,
       properties: {
         regressions: { type: "array", items: { type: "string" } },
         nextSessionNotes: { type: "string" },
@@ -156,12 +177,13 @@ function auditTool(
       required: ["regressions", "nextSessionNotes"],
     } : {
       type: "object",
+      additionalProperties: false,
       properties: {
         verified: { type: "array", items: { type: "string" } },
         claimedUnverified: { type: "array", items: { type: "string" } },
         regressions: { type: "array", items: { type: "string" } },
         nextSessionNotes: { type: "string" },
-        checkQuality: { type: "object", properties: { adequate: { type: "boolean" }, reason: { type: "string" } }, required: ["adequate", "reason"] },
+        checkQuality: { type: "object", additionalProperties: false, properties: { adequate: { type: "boolean" }, reason: { type: "string" } }, required: ["adequate", "reason"] },
         verdict: { type: "string", enum: ["agree", "disagree"] },
       },
       required: ["verified", "claimedUnverified", "regressions", "nextSessionNotes", "checkQuality", "verdict"],
@@ -240,6 +262,7 @@ async function collectEvidence(
     pinned: auditContext(feature, check, milestone, previousNotes), record: deps.record, role: "auditor", phase: "build",
     turnCap: check.ok ? deps.cfg.build.auditorTurnCap : deps.cfg.build.auditorFailTurnCap,
     usdCap: deps.cfg.build.auditorUsdCap, spentUsd: () => spend.total, effort,
+    priorTurns: () => priorAuditorTurns(deps, feature.id, context.attempt),
     streamFn: deps.streamFn, onText: deps.onText, onTool: deps.onTool, terminalTools: ["audit"],
     shaping: { cfg: deps.cfg, runId: deps.run.id },
     afterTool: (event) => event.name === "audit",

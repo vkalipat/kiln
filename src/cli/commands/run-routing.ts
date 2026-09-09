@@ -17,7 +17,7 @@ export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnCo
   if (status.state === "running") return { kind: "phase", phase: status.phase };
 
   if (status.state === "paused") {
-    if (status.pausedReason === "user_cancelled") return { kind: "phase", phase: status.phase, wake: true };
+    if (status.pausedReason === "user_cancelled" || status.pausedReason === "provider_unavailable") return { kind: "phase", phase: status.phase, wake: true };
     const wake = status.wakeAt ? Date.parse(status.wakeAt) : Number.POSITIVE_INFINITY;
     if (!Number.isFinite(wake) || wake > nowMs) return { kind: "wait", ...(status.wakeAt ? { wakeAt: status.wakeAt } : {}) };
     return { kind: "phase", phase: status.phase, wake: true };
@@ -34,7 +34,17 @@ export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnCo
   }
 
   const stop = status.outcome?.stopKind;
-  if (status.phase === "discover" && stop === "transient") return { kind: "phase", phase: "discover", wake: true };
+  // Formation validates saved work and bounded downstream headroom before any repair dispatch.
+  if (status.phase === "form" && stop === "budget") return { kind: "phase", phase: "form", wake: true };
+  if ((status.phase === "frame" || status.phase === "discover") && stop === "transient") return { kind: "phase", phase: status.phase, wake: true };
+  if ((status.phase === "frame" || status.phase === "discover") && stop === "budget") {
+    if (increased(cfg.budgets.usd, status.outcome?.budgetTargetUsd)) return { kind: "phase", phase: status.phase, wake: true };
+    return { kind: "stop", message: `${status.phase} budget stop remains at $${cfg.budgets.usd.toFixed(2)}; increase budgets.usd to resume` };
+  }
+  if ((status.phase === "frame" || status.phase === "discover") && stop === "deadline") {
+    if (increased(cfg.budgets.wallSeconds, status.outcome?.wallTargetSeconds)) return { kind: "phase", phase: status.phase, wake: true };
+    return { kind: "stop", message: `${status.phase} deadline remains at ${cfg.budgets.wallSeconds}s; increase budgets.wallSeconds to resume` };
+  }
   if (status.phase === "ideate") {
     if (stop === "rounds" || stop === "stagnant") return { kind: "phase", phase: "checkpoint" };
     if (stop === "stalled") return { kind: "phase", phase: "ideate" };

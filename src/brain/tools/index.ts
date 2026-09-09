@@ -126,8 +126,8 @@ const FACTORIES: Record<string, ToolFactory> = {
 export const BUILDER_TOOL_NAMES: readonly string[] = ["read", "write", "edit", "bash", "search", "exit"];
 
 export const PHASE_TOOLS: Record<Phase, readonly string[]> = {
-  frame: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "note", "ask_user", "exit"],
-  discover: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "scout", "note", "exit"],
+  frame: ["read", "write", "edit", "search", "web_search", "web_fetch", "note", "ask_user", "exit"],
+  discover: ["read", "write", "edit", "search", "web_search", "web_fetch", "scout", "note", "exit"],
   ideate: ["read", "write", "edit", "search", "web_search", "web_fetch", "scout", "probe_request", "note", "exit"],
   form: ["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "note", "exit"],
   build: BUILDER_TOOL_NAMES,

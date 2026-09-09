@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
@@ -71,10 +71,9 @@ function spec(over: Partial<ProbeSpec> = {}): ProbeSpec {
 const probeEvents = (record: RunRecord) => record.read().filter((e) => e.t === "probe") as Array<Extract<import("../../src/core/record").StoredEvent, { t: "probe" }>>;
 const evidenceOf = (run: RunPaths, id: string) => JSON.parse(readFileSync(join(run.ideasDir, `${id}.evidence.json`), "utf8")) as Evidence;
 
-/** Two model responses: the tool call that carries the spec, then the prober's closing text. */
+/** One model response: a valid probe_spec is a terminal structured decision. */
 const proberSays = (args: Record<string, unknown>) => [
   { content: [{ type: "toolCall", name: "probe_spec", arguments: args }] },
-  { content: ["probe written"] },
 ];
 
 const GOOD_ARGS = {
@@ -212,6 +211,20 @@ describe("runProbe", () => {
     expect(existsSync(outside)).toBe(false);
   });
 
+  test("materialization refuses an existing symlink instead of writing outside the probe directory", async () => {
+    const { run, record } = setup();
+    const outside = join(mkdtempSync(join(tmpdir(), "kiln-probe-outside-")), "held.txt");
+    writeFileSync(outside, "held");
+    const dir = probeDir(run, "safe-id");
+    mkdirSync(dir, { recursive: true });
+    symlinkSync(outside, join(dir, "link.txt"));
+    const s = spec({ ideaId: "safe-id", files: [{ path: "link.txt", content: "overwritten" }] });
+    const result = await runProbe(run, s, { timeoutSeconds: 10 }, record);
+    expect(result).toMatchObject({ status: "error" });
+    expect(result.reason).toContain("symbolic link");
+    expect(readFileSync(outside, "utf8")).toBe("held");
+  });
+
   test("a spec whose needs are unmet short-circuits runProbe itself, not just its caller", async () => {
     const { run, record } = setup();
     const s = spec({ needs: ["kiln-no-such-binary-xyz"], command: "echo ran > ran-marker.txt" });
@@ -283,7 +296,7 @@ describe("writeProbe", () => {
     expect(r.spec).toMatchObject({ ideaId: "r2-i1-4", command: "sh check.sh", needs: ["sh"], timeoutSeconds: 20 });
     expect(r.spec!.files).toEqual([{ path: "check.sh", content: "echo hi\n" }]);
     const calls = record.read().filter((e) => e.t === "model.call" && e.role === "prober");
-    expect(calls.length).toBe(2);
+    expect(calls.length).toBe(1);
     expect(r.costUsd).toBe(calls.reduce((s, e) => s + (e.t === "model.call" ? e.costUsd : 0), 0));
     expect(record.read().some((e) => e.t === "turn" && e.role === "prober" && e.phase === "ideate")).toBe(true);
   });
@@ -293,6 +306,13 @@ describe("writeProbe", () => {
     const r = await writeProbe(deps, dossier("r1-i1-1"));
     expect(r.spec).toBeUndefined();
     expect(r.error).toContain("probe_spec");
+  });
+
+  test("a prober refusal is preserved instead of being called semantically not-probeable", async () => {
+    const { deps } = setup([{ stopReason: "error", errorMessage: "request refused", stopDetails: { type: "refusal", category: "safety" } }]);
+    const r = await writeProbe(deps, dossier("r1-i1-1"));
+    expect(r).toMatchObject({ stopped: "refused", workerFailure: "refusal" });
+    expect(r.error).toContain("refused:safety");
   });
 
   test("an invalid spec is rejected with the problem named", async () => {
@@ -321,6 +341,17 @@ describe("runProbeBatch", () => {
     expect(evidenceOf(run, "a2").probe?.status).toBe("pass");
   });
 
+  test("awaits every dispatched sibling before propagating one job's exception", async () => {
+    const { deps } = setup([
+      ...proberSays({ ...GOOD_ARGS, command: "sleep 0.2; echo hi" }),
+      ...proberSays({ ...GOOD_ARGS, command: "sleep 0.2; echo hi" }),
+    ], 2);
+    deps.onProbePreview = async (s: ProbeSpec) => { if (s.ideaId === "a1") throw new Error("preview failed"); };
+    await expect(runProbeBatch(deps, [{ dossier: dossier("a1") }, { dossier: dossier("a2") }], { roundWallSeconds: 600 })).rejects.toThrow("preview failed");
+    expect(deps.limiter.active).toBe(0);
+    expect(deps.limiter.pending).toBe(0);
+  });
+
   test("ideas past the round wall clock are not_run with reason budget and never reach the prober", async () => {
     const { deps, run, record } = setup(proberSays({ ...GOOD_ARGS, command: "echo hi" }));
     let t = 0;
@@ -339,8 +370,8 @@ describe("runProbeBatch", () => {
     ]);
     expect(evidenceOf(run, "b3").probe).toMatchObject({ status: "not_run", reason: "budget" });
     expect(probeEvents(record).filter((e) => e.status === "not_run").length).toBe(2);
-    // Only the first idea's prober ran: two model calls, not six.
-    expect(record.read().filter((e) => e.t === "model.call").length).toBe(2);
+    // Only the first idea's prober ran: one terminal decision call, not three.
+    expect(record.read().filter((e) => e.t === "model.call").length).toBe(1);
   });
 
   test("a declared dependency that is absent makes the probe not_run, and nothing is executed", async () => {
@@ -477,6 +508,6 @@ describe("runProbeBatch", () => {
     // h2's prober DID run — its slot opened while the enqueue-time snapshot still looked fine, so a
     // stale clamp (the round-1 bug) would have dispatched it to runProbe instead of catching this.
     // It is the fresh pre-runProbe recheck, not the enqueue-time one, that stops it here.
-    expect(record.read().filter((e) => e.t === "model.call").length).toBe(4);
+    expect(record.read().filter((e) => e.t === "model.call").length).toBe(2);
   });
 });

@@ -1,5 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { PairOrder } from "../core/events";
+import type { FailureClass } from "../core/failure";
 import type { Limiter } from "../core/limiter";
 import { appendLine } from "../core/paths";
 import type { RunPaths } from "../core/run";
@@ -67,6 +68,13 @@ export interface TournamentInput {
   onLine?: (line: TournamentRecord) => void;
 }
 
+export class TournamentVerdictError extends Error {
+  constructor(readonly failureClass: FailureClass, message: string) {
+    super(message);
+    this.name = "TournamentVerdictError";
+  }
+}
+
 /** Judge every pair in both orders, skipping lines already on disk; returns this round's lines. */
 export async function runTournament(deps: JudgeDeps, input: TournamentInput): Promise<TournamentRecord[]> {
   const existing = readTournament(deps.run);
@@ -75,11 +83,16 @@ export async function runTournament(deps: JudgeDeps, input: TournamentInput): Pr
   let seq = existing.reduce((m, l) => Math.max(m, l.seq), 0);
   const results: TournamentRecord[] = machine.filter((line) => line.round === input.round);
   const jobs: Promise<void>[] = [];
+  const unusable: { key: string; failureClass: FailureClass; reason: string }[] = [];
   const runOne = async (a: string, b: string, order: PairOrder) => {
     const ra = input.renders[a];
     const rb = input.renders[b];
     if (!ra || !rb) throw new Error(`missing render for ${!ra ? a : b}`);
     const v = await judgePair(deps, input.criteria, ra.text, rb.text, order);
+    if (v.evidence !== undefined && v.evidence !== "verdict") {
+      unusable.push({ key: `${a}|${b}|${order}`, failureClass: v.failureClass ?? "verify", reason: v.reason });
+      return;
+    }
     seq += 1;
     const line = appendTournamentLine(deps.run, {
       round: input.round,
@@ -109,7 +122,13 @@ export async function runTournament(deps: JudgeDeps, input: TournamentInput): Pr
       jobs.push(job);
     }
   }
-  await Promise.all(jobs);
+  const settled = await Promise.allSettled(jobs);
+  const rejected = settled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+  if (rejected) throw rejected.reason;
+  if (unusable.length > 0) {
+    const first = unusable.sort((a, b) => a.key.localeCompare(b.key))[0]!;
+    throw new TournamentVerdictError(first.failureClass, `judge produced no usable verdict for ${first.key}: ${first.reason}`);
+  }
   return results.sort((x, y) => x.seq - y.seq);
 }
 

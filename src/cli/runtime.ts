@@ -66,7 +66,8 @@ export interface CliRuntime {
 }
 
 export async function createCliRuntime(home: string, cfg: KilnConfig, deps: CliDeps): Promise<CliRuntime> {
-  if (deps.runtimeEffort?.enabled === false) registerRuntimeEffort(cfg);
+  if (deps.runtimeEffort?.frozen) registerRuntimeEffort(cfg, (role) => deps.runtimeEffort!.frozen![role] ?? undefined);
+  else if (deps.runtimeEffort?.enabled === false) registerRuntimeEffort(cfg);
   else {
     const measured = readEffortFile(home);
     const profile = deps.runtimeEffort?.profile ?? "default";

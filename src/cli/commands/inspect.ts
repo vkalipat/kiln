@@ -12,6 +12,8 @@ import {
 } from "../../routing/adaptive";
 import type { CliIo } from "../main";
 import { printJson, table } from "../output";
+import { compileWorkflow, planWorkflow } from "../../workflow/plan";
+import { applyWorkflowProfile } from "../../workflow/profile";
 
 const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh"];
 const ROUTING_MODES: readonly RoutingMode[] = ["adaptive", "manual"];
@@ -21,6 +23,10 @@ function printPlan(io: CliIo, report: AdaptiveRoutingReport): void {
   io.write(`adaptive routing preview: ${report.status} · domain: ${report.domain}\n`);
   io.write(`evidence: ${report.evidence.id} (as of ${report.evidence.asOf}, ${report.evidence.sources.length} sources)\n`);
   table(io, [["role", "selected model"], ...ROLES.map((role) => [role, report.selectedRoleRefs[role]])]);
+  for (const role of ROLES) {
+    const why = report.roleReasons[role];
+    io.write(`${role}: ${why.category} · ${why.selection} · effort ${report.effectiveEffort[role] ?? "not applicable"} · ${why.reason}\n`);
+  }
   const b = report.budget;
   io.write(`budget: $${b.totalUsd.toFixed(2)} total · $${b.ideateUsd.toFixed(2)} ideate · $${b.buildUsd.toFixed(2)} build · ${b.affordableRounds}/${b.requestedRounds} round(s) · up to ${b.maxBuildFeatures} feature(s)\n`);
   for (const warning of report.warnings) io.write(`warning: ${warning}\n`);
@@ -79,7 +85,9 @@ export function inspectCommand(cmd: string[], flags: Record<string, string | boo
     try {
       const now = new Date();
       const available = new Set<string>(localAuthState(home).configured);
-      const planned = planAdaptiveRouting(cfg, available, seed, now, homeEvidenceSnapshot(home, now));
+      const workflow = planWorkflow(seed);
+      const execution = compileWorkflow(workflow, { ...(cfg.autonomous ? { autonomous: true } : {}) });
+      const planned = planAdaptiveRouting(applyWorkflowProfile(cfg, workflow), available, seed, now, homeEvidenceSnapshot(home, now), { phases: execution.phases });
       if (flags.json) printJson(io, planned.report);
       else printPlan(io, planned.report);
       return 0;

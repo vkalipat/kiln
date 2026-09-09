@@ -128,7 +128,7 @@ export function passReport(lines: readonly CollapsedJudgedPair[], options: PassR
 }
 
 export type EffortSource = "profile" | "swept" | "config" | "fallback";
-export interface FrozenEffort { level: Effort; source: EffortSource }
+export interface FrozenEffort { level: Effort | "minimal" | "max"; source: EffortSource }
 export type FrozenBudgets = Omit<BudgetConfig, "phaseBudgetUsd" | "phaseBudgetWallSeconds">;
 export type PairCensorStopKind = Extract<StopKind, "budget" | "deadline" | "transient" | "stalled">;
 

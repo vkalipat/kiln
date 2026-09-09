@@ -188,6 +188,7 @@ describe("judgePair", () => {
     expect(v.feasibilityWinner).toBe("tie");
     expect(v.retried).toBe(true);
     expect(v.reason).toContain("no verdict");
+    expect(v.evidence).toBe("missing");
     expect(modelCalls(record)).toBe(2);
   });
 
@@ -198,6 +199,7 @@ describe("judgePair", () => {
     expect(v.valueWinner).toBe("tie");
     expect(v.feasibilityWinner).toBe("tie");
     expect(v.retried).toBe(true);
+    expect(v.evidence).toBe("missing");
   });
 
   test("a refusal is a category-named tie and is not retried", async () => {
@@ -206,7 +208,7 @@ describe("judgePair", () => {
     }] as never });
     const { record, deps } = setup(model);
     const v = await judgePair(deps, CRITERIA, "RENDER-A", "RENDER-B", "ab");
-    expect(v).toMatchObject({ valueWinner: "tie", feasibilityWinner: "tie", reason: "refused:safety", retried: false });
+    expect(v).toMatchObject({ valueWinner: "tie", feasibilityWinner: "tie", reason: "refused:safety", retried: false, evidence: "refused" });
     expect(model.calls).toHaveLength(1);
     expect(modelCalls(record)).toBe(1);
   });

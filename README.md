@@ -18,7 +18,9 @@ bun link
 kiln
 ```
 
-The first launch opens a provider chooser. Connect a Claude or ChatGPT subscription with OAuth, or enter an Anthropic or OpenAI API key. Existing provider environment variables work too. Kiln does not make a model request until you submit a seed.
+Launch opens an editable prompt. Type your task and press Enter; if no provider is connected, Kiln asks you to connect once and retains your prompt. Connect a Claude or ChatGPT subscription with OAuth, or enter an Anthropic or OpenAI API key. Existing provider environment variables work too. Kiln does not make a model request until you submit a task.
+
+Fresh interactive and CLI installations enable adaptive routing and autonomous selection. Kiln shows a one-sentence interpretation, chooses a bounded workflow, and records its model assignments. Concrete local coding tasks skip competitive ideation; open-ended ideas use research and comparison. Existing configuration choices and frozen runs are preserved. Missing source material or authority can still require your input.
 
 Inside the TUI, type an idea and press Enter. Use `/login` to change providers, `Ctrl+O` for commands, `Ctrl+S` for effort, `Esc` to pause, and `Ctrl+C` to exit.
 
@@ -45,15 +47,15 @@ The [Kiln plugin](plugins/kiln/README.md) lets your coding assistant launch a de
 - The full-screen TUI and scriptable CLI share the same lifecycle. The TUI supports live steering and an effort dial; CLI commands cover pause, resume, inspection, per-role model effort, and structured JSON output.
 - Reflection proposes small playbook changes; operators can also propose prompt variants. Promotion requires isolated development and held-out evaluation, integrity checks, statistical gates, and a reversible Git transaction.
 - Claude and ChatGPT subscription OAuth use the provider flows from the pi libraries. API keys can be entered with a masked prompt and are stored locally.
-- Optional [adaptive model routing](docs/adaptive-routing.md) selects task-relevant models from reviewed benchmark evidence, checks provider and budget fit, adds evidence guidance, and freezes an auditable plan per run.
+- [Adaptive model routing](docs/adaptive-routing.md), enabled on fresh launches, selects task-relevant models from reviewed benchmark evidence, checks provider and budget fit, explains each role's assignment, and freezes an auditable plan per run.
 
 ## Evidence and limits
 
 The automated suite includes onboarding, adaptive routing and resume coverage, and [two provider-free autonomy demonstrations](docs/testing/usecases.md). Both demonstrations use production CLI, build, and reflect orchestration with real filesystem tools, shell checks, Git commits and trailers, detached audit snapshots, journals, and recovery. One resumes a post-commit interruption without another builder call; the other records a failed check, repairs it in a fresh attempt, and finishes with one clean commit.
 
-The demonstrations mock builder, auditor, and reflector responses, credentials, and usage. No paid provider experiment has been run yet, so Kiln has been tested as software but has not established live-model coding quality or an advantage over a one-shot model. Evaluation commands require an explicit budget and confirmation.
+The demonstrations mock builder, auditor, and reflector responses, credentials, and usage. A bounded live check confirmed tool-call interoperability with Fable and GPT-5.5 for about $0.031 in recorded usage; it did not test complete task delivery. Kiln has not established live-model coding quality or an advantage over a one-shot model. Evaluation commands require an explicit budget and confirmation.
 
-Automated TUI tests use a fake terminal. A manual live-terminal smoke test confirmed launch and clean alternate-buffer exit.
+Automated TUI tests check animation repaint, resize, shutdown, prompt-first onboarding, and exactly-once submission after login using a fake terminal. A prior manual live-terminal smoke test confirmed launch and clean alternate-buffer exit. See [the plug-and-play verification record](docs/testing/plug-and-play.md) for the latest scope and limitations.
 
 Kiln is a single-operator local prototype. Its shell and file tools run on the host without a sandbox, so use a disposable checkout or container for untrusted work. A run budget is a planning target checked at turn boundaries, not a hard spending ceiling; an in-flight provider turn is allowed to finish.
 

@@ -108,6 +108,18 @@ describe("runAuditorSession", () => {
     expect(result.truncated).toBe(true);
   });
 
+  test("a resumed audit honors turns recorded after its last durable audit boundary", async () => {
+    const s = setup([fullAudit()]);
+    s.deps.cfg.build.auditorTurnCap = 1;
+    s.deps.cfg.build.auditorUsdCap = 10;
+    s.record.append({ t: "feature.pick", featureId: FEATURE.id, attempt: s.context.attempt, phaseBudgetUsd: 10 });
+    s.record.append({ t: "turn", role: "auditor", phase: "build", n: 1 });
+
+    const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
+    expect(s.model.calls).toHaveLength(0);
+    expect(result).toMatchObject({ truncated: true, evidenceUsable: false, costUsd: 0 });
+  });
+
   test("cleanup escapes ambient cancellation and preserves the primary cancellation", async () => {
     const s = setup([fullAudit()]);
     const control = new RunControl();
@@ -154,6 +166,9 @@ describe("runAuditorSession", () => {
     const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
     const toolNames = (seen.tools ?? []).map((tool: { name: string }) => tool.name);
     expect(toolNames).toEqual(["read", "search", "git_log", "git_diff", "audit"]);
+    const auditSchema = (seen.tools as any[]).find((tool) => tool.name === "audit")?.parameters;
+    expect(auditSchema.additionalProperties).toBe(false);
+    expect(auditSchema.properties.checkQuality.additionalProperties).toBe(false);
     for (const forbidden of ["bash", "write", "edit", "note", "exit"]) expect(toolNames).not.toContain(forbidden);
     const pinned = (seen.systemPrompt as string[]).at(-1) ?? "";
     for (const allowed of ["ACCEPTANCE-SENTINEL", "CHECK-OUTPUT-ONLY", "check-original.txt", "MILESTONE-ONLY", "PREVIOUS-NOTES-ONLY"]) expect(pinned).toContain(allowed);
@@ -172,7 +187,7 @@ describe("runAuditorSession", () => {
   test("prefers another provider, falls back to a distinct same-provider ref, and never accepts the producer", async () => {
     const other = setup([fullAudit()]);
     expect((await runAuditorSession(other.deps, FEATURE, checkResult(other.project.checksDir), other.context)).crossProvider).toBe(true);
-    expect(other.resolverCalls).toEqual([{ role: "auditor", provider: "other", exclude: undefined }]);
+    expect(other.resolverCalls).toEqual([{ role: "auditor", provider: "other", exclude: "producer/builder" }]);
 
     const same = setup([fullAudit()]); const calls: unknown[] = [];
     same.deps.availableProviders = new Set(["producer"]);
@@ -184,6 +199,36 @@ describe("runAuditorSession", () => {
     bad.deps.modelsOn = () => ({ model: bad.model as never, ref: "producer/builder" });
     await expect(runAuditorSession(bad.deps, FEATURE, checkResult(bad.project.checksDir), bad.context)).rejects.toBeInstanceOf(NoModelError);
     expect(bad.git.calls).toHaveLength(0);
+
+    const third = setup([fullAudit()]); const thirdCalls: string[] = [];
+    third.deps.availableProviders = new Set(["producer", "unavailable", "third"]);
+    third.deps.modelsOn = (_role, provider) => {
+      thirdCalls.push(provider);
+      if (provider === "unavailable") throw new NoModelError("no admitted auditor on unavailable");
+      return { model: third.model as never, ref: `${provider}/auditor` };
+    };
+    expect((await runAuditorSession(third.deps, FEATURE, checkResult(third.project.checksDir), third.context)).crossProvider).toBe(true);
+    expect(thirdCalls).toEqual(["unavailable", "third"]);
+
+    const vendor = setup([fullAudit()]); const vendorCalls: string[] = [];
+    vendor.context.builderRef = "openai-codex/builder";
+    vendor.deps.availableProviders = new Set(["openai-codex", "openai", "anthropic"]);
+    vendor.deps.modelsOn = (_role, provider) => {
+      vendorCalls.push(provider);
+      return { model: vendor.model as never, ref: `${provider}/auditor` };
+    };
+    expect((await runAuditorSession(vendor.deps, FEATURE, checkResult(vendor.project.checksDir), vendor.context)).crossProvider).toBe(true);
+    expect(vendorCalls).toEqual(["anthropic"]);
+
+    const alias = setup([fullAudit()]); const aliasCalls: string[] = [];
+    alias.context.builderRef = "openai-codex/shared-model";
+    alias.deps.availableProviders = new Set(["openai-codex", "openai"]);
+    alias.deps.modelsOn = (_role, provider) => {
+      aliasCalls.push(provider);
+      return { model: alias.model as never, ref: provider === "openai" ? "openai/shared-model" : "openai-codex/distinct-auditor" };
+    };
+    expect((await runAuditorSession(alias.deps, FEATURE, checkResult(alias.project.checksDir), alias.context)).crossProvider).toBe(false);
+    expect(aliasCalls).toEqual(["openai", "openai-codex"]);
   });
 
   test("retries one missing audit, sums both calls, and persists linked audit records", async () => {
@@ -253,6 +298,7 @@ describe("runAuditorSession", () => {
     const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir, false), s.context);
     const schema = (seen.tools as any[]).find((tool) => tool.name === "audit")?.parameters;
     expect(Object.keys(schema.properties)).toEqual(["regressions", "nextSessionNotes"]);
+    expect(schema.additionalProperties).toBe(false);
     expect(schema.required).toEqual(["regressions", "nextSessionNotes"]);
     expect(schema.properties.regressions).toEqual({ type: "array", items: { type: "string" } });
     expect(schema.properties.verdict).toBeUndefined();
@@ -284,6 +330,7 @@ describe("runAuditorSession", () => {
       { ...fullAudit({ verified: ["first"] }), usage: { input: 1, output: 0 } },
       { ...fullAudit({ verified: ["fresh"] }), usage: { input: 1, output: 0 } },
     ], {}, { cost: { input: 100_000, output: 0, cacheRead: 0, cacheWrite: 0 } });
+    s.deps.cfg.build.auditorTurnCap = 1;
     s.git.statuses = [" M snapshot.txt\n"];
     let recheckOptions: RunCheckOptions | undefined;
     s.context.check = async (_acceptance, options) => {

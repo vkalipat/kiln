@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { contextInputHash, fallbackWasServed, toolExcerpt } from "../../src/brain/telemetry";
+import { contextInputHash, fallbackCostUsd, fallbackWasServed, toolExcerpt } from "../../src/brain/telemetry";
 
 describe("brain telemetry", () => {
   test("hashes model-visible content and developer payload semantics, not transport ids", () => {
@@ -21,5 +21,14 @@ describe("brain telemetry", () => {
     expect(fallbackWasServed({ model: "claude-opus-5", content: [] } as never, "claude-fable-5-1")).toBe(true);
     expect(fallbackWasServed({ model: "claude-fable-5-1", content: [{ type: "fallback", from: { model: "claude-fable-5-1" }, to: { model: "claude-opus-5" } }] } as never, "claude-fable-5-1")).toBe(true);
     expect(fallbackWasServed({ model: "claude-fable-5-1", content: [] } as never, "claude-fable-5-1")).toBe(false);
+  });
+
+  test("accepts finite nonnegative provider-attributed fallback costs, including zero", () => {
+    const fallback = (total: number) => ({ model: "claude-opus-5", content: [], usage: { cost: { total } } });
+    expect(fallbackCostUsd(fallback(0.042) as never, "claude-fable-5-1")).toBe(0.042);
+    expect(fallbackCostUsd(fallback(0) as never, "claude-fable-5-1")).toBe(0);
+    expect(fallbackCostUsd(fallback(Number.NaN) as never, "claude-fable-5-1")).toBeUndefined();
+    expect(fallbackCostUsd(fallback(-0.01) as never, "claude-fable-5-1")).toBeUndefined();
+    expect(fallbackCostUsd({ ...fallback(0.042), model: "claude-fable-5-1" } as never, "claude-fable-5-1")).toBeUndefined();
   });
 });

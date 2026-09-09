@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Model } from "@oh-my-pi/pi-catalog";
@@ -9,12 +9,33 @@ import { writeAtomic } from "../../src/core/paths";
 import { RunRecord } from "../../src/core/record";
 import { currentRunControl } from "../../src/core/run-control";
 import { createRun, readStatus, runPaths, writeStatus } from "../../src/core/run";
-import { RunController, type TuiCli } from "../../src/tui/controller";
+import { RunController, type RunControllerOptions, type TuiCli } from "../../src/tui/controller";
 import { checkpointAnswerText } from "../../src/tui/controller-checkpoint";
 import type { TuiEvent, TuiToolEntry } from "../../src/tui/contracts";
+import { loadWorkflowPlan, workflowInterpretation } from "../../src/workflow/plan";
 
 function home(): string {
   return mkdtempSync(join(tmpdir(), "kiln-tui-controller-"));
+}
+
+const invocationRuns = new WeakMap<string[], string>();
+
+function withNewRun(root: string, delegate: TuiCli): TuiCli {
+  return async (argv, io, deps) => {
+    if (argv[0] === "run" && argv[1] === "new") {
+      const seedPath = argv[argv.indexOf("--seed-file") + 1]!;
+      const seed = readFileSync(seedPath, "utf8");
+      const run = createRun(root, seed);
+      new RunRecord(run.record).append({ t: "run.created", seed });
+      invocationRuns.set(argv, run.id);
+      deps.onRun?.(run);
+    }
+    return delegate(argv, io, deps);
+  };
+}
+
+function testController(options: RunControllerOptions & { home: string }): RunController {
+  return new RunController(options.cli ? { ...options, cli: withNewRun(options.home, options.cli) } : options);
 }
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
@@ -31,28 +52,58 @@ async function until(predicate: () => boolean, message = "condition was not reac
 }
 
 function runId(argv: readonly string[]): string {
-  const id = argv[2];
+  const id = invocationRuns.get(argv as string[]) ?? argv[2];
   if (!id) throw new Error("missing run id");
   return id;
 }
 
 describe("RunController lifecycle", () => {
-  test("creates the run and record before delegating routing to CLI resume", async () => {
+  test("attaches a completed run for inspection without trying to resume it", async () => {
+    const root = home();
+    const run = createRun(root, "already complete", { id: "completed-run" });
+    writeStatus(run, { phase: "reflect", state: "done", outcome: { kind: "success" } });
+    const calls: string[][] = [];
+    const controller = testController({ home: root, cli: async (argv) => { calls.push(argv); throw new Error("must not resume"); } });
+
+    await controller.resume(run.id);
+
+    expect(calls).toEqual([]);
+    expect(controller.getSnapshot()).toMatchObject({ runId: run.id, phase: "reflect", state: "done" });
+  });
+
+  test("a new-seed admission failure before onRun cannot corrupt the previously inspected run", async () => {
+    const root = home();
+    const prior = createRun(root, "prior", { id: "prior-complete" });
+    writeStatus(prior, { phase: "reflect", state: "done", outcome: { kind: "success" } });
+    const controller = new RunController({ home: root, cli: async () => { throw new Error("routing admission failed"); } });
+    await controller.resume(prior.id);
+
+    await expect(controller.start({ seed: "new seed" })).rejects.toThrow("routing admission failed");
+
+    expect(readStatus(prior)).toMatchObject({ phase: "reflect", state: "done", outcome: { kind: "success" } });
+    expect(controller.getSnapshot()).toMatchObject({ runId: prior.id, phase: "reflect", state: "done" });
+  });
+
+  test("delegates new-seed intake to the CLI without exposing the seed in argv", async () => {
     const root = home();
     const calls: string[][] = [];
+    let intakePath = "";
     const cli: TuiCli = async (argv) => {
       calls.push(argv);
+      intakePath = argv[argv.indexOf("--seed-file") + 1]!;
       const run = runPaths(root, runId(argv));
       expect(new RunRecord(run.record).read()[0]).toMatchObject({ t: "run.created", seed: "build a small kiln" });
       writeStatus(run, { phase: "reflect", state: "done", outcome: { kind: "success" } });
       return 0;
     };
-    const controller = new RunController({ home: root, cli, branch: "main" });
+    const controller = testController({ home: root, cli, branch: "main" });
 
     await controller.start({ seed: "build a small kiln" });
 
     const snapshot = controller.getSnapshot();
-    expect(calls).toEqual([["run", "resume", snapshot.runId!, "--home", root]]);
+    expect(calls[0]?.slice(0, 3)).toEqual(["run", "new", "--seed-file"]);
+    expect(calls[0]?.slice(-2)).toEqual(["--home", root]);
+    expect(existsSync(intakePath)).toBe(false);
     expect(readStatus(runPaths(root, snapshot.runId!))).toMatchObject({ phase: "reflect", state: "done" });
     expect(snapshot).toMatchObject({ phase: "reflect", state: "done", branch: "main" });
   });
@@ -67,7 +118,7 @@ describe("RunController lifecycle", () => {
       writeStatus(d.run, next);
       return Promise.resolve({ outcome: "ok" as const });
     };
-    const controller = new RunController({
+    const controller = testController({
       home: root,
       cliDeps: {
         models,
@@ -95,11 +146,40 @@ describe("RunController lifecycle", () => {
     expect(controller.getSnapshot()).toMatchObject({ phase: "reflect", state: "done" });
   });
 
+  test("a fresh TUI seed uses the same adaptive planner as CLI run new", async () => {
+    const root = home();
+    let observedRoutingMode = "";
+    const controller = new RunController({
+      home: root,
+      cliDeps: {
+        apiKeyFor: async (provider) => provider === "anthropic" ? "test-only-key" : undefined,
+        runFrame: async (deps) => {
+          observedRoutingMode = deps.cfg.routing?.mode ?? "";
+          writeStatus(deps.run, { phase: "reflect", state: "done", outcome: { kind: "success" } });
+          return { outcome: "ok" };
+        },
+      },
+    });
+
+    await controller.start({ seed: "Explore resilient neighborhood cooling businesses" });
+
+    const snapshot = controller.getSnapshot();
+    expect(observedRoutingMode).toBe("adaptive");
+    expect(loadConfig(root)).toMatchObject({ routing: { mode: "adaptive" }, autonomous: true });
+    expect(JSON.parse(readFileSync(join(runPaths(root, snapshot.runId!).dir, "routing.json"), "utf8"))).toMatchObject({
+      version: 1,
+      report: { status: "ready" },
+    });
+    expect(snapshot).toMatchObject({ phase: "reflect", state: "done" });
+    const interpretation = workflowInterpretation(loadWorkflowPlan(runPaths(root, snapshot.runId!))!);
+    expect(snapshot.transcript.filter((entry) => entry.kind === "brain" && entry.text === interpretation)).toHaveLength(1);
+  });
+
   test("refuses overlapping starts without creating a second run", async () => {
     const root = home();
     const release = deferred();
     let entered = false;
-    const controller = new RunController({ home: root, cli: async () => { entered = true; await release.promise; return 0; } });
+    const controller = testController({ home: root, cli: async () => { entered = true; await release.promise; return 0; } });
     const first = controller.start({ seed: "first" });
     await until(() => entered);
 
@@ -115,7 +195,7 @@ describe("RunController lifecycle", () => {
     const record = new RunRecord(run.record);
     record.append({ t: "run.created", seed: "restart seed" });
     record.append({ t: "tool.call", name: "search", args: { q: "kiln" }, ok: true, durationMs: 1, excerpt: "three durable hits" });
-    const controller = new RunController({ home: root, cli: async () => 0 });
+    const controller = testController({ home: root, cli: async () => 0 });
 
     await controller.resume(run.id);
 
@@ -130,7 +210,7 @@ describe("RunController lifecycle", () => {
     writeStatus(run, { state: "paused", pausedReason: "user_cancelled", cursor: { step: "user_cancelled" } });
     const model = { provider: "fixture", id: "brain" } as Model;
     let resumed = false;
-    const controller = new RunController({
+    const controller = testController({
       home: root,
       cliDeps: {
         models: { brain: model },
@@ -152,6 +232,35 @@ describe("RunController lifecycle", () => {
 });
 
 describe("RunController observation and steering", () => {
+  test("preserves steering queued while adaptive new-run planning is still attaching", async () => {
+    const root = home();
+    const planning = deferred();
+    const attach = deferred();
+    const steered: string[] = [];
+    const cli: TuiCli = async (argv, _io, deps) => {
+      planning.resolve();
+      await attach.promise;
+      const seedPath = argv[argv.indexOf("--seed-file") + 1]!;
+      const seed = readFileSync(seedPath, "utf8");
+      const run = createRun(root, seed);
+      new RunRecord(run.record).append({ t: "run.created", seed });
+      deps.onRun?.(run);
+      const source = currentRunControl()!.registerSource({ role: "brain", phase: "frame", steer: (text) => steered.push(text) });
+      source.text("attached");
+      source.dispose();
+      writeStatus(run, { phase: "reflect", state: "done", outcome: { kind: "success" } });
+      return 0;
+    };
+    const controller = new RunController({ home: root, cli });
+    const running = controller.start({ seed: "plan before attaching" });
+    await planning.promise;
+    expect(await controller.send("retain this steering")).toMatchObject({ status: "queued" });
+    attach.resolve();
+    await running;
+
+    expect(steered).toEqual(["retain this steering"]);
+  });
+
   test("correlates identical tool ids by source and coalesces streaming text", async () => {
     const root = home();
     const cli: TuiCli = async (argv) => {
@@ -171,7 +280,7 @@ describe("RunController observation and steering", () => {
       writeStatus(runPaths(root, runId(argv)), { phase: "reflect", state: "done", outcome: { kind: "success" } });
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
 
     await controller.start({ seed: "observe" });
 
@@ -207,7 +316,7 @@ describe("RunController observation and steering", () => {
       source.dispose();
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const deliveries: TuiEvent[] = [];
     controller.subscribe((event) => { if (event.type === "steering_delivered") deliveries.push(event); });
     const running = controller.start({ seed: "queue" });
@@ -236,7 +345,7 @@ describe("RunController observation and steering", () => {
     const ready = deferred();
     const release = deferred();
     const steered: string[] = [];
-    const controller = new RunController({
+    const controller = testController({
       home: root,
       cli: async () => {
         const source = currentRunControl()!.registerSource({ role: "brain", phase: "frame", steer: (text) => steered.push(text) });
@@ -259,7 +368,7 @@ describe("RunController observation and steering", () => {
 
   test("isolates faulty subscribers", async () => {
     const root = home();
-    const controller = new RunController({ home: root, cli: async () => 0 });
+    const controller = testController({ home: root, cli: async () => 0 });
     const events: TuiEvent[] = [];
     controller.subscribe(() => { throw new Error("renderer broke"); });
     controller.subscribe((event) => events.push(event));
@@ -270,7 +379,7 @@ describe("RunController observation and steering", () => {
   test("uses send as the answer to a generic CLI question", async () => {
     const root = home();
     let answer = "";
-    const controller = new RunController({
+    const controller = testController({
       home: root,
       cli: async (_argv, io) => { answer = await io.ask!("Name the output directory: "); return 0; },
     });
@@ -301,7 +410,7 @@ describe("RunController checkpoint, effort, and palette", () => {
       writeStatus(run, { phase: "form", state: "running", chosenIdeaId: "a", outcome: undefined });
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const checkpoints: TuiEvent[] = [];
     controller.subscribe((event) => { if (event.type === "checkpoint") checkpoints.push(event); });
     const running = controller.resume(run.id);
@@ -321,7 +430,7 @@ describe("RunController checkpoint, effort, and palette", () => {
     expect(checkpointAnswerText({ kind: "another_round", steering: "focus on heat" })).toBe("another focus on heat");
   });
 
-  test("persists effort only at a safe boundary and signals the live source", async () => {
+  test("queues effort for future new runs without claiming to mutate frozen live routing", async () => {
     const root = home();
     const ready = deferred();
     const release = deferred();
@@ -333,17 +442,19 @@ describe("RunController checkpoint, effort, and palette", () => {
       source.dispose();
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "effort" });
     await ready.promise;
 
     await controller.setEffort("xhigh");
-    expect(controller.getSnapshot().effort).toBe("ultra");
+    expect(controller.getSnapshot().effort).toBe("medium");
+    expect(controller.getSnapshot().activity).toContain("future new runs");
     expect(loadConfig(root).effort).toBe("medium");
-    expect(steering[0]).toContain("xhigh");
+    expect(steering).toEqual([]);
     release.resolve();
     await running;
     expect(loadConfig(root).effort).toBe("xhigh");
+    expect(controller.getSnapshot().effort).toBe("ultra");
     expect(new Set(Object.values(loadConfig(root).effortByRole ?? {}))).toEqual(new Set(["xhigh"]));
   });
 
@@ -351,7 +462,7 @@ describe("RunController checkpoint, effort, and palette", () => {
     const root = home();
     const calls: string[][] = [];
     const cli: TuiCli = async (argv, io: CliIo) => { calls.push(argv); io.write("record output\n"); return 0; };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
 
     await controller.execute("run: show record", ["run-7"]);
     await controller.execute("build: start", ["run-7", "--yes"]);
@@ -366,7 +477,7 @@ describe("RunController checkpoint, effort, and palette", () => {
 
   test("runs mode toggle through main and refreshes the displayed effort", async () => {
     const root = home();
-    const controller = new RunController({ home: root });
+    const controller = testController({ home: root });
     expect(controller.getSnapshot().effort).toBe("medium");
     await controller.execute("mode: toggle");
     expect(loadConfig(root).effort).toBe("high");
@@ -381,7 +492,7 @@ describe("RunController checkpoint, effort, and palette", () => {
       expect(await io.askSecret?.("API key: ")).toBe("sk-private-value");
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const events: TuiEvent[] = [];
     controller.subscribe((event) => events.push(event));
     const running = controller.execute("auth: login anthropic");
@@ -392,5 +503,32 @@ describe("RunController checkpoint, effort, and palette", () => {
     expect(JSON.stringify(controller.getSnapshot().transcript)).not.toContain("sk-private-value");
     expect(events).toContainEqual({ type: "input_requested", prompt: "API key: ", secret: true });
     expect(events.some((event) => event.type === "input_cleared")).toBe(true);
+  });
+
+  test("redacts a submitted credential from provider output and thrown errors", async () => {
+    const root = home();
+    const ready = deferred();
+    const secret = "sk-provider-echoed-secret";
+    const cli: TuiCli = async (_argv, io) => {
+      ready.resolve();
+      const value = await io.askSecret?.("API key: ");
+      io.write(`provider rejected ${value}\n`);
+      io.error?.(`denied ${value}\n`);
+      throw new Error(`authentication failed for ${value}`);
+    };
+    const controller = testController({ home: root, cli });
+    const events: TuiEvent[] = [];
+    controller.subscribe((event) => events.push(event));
+    const running = controller.execute("auth: login anthropic");
+    await ready.promise;
+    await until(() => events.some((event) => event.type === "input_requested"));
+    await controller.send(secret);
+    let failure = "";
+    try { await running; } catch (error) { failure = String(error); }
+
+    expect(failure).toContain("[REDACTED]");
+    expect(failure).not.toContain(secret);
+    expect(JSON.stringify(controller.getSnapshot())).not.toContain(secret);
+    expect(JSON.stringify(events)).not.toContain(secret);
   });
 });

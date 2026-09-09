@@ -29,6 +29,13 @@ export type EntryOutcome = { exit: PhaseResult } | { entry: BuildEntry };
 /** Record §12's resume routing: terminal outcomes and unchanged budget or deadline targets end before any paid call. */
 function routeResume(deps: BuildDeps): PhaseResult | undefined {
   const previous = readStatus(deps.run);
+  if (previous.state === "done" && previous.outcome?.kind === "success") {
+    const events = deps.record.read();
+    const build = events.findLast((event) => event.t === "phase.end" && event.phase === "build");
+    const reflect = events.findLast((event) => event.t === "phase.end" && event.phase === "reflect");
+    if (build?.t === "phase.end" && build.outcome === "ok" && reflect?.t === "phase.end" && reflect.seq > build.seq) return { outcome: "ok" };
+    return buildFail(deps, "integrity", "completed success status lacks a durable successful build and subsequent reflect terminal");
+  }
   if (previous.state === "done" && previous.outcome?.kind === "honest_exit") return { outcome: "honest_exit", kind: "cannot_be_satisfied", reasons: previous.outcome.reasons ?? [] };
   if (previous.state === "failed" && previous.outcome?.failureClass) return { outcome: "failed", failureClass: previous.outcome.failureClass, message: previous.outcome.message ?? "build failed" };
   if (previous.state !== "stopped") return undefined;

@@ -145,7 +145,7 @@ function migrateBundledEvals(home: string, begin: boolean): void {
  * Sets up a kiln home directory and its local Git baseline. An initialized loose-ref repository is
  * detected entirely through the filesystem, so ordinary startups spawn no Git process.
  */
-export function initHome(home: string): { created: boolean } {
+export function initHome(home: string, options: { plugAndPlay?: boolean } = {}): { created: boolean } {
   const fresh = !existsSync(configPath(home));
   const evals = join(home, "evals");
   const resumeEvalMigration = existsSync(join(home, "evolution", "work", "home-evals-corpus-v1.json"));
@@ -163,7 +163,11 @@ export function initHome(home: string): { created: boolean } {
   // Once a manifest exists, absence is integrity evidence. Restoring a deleted corpus file here
   // would hide that drift before `verifyEvalsManifest` can report it.
   if (fresh) copyBundledTree(join(BUNDLED, "evals"), evals);
-  if (fresh) saveConfig(home, defaultConfig());
+  if (fresh) {
+    const config = defaultConfig();
+    if (options.plugAndPlay) { config.routing = { mode: "adaptive" }; config.autonomous = true; }
+    saveConfig(home, config);
+  }
   ensureIgnored(home, HOME_IGNORE_LINES);
 
   if (!hasLooseHead(home)) {

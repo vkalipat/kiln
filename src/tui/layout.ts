@@ -27,7 +27,7 @@ export function renderWelcome(width: number, height: number, snapshot: Readonly<
     ansi.bold("Welcome to Kiln"),
     "Shape an idea into a durable build.",
     "",
-    "Type a seed and press Enter",
+    snapshot.auth?.required ? "Type a prompt; connect a provider when you send" : "Type a prompt and press Enter",
     `${accent(snapshot.effort)} · Ctrl+S effort · Ctrl+O commands · ? help`,
   ];
   const visible = content.slice(0, height);

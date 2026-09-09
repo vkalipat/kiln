@@ -15,6 +15,8 @@ export interface FrozenRouting {
   share: KilnConfig["budgets"]["share"];
   rounds: number;
   strictDecisionTools: boolean;
+  effectiveEffort?: Partial<Record<keyof KilnConfig["roles"], string | null>>;
+  ideationProfile?: KilnConfig["ideation"];
   report: unknown;
 }
 
@@ -36,6 +38,13 @@ function validate(value: unknown, run: RunPaths): FrozenRouting {
   if (efforts.some((effort) => !["low", "medium", "high", "xhigh"].includes(effort))) throw new Error("invalid frozen routing effort");
   if (!Number.isInteger(plan.rounds) || plan.rounds < 1) throw new Error("invalid frozen routing rounds");
   if (typeof plan.strictDecisionTools !== "boolean") throw new Error("invalid frozen routing decision-tool policy");
+  if (plan.effectiveEffort && Object.entries(plan.effectiveEffort).some(([role, level]) => !ROLES.includes(role as never)
+    || (level !== null && !["minimal", "low", "medium", "high", "xhigh", "max"].includes(level)))) throw new Error("invalid frozen effective effort");
+  if (plan.ideationProfile) {
+    for (const key of ["islands", "ideasPerBatch", "entrantsCap", "pairCap", "minComparisons", "rounds", "concurrency", "searchConcurrency"] as const) {
+      if (!Number.isInteger(plan.ideationProfile[key]) || plan.ideationProfile[key] < 1) throw new Error(`invalid frozen ideation ${key}`);
+    }
+  }
   if (PHASES.some((phase) => !Number.isFinite(plan.share?.[phase]) || plan.share[phase] < 0)
     || Math.abs(PHASES.reduce((sum, phase) => sum + plan.share[phase], 0) - 1) > 1e-9) throw new Error("invalid frozen routing budget shares");
   return plan;
@@ -51,6 +60,9 @@ export function freezeRouting(run: RunPaths, cfg: KilnConfig, report: unknown): 
     version: 1, seedSha256: seedHash(run), roles: cfg.roles,
     effort: cfg.effort, effortByRole: cfg.effortByRole,
     share: cfg.budgets.share, rounds: cfg.ideation.rounds, strictDecisionTools: cfg.provider.strictDecisionTools, report,
+    ideationProfile: cfg.ideation,
+    ...(report && typeof report === "object" && "effectiveEffort" in report
+      ? { effectiveEffort: report.effectiveEffort as FrozenRouting["effectiveEffort"] } : {}),
   };
   validate(plan, run);
   const current = loadFrozenRouting(run);
@@ -75,6 +87,6 @@ export function applyFrozenRouting(cfg: KilnConfig, run: RunPaths): KilnConfig {
     provider: { ...cfg.provider, strictDecisionTools: plan.strictDecisionTools },
     seating: { ...cfg.seating, default: plan.roles },
     budgets: { ...cfg.budgets, share: plan.share },
-    ideation: { ...cfg.ideation, rounds: plan.rounds },
+    ideation: { ...cfg.ideation, ...plan.ideationProfile, rounds: plan.rounds },
   };
 }

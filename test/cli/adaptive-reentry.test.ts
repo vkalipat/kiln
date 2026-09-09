@@ -37,8 +37,8 @@ function setup(phase: "form" | "build") {
   const frozen = defaultConfig();
   frozen.routing = { mode: "adaptive" };
   frozen.roles.brain = ["anthropic/claude-fable-5-1"];
-  frozen.roles.builder = ["openai-codex/gpt-6-astra"];
-  frozen.roles.reflector = ["openai-codex/gpt-6-astra"];
+  frozen.roles.builder = ["openai-codex/gpt-5.5"];
+  frozen.roles.reflector = ["openai-codex/gpt-5.5"];
   frozen.effort = "high";
   frozen.effortByRole = { ...frozen.effortByRole, brain: "xhigh", builder: "high", reflector: "xhigh" };
   frozen.budgets.share.ideate = 0.5;
@@ -101,14 +101,14 @@ describe("adaptive routing project re-entry", () => {
       runBuild: async (deps) => {
         phases.push("build");
         expectFrozen(deps.cfg, frozen);
-        expect(deps.models("builder").ref).toBe("openai-codex/gpt-6-astra");
+        expect(deps.models("builder").ref).toBe("openai-codex/gpt-5.5");
         writeStatus(deps.run, { phase: "reflect", state: "running" });
         return { outcome: "ok" };
       },
       runReflect: async (deps) => {
         phases.push("reflect");
         expectFrozen(deps.cfg, frozen);
-        expect(deps.models("reflector").ref).toBe("openai-codex/gpt-6-astra");
+        expect(deps.models("reflector").ref).toBe("openai-codex/gpt-5.5");
         writeStatus(deps.run, { state: "done", outcome: { kind: "success" } });
         return { outcome: "ok" };
       },

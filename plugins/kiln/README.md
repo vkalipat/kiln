@@ -36,7 +36,7 @@ python3 scripts/kiln_operator.py pause --request-id demo-1
 python3 scripts/kiln_operator.py resume --request-id demo-1 --through reflect --confirm-spend
 ```
 
-Pass `--home` to use a nondefault Kiln home, or `--kiln-bin` for an executable off PATH. Start/resume return immediately; workers and logs persist under the Kiln home's `operator/` directory. Reuse request IDs to avoid duplicate work. Never equate a worker exit with a completed project.
+Pass `--home` to use a nondefault Kiln home, or `--kiln-bin` for an executable off PATH. Start/resume return immediately; workers and logs persist under the Kiln home's `operator/` directory. Reuse request IDs to avoid duplicate work. The status response reports process state, authoritative run state, and whether the requested endpoint was actually reached. Never equate a worker exit with a completed project.
 
 No hooks launch work automatically, no credentials are bundled, and installation makes no provider requests. Starting/resuming can incur real provider usage and run tools on the host. Budgets remain planning targets, not hard ceilings. This plugin does not change the parent assistant's permissions or publish anything.
 

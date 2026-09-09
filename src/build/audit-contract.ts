@@ -1,4 +1,4 @@
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync } from "node:fs";
 import type { AuditVerdict } from "../core/events";
 import { appendLine, writeAtomic } from "../core/paths";
 import type { RunPaths } from "../core/run";
@@ -82,16 +82,65 @@ export function renderAudit(input: Audit): string {
   ].join("\n");
 }
 
+function validAudit(value: unknown): value is Audit {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+  const audit = value as Partial<Audit>;
+  const raw = audit.raw as Partial<AuditPayload> | undefined;
+  const quality = raw?.checkQuality as Partial<AuditPayload["checkQuality"]> | undefined;
+  const model = audit.model as Partial<Audit["model"]> | undefined;
+  const strings = (items: unknown): items is string[] => Array.isArray(items) && items.every((item) => typeof item === "string");
+  return typeof audit.featureId === "string" && audit.featureId !== ""
+    && Number.isInteger(audit.attempt) && (audit.attempt ?? -1) >= 0
+    && typeof audit.checkId === "string" && audit.checkId !== ""
+    && Number.isInteger(audit.sourceEventSeq) && (audit.sourceEventSeq ?? 0) > 0
+    && typeof audit.createdAt === "string"
+    && (audit.shape === "full" || audit.shape === "short")
+    && !!raw && strings(raw.verified) && strings(raw.claimedUnverified) && strings(raw.regressions)
+    && typeof raw.nextSessionNotes === "string" && !!quality && typeof quality.adequate === "boolean" && typeof quality.reason === "string"
+    && (raw.verdict === "agree" || raw.verdict === "disagree")
+    && !!model && typeof model.provider === "string" && typeof model.model === "string" && typeof model.ref === "string"
+    && (model.effort === undefined || typeof model.effort === "string");
+}
+
+function invalidJson(line: string): boolean {
+  try { JSON.parse(line); return false; } catch { return true; }
+}
+
+function requireRegularFile(path: string): boolean {
+  try {
+    if (!lstatSync(path).isFile()) throw new Error("integrity: audits.jsonl must be a regular file");
+    return true;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return false;
+    throw error;
+  }
+}
+
+function repairTornTail(path: string): void {
+  if (!existsSync(path)) return;
+  const text = readFileSync(path, "utf8");
+  if (text === "" || text.endsWith("\n")) return;
+  const start = text.lastIndexOf("\n") + 1;
+  if (invalidJson(text.slice(start))) writeAtomic(path, text.slice(0, start));
+}
+
 export function readAudits(paths: RunPaths): Audit[] {
-  if (!existsSync(paths.audits)) return [];
+  if (!requireRegularFile(paths.audits)) return [];
+  const text = readFileSync(paths.audits, "utf8");
+  const lines = text.split("\n");
   const audits: Audit[] = [];
-  for (const line of readFileSync(paths.audits, "utf8").split("\n")) {
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index]!;
     if (!line.trim()) continue;
     try {
-      const audit = JSON.parse(line) as Audit;
-      if (audit && typeof audit.featureId === "string" && typeof audit.sourceEventSeq === "number" && audit.raw) audits.push(audit);
-    } catch {
-      // Ignore a torn final append; earlier audits remain authoritative.
+      const audit: unknown = JSON.parse(line);
+      if (!validAudit(audit)) throw new Error("invalid audit shape");
+      audits.push(audit);
+    } catch (error) {
+      // appendLine always terminates durable entries. Only a malformed unterminated tail is a
+      // recoverable interrupted append; corruption before it must not silently disappear.
+      if (index === lines.length - 1 && !text.endsWith("\n") && invalidJson(line)) break;
+      throw new Error(`integrity: malformed audits.jsonl line ${index + 1}: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
   return audits;
@@ -99,6 +148,8 @@ export function readAudits(paths: RunPaths): Audit[] {
 
 export function appendAudit(paths: RunPaths, input: Audit): Audit {
   const audit = capped(input, AUDIT_CAPS_STORED);
+  requireRegularFile(paths.audits);
+  repairTornTail(paths.audits);
   const held = readAudits(paths);
   const duplicate = held.some((entry) => entry.sourceEventSeq === audit.sourceEventSeq && entry.checkId === audit.checkId);
   if (!duplicate) {

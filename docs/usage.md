@@ -22,7 +22,7 @@ kiln
 
 Without a global link, run `bun run kiln` in the repository.
 
-Bare `kiln` opens the terminal interface. The first unauthenticated launch opens the provider chooser. No model request is made until a seed is submitted.
+Bare `kiln` opens an editable prompt. Type a task and press Enter; if unauthenticated, the provider chooser opens then and retains the task for submission after connection. No model request is made before submission. Fresh homes enable adaptive routing and autonomous selection; existing configuration choices are preserved.
 
 ## Provider access
 

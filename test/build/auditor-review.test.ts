@@ -94,7 +94,10 @@ describe("auditor review boundaries", () => {
     const schema = (s.model.calls[0]?.context.tools ?? []).find((tool: { name: string }) => tool.name === "audit")?.parameters as any;
     expect(schema.required).toEqual(["verified", "claimedUnverified", "regressions", "nextSessionNotes", "checkQuality", "verdict"]);
     expect(schema.properties.verified).toEqual({ type: "array", items: { type: "string" } });
-    expect(schema.properties.checkQuality).toEqual({ type: "object", properties: { adequate: { type: "boolean" }, reason: { type: "string" } }, required: ["adequate", "reason"] });
+    expect(schema.properties.checkQuality).toMatchObject({
+      type: "object", additionalProperties: false,
+      properties: { adequate: { type: "boolean" }, reason: { type: "string" } }, required: ["adequate", "reason"],
+    });
     expect(schema.properties.verdict.enum).toEqual(["agree", "disagree"]);
     expect(s.record.read().filter((event) => event.t === "tool.call" && event.name === "audit").map((event) => event.t === "tool.call" && event.ok)).toEqual([false, true]);
     expect(ended).toEqual([false, true]);

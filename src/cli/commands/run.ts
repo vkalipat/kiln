@@ -32,10 +32,11 @@ import { routeResume, type ResumePhase } from "./run-routing";
 import { HeldoutSeedError } from "../../evals/identity";
 import { verifyEvalsManifest } from "../../evals/manifest";
 import { manifestDriftNote, resolveNewSeed, type NewSeedInput } from "./run-seed";
-import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, type WorkflowExecution, type WorkflowPhase } from "../../workflow/plan";
+import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, planWorkflow, workflowInterpretation, type WorkflowExecution, type WorkflowPhase } from "../../workflow/plan";
+import { prepareSuppliedTask } from "../../workflow/supplied-task";
+import { applyWorkflowProfile } from "../../workflow/profile";
 import { applyFrozenRouting, freezeRouting, loadFrozenRouting } from "../../workflow/routing";
 import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../routing/adaptive";
-import { registerRuntimeEffort } from "../../providers/effort-runtime";
 import { recoverCompletedFrame } from "../../phases/frame-recovery";
 
 const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--id ID] [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous|--interactive] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id> | kiln run recover-frame <id>\n';
@@ -251,9 +252,21 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     ? stageHome(home, flags.eval, "manual").home
     : home;
   if (runHome !== home) cfg = loadConfig(runHome);
+  const adaptiveWorkflow = !resumedRun && (cfg.routing?.mode === "adaptive" || deps.adaptiveWorkflow === true) && flags.eval === undefined && flags.bare !== true
+    && !seedInput?.identity && deps.runtimeEffort?.enabled !== false
+    && ((!deps.models && !deps.brainModel && !deps.scoutModel && !deps.islandModels) || deps.adaptiveWorkflow === true);
+  const planningControls = {
+    ...(explicitThrough ? { through: explicitThrough as WorkflowPhase } : {}),
+    ...(flags.autonomous === true || (flags.interactive !== true && cfg.autonomous) ? { autonomous: true } : {}),
+    ...(flags.interactive === true ? { interactive: true } : {}),
+  };
+  const proposedWorkflow = resumedRun ? undefined : planWorkflow(seedInput!.text, { adaptive: adaptiveWorkflow });
+  const proposedExecution = proposedWorkflow ? compileWorkflow(proposedWorkflow, planningControls) : undefined;
+  if (proposedWorkflow && !json) io.write(`${workflowInterpretation(proposedWorkflow)}\n`);
+  if (adaptiveWorkflow && proposedWorkflow) cfg = applyWorkflowProfile(cfg, proposedWorkflow);
   if (typeof flags.id === "string" && existsSync(runPaths(runHome, flags.id).dir)) { err(`run ${flags.id} already exists; inspect or resume it instead\n`); return 2; }
   const runtime = await createCliRuntime(home, cfg, resumedRun && loadFrozenRouting(resumedRun)
-    ? { ...deps, runtimeEffort: { enabled: false } } : deps);
+    ? { ...deps, runtimeEffort: { enabled: false, frozen: loadFrozenRouting(resumedRun)?.effectiveEffort } } : deps);
   let routingReport: unknown;
   // Evaluator seats and embedding-supplied models remain authoritative, never auto-reselected.
   if (!resumedRun && cfg.routing?.mode === "adaptive" && flags.eval === undefined
@@ -265,11 +278,10 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
       const evidence = existsSync(snapshotPath)
         ? validateEvidenceSnapshot(JSON.parse(readFileSync(snapshotPath, "utf8")), now)
         : DEFAULT_EVIDENCE_SNAPSHOT;
-      const planned = planAdaptiveRouting(cfg, runtime.available, seedInput!.text, now, evidence);
+      const planned = planAdaptiveRouting(cfg, runtime.available, seedInput!.text, now, evidence, { phases: proposedExecution?.phases });
       Object.assign(cfg, planned.config);
-      registerRuntimeEffort(cfg);
       routingReport = planned.report;
-    } catch (error) { err(`adaptive routing: ${error instanceof Error ? error.message : String(error)}\n`); return 3; }
+    } catch (error) { err(`adaptive routing: ${error instanceof Error ? error.message : String(error)}\n${runtime.available.size === 0 ? NO_MODEL_HINT : ""}`); return 3; }
   }
   if (!resumedRun) {
     try { runtime.models("brain"); }
@@ -293,17 +305,13 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   }
   let workflow;
   try {
-    workflow = ensureWorkflowPlan(run);
+    workflow = ensureWorkflowPlan(run, { adaptive: adaptiveWorkflow });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     err(`${message}\n`);
     return 1;
   }
-  const workflowExecution = compileWorkflow(workflow, {
-    ...(explicitThrough ? { through: explicitThrough as WorkflowPhase } : {}),
-    ...(flags.autonomous === true || (flags.interactive !== true && cfg.autonomous) ? { autonomous: true } : {}),
-    ...(flags.interactive === true ? { interactive: true } : {}),
-  });
+  const workflowExecution = compileWorkflow(workflow, planningControls);
   cfg.autonomous = workflowExecution.checkpointPolicy === "autonomous";
   const through = workflowExecution.through as Through;
 
@@ -334,8 +342,9 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
 
   let result: PhaseResult = { outcome: "ok" };
   let status = readStatus(run);
-  const forced = route?.kind === "phase" ? route.phase : undefined;
-  const eligible = (phase: ResumePhase): boolean => reaches(through, phase as Through) || forced === phase;
+  const forced = route?.kind === "phase" && (!explicitThrough || reaches(through, route.phase as Through)) ? route.phase : undefined;
+  const eligible = (phase: ResumePhase): boolean => workflowExecution.phases.includes(phase)
+    || (forced === phase && (workflow.strategy?.mode !== "direct" || !["discover", "ideate", "checkpoint"].includes(phase)));
   let commandLock: RunLock;
   try { commandLock = acquireRunLock(run, { force: flags.force === true }); }
   catch (error) { if (error instanceof RunLockedError) { err(`${error.message}\n`); return 2; } throw error; }
@@ -343,7 +352,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     if (routingReport !== undefined) {
       freezeRouting(run, cfg, routingReport);
       record.append({ t: "note", text: "Adaptive model routing frozen in routing.json; costs are planning estimates, not measured reliability or spend." });
-      if (!json) io.write(`Adaptive routing: ${cfg.roles.generator[0]} ideas; ${cfg.roles.judge[0]} review; ${cfg.roles.builder[0]} build. ${cfg.ideation.rounds} planned ideation round(s), $${cfg.budgets.phaseBudgetUsd("ideate").toFixed(2)} ideation allocation. Details: ${join(run.dir, "routing.json")}\n`);
+      if (!json) io.write(`Adaptive routing: ${workflow.strategy?.mode ?? "exploratory"} workflow; ${cfg.roles.builder[0]} build. ${workflow.strategy?.mode === "direct" ? "Competitive ideation skipped for the supplied task." : `${cfg.ideation.rounds} planned ideation round(s), $${cfg.budgets.phaseBudgetUsd("ideate").toFixed(2)} ideation allocation.`} Details: ${join(run.dir, "routing.json")}\n`);
     }
     deps.onRun?.(run);
     if (route?.kind === "phase" && route.wake) {
@@ -356,11 +365,19 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
       throwIfRunCancelled();
       status = readStatus(run);
     }
+    if (result.outcome === "ok" && workflow.strategy?.mode === "direct" && workflow.strategy.research === "none"
+      && status.phase === "discover" && status.state === "running" && reaches(through, "checkpoint")) {
+      prepareSuppliedTask(base); status = readStatus(run);
+    }
     if (result.outcome === "ok" && eligible("discover") && status.phase === "discover" && status.state === "running") {
       runtime.models("brain"); runtime.models("scout");
       result = await (deps.runDiscover ?? runDiscover)(base);
       throwIfRunCancelled();
       status = readStatus(run);
+    }
+    if (result.outcome === "ok" && workflow.strategy?.mode === "direct" && status.phase === "ideate"
+      && status.state === "running" && reaches(through, "checkpoint")) {
+      prepareSuppliedTask(base); status = readStatus(run);
     }
     if (result.outcome === "ok" && eligible("ideate") && status.phase === "ideate") {
       if (shouldRunIdeate(status, run)) {
@@ -419,7 +436,12 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   } catch (e) {
     if (e instanceof RunCancelledError) { pauseCancelledRun(run); throw e; }
     if (e instanceof RunLockedError) { err(`${e.message}\n`); return 2; }
-    if (e instanceof NoModelError) { err(`${e.message}\n${NO_MODEL_HINT}`); return 3; }
+    if (e instanceof NoModelError) {
+      record.append({ t: "failure", class: "verify", message: e.message });
+      writeStatus(run, { state: "paused", pausedReason: "provider_unavailable", wakeAt: undefined,
+        usdSpent: record.costUsd(), outcome: { kind: "failure", failureClass: "verify", message: e.message } });
+      err(`${e.message}\n${NO_MODEL_HINT}Run paused without replaying completed work; restore a compatible configured provider before resuming.\n`); return 3;
+    }
     // A phase that throws instead of returning a result would otherwise leave the run marked
     // `running` forever, with nothing in the journal saying why. Record it, mark it failed, and
     // report it — an unexpected exception is still a terminal outcome the user can resume from.

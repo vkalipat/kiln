@@ -4,33 +4,171 @@ import { createBrain, type BrainResult } from "../brain/agent";
 import { loadPlaybook, loadPrompt, playbookSection } from "../brain/prompts";
 import { brainTools, type ExitKind, type ToolContext } from "../brain/tools";
 import { RealGitRunner, type GitRunner } from "../build/git";
-import { phaseAvailableUsd, spentByPhase } from "../core/budget";
+import { effectiveReflectReserveUsd, phaseAvailableUsd, spentByPhase } from "../core/budget";
+import type { StoredEvent } from "../core/events";
 import { classifyFailure } from "../core/failure";
 import { acquireRunLock } from "../core/lock";
 import { writeAtomic } from "../core/paths";
 import { hashInput, type RunRecord } from "../core/record";
 import { readStatus, writeStatus } from "../core/run";
 import { rethrowIfRunCancelled, throwIfRunCancelled } from "../core/run-control";
-import { parseDossier, renderDossier, type Dossier, type Evidence } from "../ideation/dossier";
+import { parseDossier, renderDossier, validateDossier, type Dossier, type Evidence } from "../ideation/dossier";
 import { effortFor, NoModelError } from "../providers/models";
-import { bindingItems, CritiqueRunError, runCritique } from "../formation/critique";
+import { bindingItems, CritiqueRunError, runCritique, type Critique } from "../formation/critique";
 import { assignIds, derivedCaps, parseFeatures, validateFeatures, type FeaturesFile } from "../formation/features";
-import { freeze } from "../formation/freeze";
+import { formationApprovalPath, freeze, verifyFormationApproval, writeFormationApproval } from "../formation/freeze";
 import { verifyAcceptanceLock, type AcceptanceLock } from "../formation/lock";
 import { materializeProjectPath, projectPaths, readProjectMarker, writeProjectMarker, type ProjectPaths } from "../formation/paths";
-import { parseSpec, validateSpec, type ParsedSpec } from "../formation/spec";
+import { parseSpec, SPEC_SECTIONS, validateSpec, type ParsedSpec } from "../formation/spec";
 import { runCheckpoint, type CheckpointIo } from "./checkpoint";
 import { parseBrief, stopFailure, type PhaseDeps, type PhaseResult } from "./frame";
 import { assertShapeFrozen } from "./guards";
 import { runValidatedFile, type Promptable } from "./shared";
 
-export interface FormDeps extends PhaseDeps { git?: GitRunner; onFreezeStep?: (step: number) => void }
+export interface FormDeps extends PhaseDeps {
+  git?: GitRunner;
+  onApprovalStep?: () => void;
+  onFormStage?: (stage: "initial" | "first_critique" | "revised" | "second_critique") => void;
+  onFreezeStep?: (step: number) => void;
+}
 export interface FormOptions { out?: string; force?: boolean; io?: CheckpointIo }
 
 interface Candidate<T> { value?: T; problems: string[] }
 
+interface FormationSnapshot {
+  spec: string;
+  features: FeaturesFile;
+  init: string;
+  hash: string;
+}
+
+interface FormationProgress {
+  version: 1;
+  ideaId: string;
+  attempt: number;
+  stage: "initial" | "revised";
+  snapshot: FormationSnapshot;
+  /** Journal length immediately before this transaction's first critic dispatch. */
+  eventOffset: number;
+  firstCriticTurns?: number;
+}
+
 export function lastChosenIdea(record: RunRecord): string | undefined {
   return record.read().flatMap((event) => event.t === "checkpoint.decision" && (event.kind === "pick" || event.kind === "autonomous_pick") && event.id ? [event.id] : []).at(-1);
+}
+
+function formationProgressPath(deps: Pick<PhaseDeps, "run">): string {
+  return join(deps.run.dir, "formation.progress.json");
+}
+
+function clearFormationProgress(deps: Pick<PhaseDeps, "run">): void {
+  rmSync(formationProgressPath(deps), { force: true });
+}
+
+function snapshotHash(snapshot: Omit<FormationSnapshot, "hash">): string {
+  return hashInput(snapshot);
+}
+
+function writeFormationProgress(
+  deps: Pick<PhaseDeps, "run">,
+  ideaId: string,
+  attempt: number,
+  stage: FormationProgress["stage"],
+  snapshot: Omit<FormationSnapshot, "hash">,
+  eventOffset: number,
+  firstCriticTurns?: number,
+): FormationProgress {
+  const progress: FormationProgress = {
+    version: 1, ideaId, attempt, stage,
+    snapshot: { ...snapshot, hash: snapshotHash(snapshot) },
+    eventOffset,
+    ...(firstCriticTurns === undefined ? {} : { firstCriticTurns }),
+  };
+  writeAtomic(formationProgressPath(deps), `${JSON.stringify(progress, null, 2)}\n`);
+  return progress;
+}
+
+function readFormationProgress(deps: PhaseDeps, ideaId: string, attempt: number): FormationProgress | undefined {
+  const path = formationProgressPath(deps);
+  try {
+    if (!lstatSync(path).isFile()) throw new Error("integrity: formation progress must be a regular file");
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return undefined;
+    throw error;
+  }
+  let value: unknown;
+  try { value = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`integrity: cannot read formation progress: ${(error as Error).message}`); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("integrity: formation progress is malformed");
+  const progress = value as Partial<FormationProgress>;
+  if (progress.version !== 1 || progress.ideaId !== ideaId || progress.attempt !== attempt || (progress.stage !== "initial" && progress.stage !== "revised")) {
+    throw new Error("integrity: formation progress identity or stage mismatch");
+  }
+  if (!Number.isInteger(progress.eventOffset) || progress.eventOffset! < 0 || progress.eventOffset! > deps.record.read().length) {
+    throw new Error("integrity: formation progress journal offset is invalid");
+  }
+  const snapshot = progress.snapshot;
+  if (!snapshot || typeof snapshot.spec !== "string" || typeof snapshot.init !== "string" || !snapshot.features || typeof snapshot.hash !== "string") {
+    throw new Error("integrity: formation progress snapshot is malformed");
+  }
+  const expected = snapshotHash({ spec: snapshot.spec, features: snapshot.features, init: snapshot.init });
+  if (snapshot.hash !== expected) throw new Error("integrity: formation progress snapshot hash mismatch");
+  const spec = specCandidate(snapshot.spec);
+  const init = initCandidate(snapshot.init);
+  const ids = Array.isArray(snapshot.features.features)
+    ? snapshot.features.features.map((_, index) => `f${String(index + 1).padStart(2, "0")}`)
+    : [];
+  const feature = featureCandidate(JSON.stringify(snapshot.features), spec.value ?? parseSpec(""), deps, ids);
+  const problems = [...spec.problems, ...init.problems, ...feature.problems];
+  if (problems.length > 0 || !feature.value) throw new Error(`integrity: formation progress snapshot is invalid: ${problems.join("; ")}`);
+  if (progress.stage === "revised" && (!Number.isInteger(progress.firstCriticTurns) || progress.firstCriticTurns! < 0)) {
+    throw new Error("integrity: revised formation progress is missing first critic turn accounting");
+  }
+  return progress as FormationProgress;
+}
+
+function restoreFormationSnapshot(project: ProjectPaths, snapshot: FormationSnapshot): void {
+  writeAtomic(project.spec, snapshot.spec);
+  writeAtomic(project.featuresMirror, `${JSON.stringify(snapshot.features, null, 2)}\n`);
+  writeAtomic(project.initSh, snapshot.init);
+}
+
+function currentFormationSnapshot(project: ProjectPaths, file: FeaturesFile): Omit<FormationSnapshot, "hash"> {
+  return {
+    spec: readFileSync(project.spec, "utf8"),
+    features: file,
+    init: readFileSync(project.initSh, "utf8"),
+  };
+}
+
+function attemptEvents(record: RunRecord, ideaId: string, attempt: number): StoredEvent[] {
+  const events = record.read();
+  const start = events.findLastIndex((event) => event.t === "formation.attempt" && event.ideaId === ideaId && event.attempt === attempt);
+  if (start < 0) return [];
+  const next = events.findIndex((event, index) => index > start && event.t === "formation.attempt");
+  return events.slice(start + 1, next < 0 ? undefined : next);
+}
+
+function durableTurns(record: RunRecord, ideaId: string, attempt: number, role: "brain" | "critic"): number {
+  return attemptEvents(record, ideaId, attempt).filter((event) => event.t === "turn" && event.phase === "form" && event.role === role).length;
+}
+
+function durableTurnsSince(record: RunRecord, eventOffset: number, role: "critic"): number {
+  return record.read().slice(eventOffset).filter((event) => event.t === "turn" && event.phase === "form" && event.role === role).length;
+}
+
+function reusableCritiques(record: RunRecord, eventOffset: number): Critique[] {
+  return record.read().slice(eventOffset).flatMap((event) => {
+    if (event.t !== "critique" || (event.stopped !== "done" && event.stopped !== "refused")) return [];
+    return [{
+      verdict: event.verdict,
+      scopeCreep: event.scopeCreep,
+      unverifiable: event.unverifiable,
+      missing: event.missing,
+      crossProvider: event.crossProvider,
+      costUsd: event.costUsd,
+    }];
+  });
 }
 
 function featureCandidate(text: string, spec: ParsedSpec, deps: PhaseDeps, expectedIds?: readonly string[]): Candidate<FeaturesFile> {
@@ -74,6 +212,10 @@ async function ensureFile<T>(options: {
   });
   const exited = options.exit();
   if (exited) return { result: { outcome: "honest_exit", ...exited } };
+  if (checked.problems.length === 0 && checked.parsed?.value !== undefined
+    && (checked.result.stopped === "turn_cap" || checked.result.stopped === "usd_cap")) {
+    return { value: checked.parsed.value };
+  }
   const stop = options.stopped(checked.result);
   if (stop) return { result: stop };
   if (checked.problems.length > 0 || !checked.parsed?.value) {
@@ -82,15 +224,150 @@ async function ensureFile<T>(options: {
   return { value: checked.parsed.value };
 }
 
-function ideaContext(deps: PhaseDeps, ideaId: string): string {
+interface InitialBundleInspection { file?: FeaturesFile; problems: string[]; fingerprint: string }
+const FORMATION_COMPLETION_CREDIT_USD = 0.75;
+
+function inspectInitialBundle(project: ProjectPaths, deps: PhaseDeps): InitialBundleInspection | undefined {
+  if (!existsSync(project.spec) || !existsSync(project.featuresMirror) || !existsSync(project.initSh)) return undefined;
+  const specText = readFileSync(project.spec, "utf8");
+  const featureText = readFileSync(project.featuresMirror, "utf8");
+  const initText = readFileSync(project.initSh, "utf8");
+  const fingerprint = hashInput({ specText, featureText, initText });
+  try {
+    const spec = specCandidate(specText);
+    const features = featureCandidate(featureText, spec.value ?? parseSpec(""), deps);
+    const init = initCandidate(initText);
+    return { file: features.value, problems: [...spec.problems, ...features.problems, ...init.problems], fingerprint };
+  } catch (error) {
+    return { problems: [error instanceof Error ? error.message : String(error)], fingerprint };
+  }
+}
+
+function validInitialBundle(project: ProjectPaths, deps: PhaseDeps): FeaturesFile | undefined {
+  const inspected = inspectInitialBundle(project, deps);
+  return inspected?.problems.length === 0 ? inspected.file : undefined;
+}
+
+function repairableInitialBundle(project: ProjectPaths, deps: PhaseDeps): FeaturesFile | undefined {
+  const inspected = inspectInitialBundle(project, deps);
+  if (!inspected?.file) return undefined;
+  const spec = parseSpec(readFileSync(project.spec, "utf8"));
+  const featureProblems = featureCandidate(readFileSync(project.featuresMirror, "utf8"), spec, deps).problems;
+  const initProblems = initCandidate(readFileSync(project.initSh, "utf8")).problems;
+  return spec.missing.length === 0 && featureProblems.length === 0 && initProblems.length === 0 ? inspected.file : undefined;
+}
+
+/** Borrow only after a complete saved bundle exists, preserving expected build work and reflect's reserve. */
+function resumableFormationCeiling(deps: PhaseDeps, baseCeiling: number, file: FeaturesFile | undefined, completingRevision = false): number {
+  if (!file) return baseCeiling;
+  const globallyRemaining = Math.max(0, deps.cfg.budgets.usd - deps.record.costUsd());
+  const protectedBuild = file.features.length * deps.cfg.build.expectedAttemptUsd;
+  const downstreamHeadroom = Math.max(0, globallyRemaining - effectiveReflectReserveUsd(deps.cfg.budgets) - protectedBuild);
+  // A validated interrupted revision gets one small finalization window even when conservative
+  // expected build costs consume the remaining plan. The total target is unchanged, and the
+  // revision's mechanical gate plus mandatory second critic bound what can use this credit.
+  const completionHeadroom = completingRevision
+    ? Math.min(FORMATION_COMPLETION_CREDIT_USD, Math.max(0, globallyRemaining - effectiveReflectReserveUsd(deps.cfg.budgets)))
+    : 0;
+  return Math.max(baseCeiling, downstreamHeadroom, completionHeadroom);
+}
+
+function revisionMarker(record: RunRecord, ideaId: string, attempt: number, after: number): boolean {
+  return record.read().slice(after).some((event) => event.t === "formation.revision" && event.ideaId === ideaId && event.attempt === attempt);
+}
+
+function changedRevisionArtifacts(project: ProjectPaths, baseline: FormationSnapshot): Set<string> {
+  const changed = new Set<string>();
+  if (existsSync(project.spec) && readFileSync(project.spec, "utf8") !== baseline.spec) changed.add(resolve(project.spec));
+  if (existsSync(project.initSh) && readFileSync(project.initSh, "utf8") !== baseline.init) changed.add(resolve(project.initSh));
+  if (existsSync(project.featuresMirror)) {
+    try {
+      const current = assignIds(parseFeatures(readFileSync(project.featuresMirror, "utf8")));
+      if (hashInput(current) !== hashInput(baseline.features)) changed.add(resolve(project.featuresMirror));
+    } catch {
+      changed.add(resolve(project.featuresMirror));
+    }
+  }
+  return changed;
+}
+
+function revisionTargets(critique: Critique, project: ProjectPaths): Set<string> {
+  const targets = new Set<string>();
+  for (const item of [...critique.scopeCreep, ...critique.unverifiable, ...critique.missing]) {
+    const text = item.text.toLowerCase();
+    if (item.featureId?.startsWith("f") || /feature|acceptance|readme/.test(text)) targets.add(resolve(project.featuresMirror));
+    if (item.featureId === "global" || /specification|spec\.md|milestone|scope|non-goal/.test(text)) targets.add(resolve(project.spec));
+    if (/init\.sh|initiali[sz]/.test(text)) targets.add(resolve(project.initSh));
+  }
+  return targets;
+}
+
+function revisionRequirementsMet(required: ReadonlySet<string>, changed: ReadonlySet<string>): boolean {
+  return required.size > 0 ? [...required].every((path) => changed.has(path)) : changed.size > 0;
+}
+
+function evidenceForFormation(path: string): Evidence {
+  let value: unknown;
+  try { value = JSON.parse(readFileSync(path, "utf8")); }
+  catch (error) { throw new Error(`integrity: cannot read chosen-idea evidence: ${(error as Error).message}`); }
+  if (!value || typeof value !== "object" || Array.isArray(value)) throw new Error("integrity: chosen-idea evidence must be an object");
+  const evidence = value as Record<string, unknown>;
+  if (evidence.status !== "active" && evidence.status !== "unranked" && evidence.status !== "rejected") {
+    throw new Error("integrity: chosen-idea evidence has an invalid status");
+  }
+  if (evidence.status === "rejected") throw new Error("integrity: a rejected idea cannot enter formation");
+  if (evidence.parents !== undefined && (!Array.isArray(evidence.parents) || evidence.parents.some((item) => typeof item !== "string"))) {
+    throw new Error("integrity: chosen-idea evidence parents must be a string array");
+  }
+  const priorArt = evidence.priorArt;
+  if (priorArt !== undefined) {
+    if (!priorArt || typeof priorArt !== "object" || Array.isArray(priorArt)) throw new Error("integrity: chosen-idea prior-art evidence must be an object");
+    const prior = priorArt as Record<string, unknown>;
+    if (prior.status !== "collided" && prior.status !== "not_falsified" && prior.status !== "search_failed") {
+      throw new Error("integrity: chosen-idea prior-art evidence has an invalid status");
+    }
+    if (prior.distance !== undefined && typeof prior.distance !== "string") throw new Error("integrity: chosen-idea prior-art distance must be text");
+    if (prior.artifact !== undefined) {
+      if (!prior.artifact || typeof prior.artifact !== "object" || Array.isArray(prior.artifact)) throw new Error("integrity: chosen-idea prior-art artifact must be an object");
+      const artifact = prior.artifact as Record<string, unknown>;
+      if (typeof artifact.title !== "string" || artifact.title.trim() === "" || typeof artifact.url !== "string" || artifact.url.trim() === "") {
+        throw new Error("integrity: chosen-idea prior-art artifact requires title and url");
+      }
+    }
+  }
+  const probe = evidence.probe;
+  if (probe !== undefined) {
+    if (!probe || typeof probe !== "object" || Array.isArray(probe)) throw new Error("integrity: chosen-idea probe evidence must be an object");
+    const item = probe as Record<string, unknown>;
+    if (!["pass", "fail", "timeout", "error", "not_run"].includes(String(item.status))) {
+      throw new Error("integrity: chosen-idea probe evidence has an invalid status");
+    }
+    for (const key of ["reason", "stdoutTail"] as const) {
+      if (item[key] !== undefined && typeof item[key] !== "string") throw new Error(`integrity: chosen-idea probe ${key} must be text`);
+    }
+    for (const key of ["exitCode", "durationMs"] as const) {
+      if (item[key] !== undefined && (typeof item[key] !== "number" || !Number.isFinite(item[key]))) {
+        throw new Error(`integrity: chosen-idea probe ${key} must be finite`);
+      }
+    }
+  }
+  return evidence as unknown as Evidence;
+}
+
+function ideaContext(deps: PhaseDeps, ideaId: string, brief: ReturnType<typeof parseBrief>): string {
   const ideaPath = join(deps.run.ideasDir, `${ideaId}.md`);
   const evidencePath = join(deps.run.ideasDir, `${ideaId}.evidence.json`);
-  const parsed = parseDossier(readFileSync(ideaPath, "utf8")).dossier;
-  const evidence = JSON.parse(readFileSync(evidencePath, "utf8")) as Evidence;
+  let source: string;
+  try { source = readFileSync(ideaPath, "utf8"); }
+  catch (error) { throw new Error(`integrity: cannot read chosen idea: ${(error as Error).message}`); }
+  const parsed = parseDossier(source);
+  const problems = validateDossier(parsed.dossier, brief.axes);
+  if (problems.length > 0) throw new Error(`integrity: chosen idea is invalid: ${problems.join("; ")}`);
+  const evidence = evidenceForFormation(evidencePath);
   const dossier: Dossier = {
-    id: ideaId, title: parsed.title ?? "", mechanism: parsed.mechanism ?? "", draws: parsed.draws ?? "",
-    axisValues: parsed.axisValues ?? {}, testableClaim: parsed.testableClaim ?? "", cheapestTest: parsed.cheapestTest ?? "",
-    failureReason: parsed.failureReason ?? "", parents: evidence.parents ?? [], vsProbability: parsed.vsProbability,
+    id: ideaId, title: parsed.dossier.title!, mechanism: parsed.dossier.mechanism!, draws: parsed.dossier.draws!,
+    axisValues: parsed.dossier.axisValues!, testableClaim: parsed.dossier.testableClaim!, cheapestTest: parsed.dossier.cheapestTest!,
+    failureReason: parsed.dossier.failureReason!, parents: evidence.parents ?? [], vsProbability: parsed.dossier.vsProbability,
   };
   return renderDossier(dossier, evidence, { forJudge: false });
 }
@@ -99,19 +376,41 @@ function critiqueBrief(brief: ReturnType<typeof parseBrief>): string {
   return ["## Constraints", brief.sections.Constraints ?? "", "## Non-goals", brief.sections["Non-goals"] ?? ""].join("\n");
 }
 
-function formPinned(project: ProjectPaths, brief: ReturnType<typeof parseBrief>, dossier: string, _turnCap: number, ideaPath: string, evidencePath: string, minFeatures: number, maxFeatures: number): string {
-  return [
+function formPinned(
+  project: ProjectPaths,
+  brief: ReturnType<typeof parseBrief>,
+  dossier: string,
+  _turnCap: number,
+  ideaPath: string,
+  evidencePath: string,
+  minFeatures: number,
+  maxFeatures: number,
+  direct?: { seedPath: string; seed: string; briefPath: string; brief: string },
+): string {
+  const pinned = [
     "Phase: form. Produce the complete first milestone, not later aspirations.",
     `Write ${project.spec}, ${project.featuresMirror}, and ${project.initSh} in that order.`,
+    `spec.md requires these ## sections: ${SPEC_SECTIONS.join(", ")}. Scope and Non-goals each need a '- ' bullet. First milestone must be 1-600 characters.`,
     `The feature JSON is version 1 with init.needs and ${minFeatures}-${maxFeatures} features carrying title, description and one shell/file/manual acceptance. Leave ids to the harness.`,
+    "features.json accepts no extra state fields. The first feature and at least one feature overall need a nontrivial shell or safe repo-relative file check; manual checks need concrete instructions.",
+    "init.sh must be nonempty and begin with #!. Stop once all three artifacts are complete; the harness validates them and independently critiques before freezing.",
     `Source idea: ${ideaPath}. Evidence: ${evidencePath}. Re-reading either costs a turn.`,
     "## Constraints", brief.sections.Constraints ?? "", "## Non-goals", brief.sections["Non-goals"] ?? "",
     "## Search success", brief.sections["Search success"] ?? "", "## Chosen idea", dossier,
-  ].join("\n\n");
+  ];
+  if (direct) pinned.push(
+    `This is a direct supplied task. The original user request at ${direct.seedPath} and complete framing brief at ${direct.briefPath} are authoritative; do not narrow the task to the capped dossier summary or treat provisional axes as a competitive ranking.`,
+    "## Original user request", direct.seed,
+    "## Complete framing brief", direct.brief,
+  );
+  return pinned.join("\n\n");
 }
 
 function removeGenerated(deps: PhaseDeps, project: ProjectPaths): void {
-  for (const path of [project.spec, project.featuresMirror, project.initSh, project.lockMirror, deps.run.features, deps.run.acceptanceLock]) rmSync(path, { force: true });
+  for (const path of [
+    project.spec, project.featuresMirror, project.initSh, project.lockMirror,
+    deps.run.features, deps.run.acceptanceLock, formationApprovalPath(deps), formationProgressPath(deps),
+  ]) rmSync(path, { force: true });
   writeStatus(deps.run, { specHash: undefined, relocked: false });
 }
 
@@ -146,15 +445,15 @@ function readLock(path: string): unknown {
   catch (error) { throw new Error(`integrity: cannot read acceptance lock: ${(error as Error).message}`); }
 }
 
-function frozenInputs(deps: PhaseDeps, project: ProjectPaths): { file: FeaturesFile; specHash: string; spec: ParsedSpec } {
+function formationInputs(deps: PhaseDeps, project: ProjectPaths, featuresPath: string, label: string): { file: FeaturesFile; specHash: string; spec: ParsedSpec } {
   if (!existsSync(project.spec)) throw new Error("integrity: frozen formation is missing spec.md");
   if (!existsSync(project.initSh)) throw new Error("integrity: frozen formation is missing init.sh");
-  if (!existsSync(deps.run.features)) throw new Error("integrity: frozen formation is missing authoritative features.json");
+  if (!existsSync(featuresPath)) throw new Error(`integrity: frozen formation is missing ${label}`);
   const specText = readFileSync(project.spec, "utf8"); const spec = specCandidate(specText);
   const init = initCandidate(readFileSync(project.initSh, "utf8"));
   let file: FeaturesFile; let featureProblems: string[];
   try {
-    file = readAuthoritativeFeatures(deps.run.features);
+    file = readAuthoritativeFeatures(featuresPath);
     const expectedIds = Array.from({ length: file.features.length }, (_, index) => `f${String(index + 1).padStart(2, "0")}`);
     featureProblems = validateFeatures(file, spec.value!, deps.cfg, { expectedIds });
   } catch (error) { throw new Error(`integrity: cannot read authoritative features: ${(error as Error).message}`); }
@@ -163,7 +462,18 @@ function frozenInputs(deps: PhaseDeps, project: ProjectPaths): { file: FeaturesF
   return { file, specHash: hashInput(specText), spec: spec.value! };
 }
 
+function frozenInputs(deps: PhaseDeps, project: ProjectPaths): { file: FeaturesFile; specHash: string; spec: ParsedSpec } {
+  return formationInputs(deps, project, deps.run.features, "authoritative features.json");
+}
+
+function approvedInputs(deps: PhaseDeps, project: ProjectPaths): { file: FeaturesFile; specHash: string; spec: ParsedSpec } {
+  return formationInputs(deps, project, project.featuresMirror, "approved project features.json");
+}
+
 function finalStatus(deps: PhaseDeps, result: PhaseResult, specHash?: string): PhaseResult {
+  if (result.outcome === "failed" && result.failureClass === "budget" && result.message === "dollar cap reached in form") {
+    result = { outcome: "stopped", stopKind: "budget", budgetTargetUsd: deps.cfg.budgets.usd };
+  }
   if (result.outcome === "failed") {
     const last = deps.record.read().at(-1);
     if (!(last?.t === "failure" && last.class === result.failureClass && last.message === result.message)) {
@@ -174,7 +484,10 @@ function finalStatus(deps: PhaseDeps, result: PhaseResult, specHash?: string): P
   if (result.outcome === "ok") writeStatus(deps.run, { phase: "build", state: "running", outcome: undefined, specHash });
   else if (result.outcome === "honest_exit") writeStatus(deps.run, { state: "done", outcome: { kind: "honest_exit", exitKind: result.kind, reasons: result.reasons } });
   else if (result.outcome === "failed") writeStatus(deps.run, { state: "failed", outcome: { kind: "failure", failureClass: result.failureClass, message: result.message } });
-  else writeStatus(deps.run, { state: "stopped", outcome: { kind: "stopped", stopKind: result.stopKind } });
+  else writeStatus(deps.run, { state: "stopped", outcome: {
+    kind: "stopped", stopKind: result.stopKind,
+    budgetTargetUsd: result.budgetTargetUsd, wallTargetSeconds: result.wallTargetSeconds,
+  } });
   return result;
 }
 
@@ -192,6 +505,7 @@ async function formIdea(deps: FormDeps, git: GitRunner, ideaId: string, attempt:
   if (existsSync(deps.run.features)) {
     const frozen = frozenInputs(deps, project);
     if (!existsSync(deps.run.acceptanceLock)) {
+      verifyFormationApproval(deps, ideaId, frozen.file, frozen.specHash);
       await freeze(deps, frozen.file, frozen.specHash, git, { afterStep: deps.onFreezeStep });
       return { result: { outcome: "ok" }, specHash: frozen.specHash };
     }
@@ -211,9 +525,28 @@ async function formIdea(deps: FormDeps, git: GitRunner, ideaId: string, attempt:
   if (existsSync(deps.run.acceptanceLock)) throw new Error("integrity: acceptance lock exists without authoritative features");
 
   const briefText = readFileSync(deps.run.brief, "utf8"); const brief = parseBrief(briefText);
-  const dossier = ideaContext(deps, ideaId);
+  if (existsSync(formationApprovalPath(deps))) {
+    const approved = approvedInputs(deps, project);
+    verifyFormationApproval(deps, ideaId, approved.file, approved.specHash);
+    await freeze(deps, approved.file, approved.specHash, git, { afterStep: deps.onFreezeStep });
+    return { result: { outcome: "ok" }, specHash: approved.specHash };
+  }
+  const dossier = ideaContext(deps, ideaId, brief);
+  let progress = readFormationProgress(deps, ideaId, attempt);
+  let resumedPartialRevision = false;
+  if (progress) {
+    const current = validInitialBundle(project, deps);
+    resumedPartialRevision = progress.stage === "initial" && current !== undefined
+      && revisionMarker(deps.record, ideaId, attempt, progress.eventOffset)
+      && snapshotHash(currentFormationSnapshot(project, current)) !== progress.snapshot.hash;
+    if (!resumedPartialRevision) restoreFormationSnapshot(project, progress.snapshot);
+  }
+  const formationCeiling = resumableFormationCeiling(deps, ceiling, repairableInitialBundle(project, deps), resumedPartialRevision);
   let declared: { kind: ExitKind; reasons: string[] } | undefined;
   const takeExit = () => declared;
+  let autoCompleteInitial = true;
+  let revisionBaseline: FormationSnapshot | undefined;
+  let requiredRevisionTargets: Set<string> | undefined;
   const ctx: ToolContext = {
     cwd: project.dir, roots: [project.dir], run: deps.run, record: deps.record, fetchImpl: deps.fetchImpl,
     protectedPaths: [project.projectJson], protectedDirs: [project.checksDir, project.blockedDir], allowedExitKinds: ["not_formable"],
@@ -221,80 +554,172 @@ async function formIdea(deps: FormDeps, git: GitRunner, ideaId: string, attempt:
   };
   const brainSeat = deps.models("brain");
   const caps = derivedCaps(deps.cfg);
-  const brain = createBrain({
+  let lastInvalidBundle: string | undefined;
+  let brain!: ReturnType<typeof createBrain>;
+  brain = createBrain({
     model: brainSeat.model, getApiKey: () => deps.apiKeyFor(String(brainSeat.model.provider)), tools: brainTools(ctx, "form"),
     systemPrompt: [loadPrompt(deps.home, "kernel"), loadPrompt(deps.home, "brain"), `## Playbook (form)\n${playbookSection(loadPlaybook(deps.home), "form")}`],
-    pinned: formPinned(project, brief, dossier, deps.cfg.budgets.turns.form, join(deps.run.ideasDir, `${ideaId}.md`), join(deps.run.ideasDir, `${ideaId}.evidence.json`), deps.cfg.build.minFeatures, caps.maxFeatures), record: deps.record, role: "brain", phase: "form",
-    turnCap: deps.cfg.budgets.turns.form, usdCap: ceiling, spentUsd: () => spent.value, effort: effortFor(deps.cfg, "brain", brainSeat.model),
+    pinned: formPinned(
+      project, brief, dossier, deps.cfg.budgets.turns.form,
+      join(deps.run.ideasDir, `${ideaId}.md`), join(deps.run.ideasDir, `${ideaId}.evidence.json`),
+      deps.cfg.build.minFeatures, caps.maxFeatures,
+      ideaId === "supplied-task" ? {
+        seedPath: deps.run.seed, seed: readFileSync(deps.run.seed, "utf8"),
+        briefPath: deps.run.brief, brief: briefText,
+      } : undefined,
+    ), record: deps.record, role: "brain", phase: "form",
+    turnCap: deps.cfg.budgets.turns.form,
+    priorTurns: () => durableTurns(deps.record, ideaId, attempt, "brain"),
+    usdCap: formationCeiling, spentUsd: () => spent.value, effort: effortFor(deps.cfg, "brain", brainSeat.model),
     streamFn: deps.streamFn, onText: deps.onText, onTool: deps.onTool,
+    afterTool: (event) => {
+      if (!event.ok) return false;
+      const inspected = inspectInitialBundle(project, deps);
+      if (!inspected) return false;
+      if (autoCompleteInitial && inspected.problems.length === 0 && inspected.file) return true;
+      if (!autoCompleteInitial && revisionBaseline && requiredRevisionTargets && requiredRevisionTargets.size > 0
+        && inspected.problems.length === 0 && inspected.file) {
+        const changed = changedRevisionArtifacts(project, revisionBaseline);
+        if ([...requiredRevisionTargets].every((path) => changed.has(path))) return true;
+      }
+      if (inspected.problems.length > 0 && inspected.fingerprint !== lastInvalidBundle) {
+        lastInvalidBundle = inspected.fingerprint;
+        brain.agent.steer({
+          role: "user", steering: true, attribution: "user", timestamp: Date.now(),
+          content: `Harness validation still fails:\n${inspected.problems.map((problem) => `- ${problem}`).join("\n")}\nCorrect the artifacts now, then stop.`,
+        });
+      }
+      return false;
+    },
     shaping: { cfg: deps.cfg, runId: deps.run.id },
   });
   const charge = (result: BrainResult) => { spent.value += result.costUsd; };
   const stop = (result: BrainResult) => stopFailure("form", deps.cfg.budgets.turns.form, result);
   const halt = (result: BrainResult) => takeExit() !== undefined || stop(result) !== undefined;
 
-  const spec = await ensureFile({ brain, path: project.spec, parse: specCandidate, prompt: `Write ${project.spec} now.`, charge, halt, stopped: stop, exit: takeExit, label: "spec.md" });
-  if (spec.result) return { result: spec.result };
-  const feature = await ensureFile({ brain, path: project.featuresMirror, parse: (text) => featureCandidate(text, spec.value!, deps), prompt: `Write ${project.featuresMirror} now.`, charge, halt, stopped: stop, exit: takeExit, label: "features.json" });
-  if (feature.result) return { result: feature.result };
-  writeAtomic(project.featuresMirror, `${JSON.stringify(feature.value, null, 2)}\n`);
-  const init = await ensureFile({ brain, path: project.initSh, parse: initCandidate, prompt: `Write ${project.initSh} now.`, charge, halt, stopped: stop, exit: takeExit, label: "init.sh" });
-  if (init.result) return { result: init.result };
+  let initialFile: FeaturesFile;
+  if (progress) {
+    initialFile = progress.snapshot.features;
+  } else {
+    const spec = await ensureFile({ brain, path: project.spec, parse: specCandidate, prompt: `Write ${project.spec} now.`, charge, halt, stopped: stop, exit: takeExit, label: "spec.md" });
+    if (spec.result) return { result: spec.result };
+    const feature = await ensureFile({ brain, path: project.featuresMirror, parse: (text) => featureCandidate(text, spec.value!, deps), prompt: `Write ${project.featuresMirror} now.`, charge, halt, stopped: stop, exit: takeExit, label: "features.json" });
+    if (feature.result) return { result: feature.result };
+    writeAtomic(project.featuresMirror, `${JSON.stringify(feature.value, null, 2)}\n`);
+    const init = await ensureFile({ brain, path: project.initSh, parse: initCandidate, prompt: `Write ${project.initSh} now.`, charge, halt, stopped: stop, exit: takeExit, label: "init.sh" });
+    if (init.result) return { result: init.result };
+    initialFile = feature.value!;
+    progress = writeFormationProgress(deps, ideaId, attempt, "initial", currentFormationSnapshot(project, initialFile), deps.record.read().length);
+    deps.onFormStage?.("initial");
+    throwIfRunCancelled();
+  }
+  autoCompleteInitial = false;
 
-  const critique = async () => runCritique(deps, {
+  const critique = async (priorTurns: () => number) => runCritique(deps, {
     spec: readFileSync(project.spec, "utf8"), features: readFileSync(project.featuresMirror, "utf8"), dossier,
-    brief: critiqueBrief(brief), brainRef: brainSeat.ref, formationCeilingUsd: ceiling, spentUsd: () => spent.value, onResult: charge,
+    brief: critiqueBrief(brief), brainRef: brainSeat.ref, formationCeilingUsd: formationCeiling, spentUsd: () => spent.value, onResult: charge,
+    priorTurns,
   });
-  const first = await critique();
-  const revision = ["Revise the complete formed project exactly once. Preserve every assigned feature id and order.",
-    ...first.scopeCreep.map((item) => `Scope creep${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
-    ...first.unverifiable.map((item) => `Unverifiable${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
-    ...first.missing.map((item) => `Missing${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
-    `Binding items: ${bindingItems(first, feature.value!).join("; ") || "none"}.`, `Rewrite ${project.spec}, ${project.featuresMirror}, and ${project.initSh} as needed.`].join("\n");
-  if (!deps.record.read().some((event) => event.t === "formation.revision" && event.ideaId === ideaId && event.attempt === attempt)) {
-    deps.record.append({ t: "formation.revision", ideaId, attempt });
+  const progressOffset = progress.eventOffset;
+  const priorCritiques = reusableCritiques(deps.record, progressOffset);
+  if (progress.stage === "revised" && priorCritiques.length === 0) {
+    throw new Error("integrity: revised formation progress has no durable first critique");
   }
-  let revisionResult = await brain.run(revision); charge(revisionResult);
-  if (takeExit()) return { result: { outcome: "honest_exit", ...takeExit()! } };
-  let halted = stop(revisionResult); if (halted) return { result: halted };
-  const expectedIds = feature.value!.features.map((item) => item.id);
-  const validateRevision = () => {
-    const s = specCandidate(existsSync(project.spec) ? readFileSync(project.spec, "utf8") : "");
-    const f = featureCandidate(existsSync(project.featuresMirror) ? readFileSync(project.featuresMirror, "utf8") : "", s.value ?? parseSpec(""), deps, expectedIds);
-    const i = initCandidate(existsSync(project.initSh) ? readFileSync(project.initSh, "utf8") : "");
-    return { spec: s, features: f, init: i, problems: [...s.problems, ...f.problems, ...i.problems] };
+  const first = priorCritiques[0] ?? await critique(() => durableTurnsSince(deps.record, progressOffset, "critic"));
+  const firstCriticTurns = progress.stage === "revised" ? progress.firstCriticTurns! : durableTurnsSince(deps.record, progressOffset, "critic");
+  deps.onFormStage?.("first_critique");
+  throwIfRunCancelled();
+
+  let revisedFile: FeaturesFile;
+  if (progress.stage === "revised") {
+    revisedFile = progress.snapshot.features;
+  } else {
+    if (!resumedPartialRevision) restoreFormationSnapshot(project, progress.snapshot);
+    revisionBaseline = progress.snapshot;
+    requiredRevisionTargets = revisionTargets(first, project);
+    const alreadyChanged = changedRevisionArtifacts(project, progress.snapshot);
+    const remainingTargets = [...requiredRevisionTargets].filter((path) => !alreadyChanged.has(path));
+    const revision = ["Revise the complete formed project exactly once. Preserve every assigned feature id and order.",
+      ...(resumedPartialRevision ? ["Resume the interrupted revision from the valid files currently on disk; preserve completed edits and do not restart or reread unchanged work."] : []),
+      ...(remainingTargets.length > 0 ? [`Remaining critic-implicated artifacts: ${remainingTargets.join(", ")}. Make their smallest sufficient corrections first.`] : []),
+      ...first.scopeCreep.map((item) => `Scope creep${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
+      ...first.unverifiable.map((item) => `Unverifiable${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
+      ...first.missing.map((item) => `Missing${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
+      `Binding items: ${bindingItems(first, initialFile).join("; ") || "none"}.`, `Rewrite ${project.spec}, ${project.featuresMirror}, and ${project.initSh} as needed.`].join("\n");
+    if (!deps.record.read().some((event) => event.t === "formation.revision" && event.ideaId === ideaId && event.attempt === attempt)) {
+      deps.record.append({ t: "formation.revision", ideaId, attempt });
+    }
+    const expectedIds = initialFile.features.map((item) => item.id);
+    const validateRevision = () => {
+      const s = specCandidate(existsSync(project.spec) ? readFileSync(project.spec, "utf8") : "");
+      const f = featureCandidate(existsSync(project.featuresMirror) ? readFileSync(project.featuresMirror, "utf8") : "", s.value ?? parseSpec(""), deps, expectedIds);
+      const i = initCandidate(existsSync(project.initSh) ? readFileSync(project.initSh, "utf8") : "");
+      return { spec: s, features: f, init: i, problems: [...s.problems, ...f.problems, ...i.problems] };
+    };
+    let revisionResult = await brain.run(revision); charge(revisionResult);
+    if (takeExit()) { clearFormationProgress(deps); return { result: { outcome: "honest_exit", ...takeExit()! } }; }
+    let revised = validateRevision();
+    let halted = stop(revisionResult);
+    const requirementsMet = requiredRevisionTargets !== undefined
+      && revisionRequirementsMet(requiredRevisionTargets, changedRevisionArtifacts(project, revisionBaseline));
+    const validAtCap = revised.problems.length === 0 && revised.features.value !== undefined && requirementsMet
+      && (revisionResult.stopped === "turn_cap" || revisionResult.stopped === "usd_cap");
+    if (halted && !validAtCap) return { result: halted };
+    const revisedExecutable = () => revised.features.value?.features.filter((item) => item && typeof item === "object" && item.acceptance?.type !== "manual").length ?? -1;
+    if (revisedExecutable() === 0) {
+      const reasons = ["zero executable acceptance checks remain after revision"];
+      deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
+      clearFormationProgress(deps);
+      return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
+    }
+    if (revised.problems.length > 0) {
+      revisionResult = await brain.run(`The one revision is invalid:\n${revised.problems.map((problem) => `- ${problem}`).join("\n")}\nCorrect all three files once, preserving ids and order.`); charge(revisionResult);
+      if (takeExit()) { clearFormationProgress(deps); return { result: { outcome: "honest_exit", ...takeExit()! } }; }
+      revised = validateRevision();
+      halted = stop(revisionResult);
+      const correctedRequirementsMet = requiredRevisionTargets !== undefined
+        && revisionRequirementsMet(requiredRevisionTargets, changedRevisionArtifacts(project, revisionBaseline));
+      const correctedValidAtCap = revised.problems.length === 0 && revised.features.value !== undefined && correctedRequirementsMet
+        && (revisionResult.stopped === "turn_cap" || revisionResult.stopped === "usd_cap");
+      if (halted && !correctedValidAtCap) return { result: halted };
+    }
+    if (revisedExecutable() === 0) {
+      const reasons = ["zero executable acceptance checks remain after revision"];
+      deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
+      clearFormationProgress(deps);
+      return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
+    }
+    if (revised.problems.length > 0 || !revised.features.value) return { result: { outcome: "failed", failureClass: "verify", message: `formation revision is not usable: ${revised.problems.join("; ")}` } };
+    revisedFile = revised.features.value;
+    writeAtomic(project.featuresMirror, `${JSON.stringify(revisedFile, null, 2)}\n`);
+    progress = writeFormationProgress(deps, ideaId, attempt, "revised", currentFormationSnapshot(project, revisedFile), progressOffset, firstCriticTurns);
+    deps.onFormStage?.("revised");
+    throwIfRunCancelled();
+  }
+
+  const currentCritiques = reusableCritiques(deps.record, progressOffset);
+  const priorSecondTurns = () => {
+    const total = durableTurnsSince(deps.record, progressOffset, "critic");
+    if (total < firstCriticTurns) throw new Error("integrity: critic turn journal is shorter than formation progress");
+    return total - firstCriticTurns;
   };
-  let revised = validateRevision();
-  const revisedExecutable = () => revised.features.value?.features.filter((item) => item && typeof item === "object" && item.acceptance?.type !== "manual").length ?? -1;
-  if (revisedExecutable() === 0) {
-    const reasons = ["zero executable acceptance checks remain after revision"];
-    deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
-    return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
-  }
-  if (revised.problems.length > 0) {
-    revisionResult = await brain.run(`The one revision is invalid:\n${revised.problems.map((problem) => `- ${problem}`).join("\n")}\nCorrect all three files once, preserving ids and order.`); charge(revisionResult);
-    if (takeExit()) return { result: { outcome: "honest_exit", ...takeExit()! } };
-    halted = stop(revisionResult); if (halted) return { result: halted };
-    revised = validateRevision();
-  }
-  if (revisedExecutable() === 0) {
-    const reasons = ["zero executable acceptance checks remain after revision"];
-    deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
-    return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
-  }
-  if (revised.problems.length > 0 || !revised.features.value) return { result: { outcome: "failed", failureClass: "verify", message: `formation revision is not usable: ${revised.problems.join("; ")}` } };
-  writeAtomic(project.featuresMirror, `${JSON.stringify(revised.features.value, null, 2)}\n`);
-  const second = await critique();
-  const executable = revised.features.value.features.filter((item) => item.acceptance.type !== "manual").length;
+  const second = currentCritiques[1] ?? await critique(priorSecondTurns);
+  deps.onFormStage?.("second_critique");
+  throwIfRunCancelled();
+  const executable = revisedFile.features.filter((item) => item.acceptance.type !== "manual").length;
   if (second.verdict === "revise" || executable === 0) {
     const reasons = [...second.scopeCreep, ...second.unverifiable, ...second.missing].map((item) => item.text);
     if (second.verdict === "revise" && reasons.length === 0) reasons.push("the second critic still requires revision");
     if (executable === 0) reasons.push("zero executable acceptance checks remain after revision");
     deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
+    clearFormationProgress(deps);
     return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
   }
   const finalSpecHash = hashInput(readFileSync(project.spec, "utf8"));
-  await freeze(deps, revised.features.value, finalSpecHash, git, { afterStep: deps.onFreezeStep });
+  writeFormationApproval(deps, ideaId, revisedFile, finalSpecHash);
+  deps.onApprovalStep?.();
+  throwIfRunCancelled();
+  await freeze(deps, revisedFile, finalSpecHash, git, { afterStep: deps.onFreezeStep });
   return { result: { outcome: "ok" }, specHash: finalSpecHash };
 }
 
@@ -325,7 +750,8 @@ export async function runForm(deps: FormDeps, ideaId?: string, options: FormOpti
     const attempts = derivedCaps(deps.cfg).formationAttempts;
     for (let index = 0; index < attempts; index += 1) {
       const priorAttempts = deps.record.read().filter((event) => event.t === "formation.attempt");
-      const heldAttempt = priorAttempts.find((event) => event.ideaId === selected)?.attempt;
+      const latestAttempt = priorAttempts.at(-1);
+      const heldAttempt = latestAttempt?.ideaId === selected ? latestAttempt.attempt : undefined;
       const attempt = heldAttempt ?? Math.max(0, ...priorAttempts.map((event) => event.attempt)) + 1;
       if (heldAttempt === undefined) deps.record.append({ t: "formation.attempt", ideaId: selected, attempt });
       let formed: { result: PhaseResult; specHash?: string };

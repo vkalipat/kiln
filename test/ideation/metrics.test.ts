@@ -126,4 +126,16 @@ describe("ideation metrics", () => {
     expect(metrics.effortByRole.brain).toBe("low");
     expect(metrics.addendaHashes).toEqual(["second", "first", "third"]);
   });
+
+  test("aggregates minimal and max effort without corrupting the modal count", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-metric-wide-effort-"));
+    const run = createRun(home, "seed");
+    const record = new RunRecord(run.record);
+    for (const effortSent of ["max", "minimal", "max"] as const) record.append({
+      t: "model.call", role: "brain", provider: "p", model: "m", effortSent,
+      inputHash: effortSent, usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0,
+      stopReason: "stop", excerpt: "",
+    });
+    expect(computeMetrics(run).effortByRole.brain).toBe("max");
+  });
 });

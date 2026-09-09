@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRun } from "../../src/core/run";
 import { RunRecord } from "../../src/core/record";
-import { BUILDER_TOOL_NAMES, PHASE_TOOLS, SCOUT_TOOL_NAMES, brainTools, scoutTools, type ToolContext } from "../../src/brain/tools";
+import { BUILDER_TOOL_NAMES, PHASE_TOOLS, SCOUT_TOOL_NAMES, brainTools, builderTools, scoutTools, type ToolContext } from "../../src/brain/tools";
 import type { Phase } from "../../src/core/config";
 import { clampTimeoutMs } from "../../src/brain/tools/bash";
 import { Limiter } from "../../src/core/limiter";
@@ -16,7 +16,7 @@ function ctx(extra: Partial<ToolContext> = {}) {
   const cwd = mkdtempSync(join(tmpdir(), "kiln-cwd-"));
   const record = new RunRecord(run.record);
   const c: ToolContext = { cwd, roots: [cwd, run.dir], run, record, ...extra };
-  const tools = Object.fromEntries(brainTools(c, "discover").map((t) => [t.name, t]));
+  const tools = Object.fromEntries([...brainTools(c, "discover"), ...builderTools(c).filter((tool) => tool.name === "bash")].map((t) => [t.name, t]));
   const call = async (name: string, args: Record<string, unknown>, signal?: AbortSignal) => {
     const r = await tools[name]!.execute("id", args as never, signal as never);
     return { text: (r.content[0] as { text: string }).text, isError: r.isError === true };
@@ -37,7 +37,7 @@ describe("tools", () => {
 
   test("tool sets have the documented names", () => {
     const { c } = ctx();
-    expect(brainTools(c, "discover").map((t) => t.name)).toEqual(["read", "write", "edit", "bash", "search", "web_search", "web_fetch", "scout", "note", "exit"]);
+    expect(brainTools(c, "discover").map((t) => t.name)).toEqual(["read", "write", "edit", "search", "web_search", "web_fetch", "scout", "note", "exit"]);
     expect(scoutTools(c).map((t) => t.name)).toEqual(["read", "search", "web_search", "web_fetch", "scholar_search"]);
     for (const t of brainTools(c, "discover")) { expect(t.description.length).toBeLessThan(300); expect(t.examples?.length).toBe(1); }
   });
@@ -46,7 +46,8 @@ describe("tools", () => {
     const { c } = ctx();
     const names = (p: Phase) => brainTools(c, p).map((t) => t.name);
     expect(names("ideate")).not.toContain("bash");
-    expect(names("frame")).toContain("bash");
+    expect(names("frame")).not.toContain("bash");
+    expect(names("discover")).not.toContain("bash");
     expect(names("form")).toContain("bash");
     expect(names("build")).toContain("bash");
     expect(names("frame")).not.toContain("scout");
@@ -241,9 +242,9 @@ describe("tools", () => {
     expect(record.read().filter((e) => e.t === "failure" && e.class === "policy").length).toBe(6);
     expect(readFileSync(run.status, "utf8")).toContain('"id"');
   });
-  test("the frozen workflow is immutable through write and edit, including symlink aliases", async () => {
+  test.each(["workflow.json", "clarification.json"])("harness-owned %s is immutable through write and edit, including symlink aliases", async (file) => {
     const { call, run } = ctx();
-    const workflow = join(run.dir, "workflow.json");
+    const workflow = join(run.dir, file);
     const alias = join(run.dir, "workflow-alias.json");
     const frozen = '{"version":1,"intent":"open_ended_ideation"}\n';
     writeFileSync(workflow, frozen);

@@ -39,6 +39,14 @@ describe("build entry", () => {
   });
 
   test("routes terminal and unchanged-target resumes before any Git or record work", async () => {
+    const success = setupLoop();
+    success.record.append({ t: "phase.end", phase: "build", outcome: "ok" });
+    success.record.append({ t: "phase.start", phase: "reflect" });
+    success.record.append({ t: "phase.end", phase: "reflect", outcome: "ok" });
+    writeStatus(success.deps.run, { phase: "reflect", state: "done", outcome: { kind: "success" } });
+    const successEvents = success.record.read().length;
+    expect(await enterBuild(success.deps, {})).toEqual({ exit: { outcome: "ok" } });
+    expect(success.git.calls).toHaveLength(0); expect(success.record.read()).toHaveLength(successEvents);
     const failed = setupLoop(); writeStatus(failed.deps.run, { phase: "build", state: "failed", outcome: { kind: "failure", failureClass: "integrity", message: "lock" } });
     expect(await enterBuild(failed.deps, {})).toEqual({ exit: { outcome: "failed", failureClass: "integrity", message: "lock" } });
     const honest = setupLoop(); writeStatus(honest.deps.run, { phase: "build", state: "done", outcome: { kind: "honest_exit", exitKind: "cannot_be_satisfied", reasons: ["no"] } });
@@ -54,6 +62,14 @@ describe("build entry", () => {
     entered(await enterBuild(budget.deps, {}));
     const transient = setupLoop(); writeStatus(transient.deps.run, { phase: "build", state: "stopped", outcome: { kind: "stopped", stopKind: "transient" } });
     entered(await enterBuild(transient.deps, {}));
+  });
+
+  test("rejects a success status without the durable build and reflect terminals", async () => {
+    const s = setupLoop();
+    writeStatus(s.deps.run, { phase: "reflect", state: "done", outcome: { kind: "success" } });
+    expect(await enterBuild(s.deps, {})).toMatchObject({ exit: { outcome: "failed", failureClass: "integrity", message: expect.stringContaining("success status") } });
+    expect(s.git.calls).toHaveLength(0);
+    expect(readStatus(s.deps.run)).toMatchObject({ phase: "build", state: "failed", outcome: { failureClass: "integrity" } });
   });
 
   test("runs init.sh once under a 600 second deadline and repairs a crash between its check and its commit", async () => {

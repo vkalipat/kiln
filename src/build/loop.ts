@@ -27,6 +27,19 @@ function nextAttempt(deps: PhaseDeps, featureId: string): number {
   return deps.record.read().reduce((max, event) => event.t === "feature.pick" && event.featureId === featureId ? Math.max(max, event.attempt) : max, 0) + 1;
 }
 
+/** Paid usage already journalled for a picked attempt whose builder.session did not survive. */
+function interruptedBuilderUsage(deps: PhaseDeps, featureId: string, attempt: number): { costUsd: number; turns: number } {
+  const events = deps.record.read();
+  const pick = events.findLast((event) => event.t === "feature.pick" && event.featureId === featureId && event.attempt === attempt);
+  if (!pick) return { costUsd: 0, turns: 0 };
+  return events.reduce((usage, event) => {
+    if (event.seq <= pick.seq) return usage;
+    if (event.t === "model.call" && event.role === "builder") usage.costUsd += event.costUsd;
+    if (event.t === "turn" && event.role === "builder" && event.phase === "build") usage.turns += 1;
+    return usage;
+  }, { costUsd: 0, turns: 0 });
+}
+
 function pick(deps: PhaseDeps, features: FeaturesFile, remainingUsd: number): { feature: Feature; attempt: number; ceiling: number } | undefined {
   const state = foldState(deps.run); const remaining = features.features.filter((feature) => !state[feature.id]!.passes && !state[feature.id]!.blocked);
   for (const feature of remaining) {
@@ -138,6 +151,7 @@ async function runInternal(deps: BuildDeps, io: BuildIo, arm: "fresh" | "single_
 
     let builder = builderSession(deps.record.read(), feature.id, attempt);
     if (!builder) {
+      const interrupted = interruptedBuilderUsage(deps, feature.id, attempt);
       if (arm === "single_session" && !driver) {
         const historical = deps.record.read();
         // Model calls are the spend authority: a cancellation can land after a paid response is
@@ -147,7 +161,14 @@ async function runInternal(deps: BuildDeps, io: BuildIo, arm: "fresh" | "single_
         const priorTurns = historical.filter((event) => event.t === "turn" && event.role === "builder" && event.phase === "build").length;
         driver = (deps.createDriver ?? createBuilderDriver)(deps, { project, git, turnCap: deps.cfg.build.sessionTurnCap * aggregateAttempts, usdCap: deps.cfg.build.builderUsdCap * aggregateAttempts, priorSpentUsd: () => priorCost, priorTurns: () => priorTurns });
       }
-      builder = driver ? await driver.runFeature(feature, { attempt }) : await (deps.runBuilder ?? runBuilderSession)(deps, feature, { project, git, attempt });
+      const current = driver
+        ? await driver.runFeature(feature, { attempt })
+        : await (deps.runBuilder ?? runBuilderSession)(deps, feature, { project, git, attempt, priorSpentUsd: interrupted.costUsd, priorTurns: interrupted.turns });
+      builder = interrupted.costUsd === 0 && interrupted.turns === 0 ? current : {
+        ...current,
+        costUsd: interrupted.costUsd + current.costUsd,
+        turns: interrupted.turns + current.turns,
+      };
       appendBuilderSession(deps, feature.id, attempt, arm, builder);
       if (builder.headMoved) deps.record.append({ t: "failure", class: "policy", message: `builder moved HEAD for ${feature.id} attempt ${attempt}` });
     }

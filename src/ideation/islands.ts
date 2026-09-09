@@ -70,10 +70,8 @@ export function playbookMoves(playbook: string, section: string): PlaybookMove[]
   return out;
 }
 
-/** Drop the judge's own model, unless that would leave nothing to generate with (record §2). */
-function away(candidates: readonly ModelChoice[], judgeModel: string): readonly ModelChoice[] {
-  const rest = candidates.filter((c) => c.ref !== judgeModel);
-  return rest.length > 0 ? rest : candidates;
+function withoutJudge(candidates: readonly ModelChoice[], judgeModel: string): readonly ModelChoice[] {
+  return candidates.filter((c) => c.ref !== judgeModel);
 }
 
 /**
@@ -92,9 +90,13 @@ export function assignIslands(
   models: IslandModels,
 ): IslandPlan[] {
   const n = cfg.ideation.islands;
-  const generator = away(models.generator, judgeModel);
+  const nonJudgeGenerator = withoutJudge(models.generator, judgeModel);
+  const generator = nonJudgeGenerator.length > 0 ? nonJudgeGenerator : models.generator;
   if (generator.length === 0) throw new Error("assignIslands: no generator model candidates supplied");
-  const cheap = away(models.cheap ?? [], judgeModel);
+  const nonJudgeCheap = withoutJudge(models.cheap ?? [], judgeModel);
+  // A cheap slot is optional. Never re-introduce the judge merely because its cheap list has no
+  // alternative while a non-judge generator is available.
+  const cheap = nonJudgeCheap.length > 0 ? nonJudgeCheap : nonJudgeGenerator.length === 0 ? (models.cheap ?? []) : [];
   // Lenses open the search in round 1; from round 2 the operators mutate what the frontier holds.
   const pool = playbookMoves(playbook, round === 1 ? "lenses" : "ideate");
   // Consecutive rounds start where the last one stopped, so five operators over three islands are
@@ -119,7 +121,13 @@ export function assignIslands(
 
 /** Record one `island.assign` per plan; separate from `assignIslands` so the assignment stays pure. */
 export function recordIslandAssignments(record: RunRecord, plans: readonly IslandPlan[]): void {
-  for (const p of plans) record.append({ t: "island.assign", round: p.round, island: p.island, model: p.ref, lens: p.lens?.id, operator: p.operator?.id });
+  const held = new Set(record.read().flatMap((event) => event.t === "island.assign" ? [`${event.round}|${event.island}`] : []));
+  for (const p of plans) {
+    const key = `${p.round}|${p.island}`;
+    if (held.has(key)) continue;
+    record.append({ t: "island.assign", round: p.round, island: p.island, model: p.ref, lens: p.lens?.id, operator: p.operator?.id });
+    held.add(key);
+  }
 }
 
 /** What one island is shown: the brief and landscape verbatim, the vocabulary, and the round's seeds. */
@@ -157,6 +165,8 @@ export interface BatchCheck {
   blocks: string[];
   /** Everything to quote back in the single re-ask; empty means the batch is usable as written. */
   problems: string[];
+  /** Dossier-shape problems that remain unsafe to send downstream after the bounded re-ask. */
+  contentProblems: string[];
   /** True when both rules record §4 states — the batch size and the verbalized distribution — held.
    *  It is the source of the dossiers' `vsBound`, so a batch still wrong after its one re-ask is
    *  marked unbounded while a merely untidy one (a missing section, a stray axis value) is not. */
@@ -177,9 +187,10 @@ export interface BatchCheckOptions {
  * what the one re-ask quotes back; `bounded` is what survives the re-ask as `vsBound` (record §4).
  */
 export function validateBatch(md: string, opts: BatchCheckOptions): BatchCheck {
-  const minUnder = opts.minUnder ?? VS_MIN_UNDER;
+  const minUnder = opts.minUnder ?? Math.min(VS_MIN_UNDER, Math.max(0, opts.count - 1));
   const blocks = splitIdeas(md);
   const problems: string[] = [];
+  const contentProblems: string[] = [];
   const rightSize = blocks.length === opts.count;
   if (!rightSize) problems.push(`expected exactly ${opts.count} "# Idea <n>" blocks, found ${blocks.length}`);
   let under = 0;
@@ -187,12 +198,13 @@ export function validateBatch(md: string, opts: BatchCheckOptions): BatchCheck {
     const { dossier, missing } = parseDossier(block);
     const p = dossier.vsProbability;
     if (p !== undefined && p < VS_PROBABILITY_MAX) under += 1;
-    if (missing.length > 0) problems.push(`idea ${i + 1} is missing: ${missing.join(", ")}`);
-    if (opts.axes) for (const e of validateDossier(dossier, opts.axes)) problems.push(`idea ${i + 1}: ${e}`);
+    if (missing.length > 0) contentProblems.push(`idea ${i + 1} is missing: ${missing.join(", ")}`);
+    if (opts.axes) for (const e of validateDossier(dossier, opts.axes)) contentProblems.push(`idea ${i + 1}: ${e}`);
   });
+  problems.push(...contentProblems);
   const distributed = under >= minUnder;
   if (!distributed) problems.push(`only ${under} of ${blocks.length} ideas state a probability below ${VS_PROBABILITY_MAX}; at least ${minUnder} must`);
-  return { blocks, problems, bounded: rightSize && distributed };
+  return { blocks, problems, contentProblems, bounded: rightSize && distributed };
 }
 
 export interface IslandRun {
@@ -210,7 +222,11 @@ export interface IslandRun {
   error?: string;
   errorStatus?: number;
   errorId?: string;
-  stopped?: "error" | "turn_cap";
+  stopped?: "error" | "turn_cap" | "usd_cap" | "refused" | "verify";
+}
+
+function renderBlocks(blocks: readonly string[]): string {
+  return blocks.map((block, index) => `# Idea ${index + 1}\n\n${block.trim()}\n`).join("\n");
 }
 
 function firstTurn(inputs: IslandInputs, count: number): string {
@@ -219,7 +235,7 @@ function firstTurn(inputs: IslandInputs, count: number): string {
   if (inputs.metaReview && inputs.metaReview.trim() !== "") parts.push("", "## Why the last round's losers lost", inputs.metaReview.trim());
   parts.push(
     "",
-    `Batch 1 of 2. Write exactly ${count} ideas as a verbalized distribution: give every idea a Probability and make at least ${VS_MIN_UNDER} of them below ${VS_PROBABILITY_MAX}.`,
+    `Batch 1 of 2. Write exactly ${count} ideas as a verbalized distribution: give every idea a Probability and make at least ${Math.min(VS_MIN_UNDER, Math.max(0, count - 1))} of them below ${VS_PROBABILITY_MAX}.`,
   );
   return parts.join("\n");
 }
@@ -277,7 +293,7 @@ export async function runIsland(deps: PhaseDeps, plan: IslandPlan, inputs: Islan
       // limiter, so a sequence-number window would sweep in the other two islands' calls.
       costUsd += r.costUsd;
       contextPressure ||= r.contextPressure === true;
-      if (r.stopped === "error" || r.stopped === "turn_cap") {
+      if (r.stopped === "error" || r.stopped === "turn_cap" || r.stopped === "usd_cap" || r.stopped === "refused") {
         error = r.error ?? `island stopped: ${r.stopped}`;
         errorStatus = r.errorStatus;
         errorId = r.errorId;
@@ -289,9 +305,19 @@ export async function runIsland(deps: PhaseDeps, plan: IslandPlan, inputs: Islan
       if (check.problems.length === 0 || attempt === 1) break;
       reasked += 1;
     }
+    if (check?.contentProblems.length) {
+      error = `island batch ${n + 1} failed verification after its re-ask: ${check.contentProblems.join("; ")}`;
+      stopped = "verify";
+      break;
+    }
     // A batch whose re-ask failed to reach the model is still the batch the island wrote, so it is
     // kept rather than thrown away with the error.
-    if (check !== undefined) batches.push({ text, bounded: check.bounded });
+    if (check !== undefined) {
+      // Extra blocks create unbounded downstream scout/probe work. Keep the model's first requested
+      // ideas verbatim and discard only the overflow after its one correction chance.
+      const safeText = check.blocks.length > count ? renderBlocks(check.blocks.slice(0, count)) : text;
+      batches.push({ text: safeText, bounded: check.bounded });
+    }
     if (error !== undefined) break;
   }
   const raw = formatRawIsland(plan, batches);

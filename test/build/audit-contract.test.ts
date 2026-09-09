@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRun } from "../../src/core/run";
@@ -48,5 +48,31 @@ describe("audit contract", () => {
     expect(latest).toBe(renderAudit(second));
     expect(latest).toContain("Audit f01 attempt 2");
     expect(latest).not.toContain("Audit f01 attempt 1");
+  });
+
+  test("ignores only a torn final append and rejects terminated or interior corruption", () => {
+    const run = createRun(mkdtempSync(join(tmpdir(), "kiln-audits-corrupt-")), "seed");
+    const first = JSON.stringify(audit(1));
+    const second = JSON.stringify(audit(2));
+
+    writeFileSync(run.audits, `${first}\n{torn`);
+    expect(readAudits(run)).toHaveLength(1);
+    appendAudit(run, audit(2));
+    expect(readAudits(run).map((item) => item.attempt)).toEqual([1, 2]);
+    expect(readFileSync(run.audits, "utf8")).not.toContain("{torn");
+    writeFileSync(run.audits, `${first}\n{bad\n`);
+    expect(() => readAudits(run)).toThrow("malformed audits.jsonl line 2");
+    writeFileSync(run.audits, `${first}\n{bad\n${second}\n`);
+    expect(() => readAudits(run)).toThrow("malformed audits.jsonl line 2");
+  });
+
+  test("refuses a symlinked audit journal without changing its target", () => {
+    const run = createRun(mkdtempSync(join(tmpdir(), "kiln-audits-link-")), "seed");
+    const outside = join(mkdtempSync(join(tmpdir(), "kiln-audits-outside-")), "outside.jsonl");
+    writeFileSync(outside, "sentinel\n");
+    symlinkSync(outside, run.audits);
+
+    expect(() => appendAudit(run, audit(1))).toThrow("audits.jsonl must be a regular file");
+    expect(readFileSync(outside, "utf8")).toBe("sentinel\n");
   });
 });

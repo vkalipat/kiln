@@ -23,7 +23,7 @@ describe("adaptive run integration", () => {
     const home = homeFor(); const evidence = structuredClone(DEFAULT_EVIDENCE_SNAPSHOT) as any;
     evidence.id = "reviewed-business-update";
     evidence.rankings.find((r: any) => r.category === "business").entries = [
-      { modelRef: "openai-codex/gpt-6-astra", score: 2000 },
+      { modelRef: "anthropic/claude-opus-5", score: 2000 },
       { modelRef: "anthropic/claude-fable-5-1", score: 1600 },
     ];
     mkdirSync(join(home, "routing"), { recursive: true });
@@ -32,7 +32,7 @@ describe("adaptive run integration", () => {
     expect(await main(["run", "new", "Find a business idea", "--home", home, "--through", "frame", "--json"], out, {
       apiKeyFor, runFrame: async (d) => { generator = d.cfg.roles.generator[0]!; return { outcome: "ok" }; },
     })).toBe(0);
-    expect(generator).toBe("openai-codex/gpt-6-astra");
+    expect(generator).toBe("anthropic/claude-opus-5");
     expect(JSON.parse(out.output[0]!).routing.evidence.id).toBe("reviewed-business-update");
   });
   test("plans before the first phase, freezes routing, and resumes without replacing model identities", async () => {

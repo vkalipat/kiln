@@ -145,12 +145,12 @@ export class Archive {
 
   /** Ideas still eligible to seed a round or appear at the checkpoint: everything not rejected. */
   seedable(): string[] {
-    return [...this.entries].filter(([, e]) => e.evidence.status !== "rejected").map(([id]) => id);
+    return [...this.entries].filter(([, e]) => e.evidence.status !== "rejected" && e.evidence.priorArt?.status !== "collided").map(([id]) => id);
   }
 
   /** Inserted but never compared: admitted to no tournament yet, and free to enter a later one. */
   unranked(): string[] {
-    return [...this.entries].filter(([, e]) => e.evidence.status === "unranked").map(([id]) => id);
+    return [...this.entries].filter(([, e]) => e.evidence.status === "unranked" && e.evidence.priorArt?.status !== "collided").map(([id]) => id);
   }
 
   /**
@@ -161,7 +161,7 @@ export class Archive {
   champions(): string[] {
     const best = new Map<string, { id: string; mean: number }>();
     for (const [id, e] of this.entries) {
-      if (e.evidence.status === "rejected") continue;
+      if (e.evidence.status === "rejected" || e.evidence.priorArt?.status === "collided") continue;
       const key = e.evidence.cell ?? cellKey(e.dossier.axisValues);
       const mean = e.evidence.strengths?.value.mean ?? Number.NEGATIVE_INFINITY;
       const held = best.get(key);
@@ -171,9 +171,9 @@ export class Archive {
   }
 
   /** Flag an idea rejected. Unknown ids are ignored: bookkeeping must never end a round. */
-  markRejected(id: string, reason: IdeaRejectReason, against?: string): void {
+  markRejected(id: string, reason: IdeaRejectReason, against?: string, patch: Partial<Evidence> = {}): void {
     if (!this.entries.has(id)) return;
-    this.mergeEvidence(id, { status: "rejected", rejectReason: reason });
+    this.mergeEvidence(id, { ...patch, status: "rejected", rejectReason: reason });
     this.record.append({ t: "idea.reject", id, reason, against });
   }
 
@@ -188,7 +188,7 @@ export class Archive {
   markLostCell(valueMeans: Readonly<Record<string, number>>): string[] {
     const byCell = new Map<string, string[]>();
     for (const [id, e] of this.entries) {
-      if (e.evidence.status === "rejected") continue;
+      if (e.evidence.status === "rejected" || e.evidence.priorArt?.status === "collided") continue;
       const mean = valueMeans[id];
       if (mean === undefined) continue;
       const key = e.evidence.cell ?? cellKey(e.dossier.axisValues);

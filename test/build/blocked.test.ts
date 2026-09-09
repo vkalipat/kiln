@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRun } from "../../src/core/run";
@@ -41,5 +41,17 @@ describe("blocked evidence archive", () => {
     expect(manifest.check).toMatchObject({ present: false, sourceEventSeq: 7, archivedPath: null, sha256: null });
     expect(manifest.audit).toMatchObject({ present: false, sourceEventSeq: null, archivedPath: null, sha256: null });
     expect(() => archiveBlocked(run, "../escape")).toThrow("invalid blocked feature id");
+  });
+
+  test("refuses a symlinked feature archive without writing outside the project", () => {
+    const run = createRun(mkdtempSync(join(tmpdir(), "kiln-blocked-link-")), "seed");
+    const blocked = projectPaths(run.project).blockedDir;
+    const outside = mkdtempSync(join(tmpdir(), "kiln-blocked-outside-"));
+    mkdirSync(blocked, { recursive: true });
+    writeFileSync(join(outside, "manifest.json"), "sentinel\n");
+    symlinkSync(outside, join(blocked, "f01"));
+
+    expect(() => archiveBlocked(run, "f01")).toThrow("blocked feature archive must be a real directory");
+    expect(readFileSync(join(outside, "manifest.json"), "utf8")).toBe("sentinel\n");
   });
 });

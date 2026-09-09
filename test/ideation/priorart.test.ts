@@ -130,10 +130,11 @@ describe("collisionVerdict", () => {
     expect(v.costUsd).toBe(calls.reduce((s, e) => s + (e.t === "model.call" ? e.costUsd : 0), 0));
   });
 
-  test("an arbiter that never calls the tool is treated as distinct, without throwing", async () => {
+  test("an arbiter that never calls the tool is inconclusive, not distinct", async () => {
     const { deps } = setup([{ content: ["I'm not sure, let me think about this some more."] }]);
     const v = await collisionVerdict(deps, dossier(), "some findings");
     expect(v.same).toBe(false);
+    expect(v.conclusive).toBe(false);
     expect(v.reason).toContain("no verdict");
   });
 });
@@ -141,17 +142,17 @@ describe("collisionVerdict", () => {
 describe("runPriorArtScout", () => {
   test("a same verdict with a URL is collided, and searchOk is true", async () => {
     const { deps, record } = setup(
-      [scholarCall("dedup"), { content: ["Found a couple of loosely related tools."] }, collisionCall({
+      [scholarCall("dedup"), { content: ["Existing Dedup Tool: https://openalex.org/W1"] }, collisionCall({
         same: true,
         artifactTitle: "Existing Dedup Tool",
-        artifactUrl: "https://example.com/dedup",
+        artifactUrl: "https://openalex.org/W1",
         reason: "Identical mechanism for the same audience.",
       })],
       okFetch,
     );
     const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
     expect(r.status).toBe("collided");
-    expect(r.artifact).toEqual({ title: "Existing Dedup Tool", url: "https://example.com/dedup" });
+    expect(r.artifact).toEqual({ title: "Existing Dedup Tool", url: "https://openalex.org/W1" });
     expect(r.searchOk).toBe(true);
     expect(record.read().some((e) => e.t === "arbiter.verdict" && e.kind === "collision" && e.verdict === "collided" && e.id === "r1-i1-1")).toBe(true);
   });
@@ -176,6 +177,37 @@ describe("runPriorArtScout", () => {
     );
     const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
     expect(r.status).toBe("not_falsified");
+  });
+
+  test("a malformed or retrieval-unseen URL cannot reject an idea as collided", async () => {
+    for (const artifactUrl of ["https://", "https://example.com/invented"]) {
+      const { deps, record } = setup(
+        [scholarCall("dedup"), { content: ["Only https://openalex.org/W1 was found."] }, collisionCall({ same: true, artifactUrl, reason: "claimed same" })],
+        okFetch,
+      );
+      const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
+      expect(r.status).toBe("not_falsified");
+      expect(record.read().some((e) => e.t === "arbiter.verdict" && e.verdict === "collided")).toBe(false);
+    }
+  });
+
+  test("an arbiter refusal after a healthy search leaves novelty unknown", async () => {
+    const { deps, record } = setup([
+      scholarCall("dedup"),
+      { content: ["Existing item: https://openalex.org/W1"] },
+      { stopReason: "error", errorMessage: "request refused", stopDetails: { type: "refusal", category: "safety" } },
+    ], okFetch);
+    const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
+    expect(r).toMatchObject({ status: "search_failed", searchOk: false });
+    expect(record.read().some((e) => e.t === "arbiter.verdict" && e.verdict === "distinct")).toBe(false);
+  });
+
+  test("one failed search makes a multi-search scout degraded instead of fully healthy", async () => {
+    let calls = 0;
+    const fetchImpl = (async () => ++calls === 1 ? new Response(OK_WORKS) : new Response("down", { status: 503 })) as unknown as typeof fetch;
+    const { deps } = setup([scholarCall("first"), scholarCall("second"), { content: ["Partial results only."] }], fetchImpl);
+    const r = await runPriorArtScout(deps, dossier(), { shape: "product", arbiter: false });
+    expect(r).toMatchObject({ status: "search_failed", searchOk: false });
   });
 
   test("a distinct verdict is not_falsified and records verdict 'distinct'", async () => {

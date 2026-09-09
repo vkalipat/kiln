@@ -1,17 +1,18 @@
 import { describe, expect, test } from "bun:test";
-import { cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { ensureIgnored, homeProtectedDirs, initHome } from "../../src/core/home";
 import { loadPrompt, PROMPT_FILES } from "../../src/brain/prompts";
-import { defaultConfig, saveConfig } from "../../src/core/config";
+import { defaultConfig, loadConfig, saveConfig } from "../../src/core/config";
+import { copyFixtureTree } from "../helpers/copy-fixture-tree";
 
 const BUNDLED = join(import.meta.dir, "../..");
 function preEvalsHome(): string {
   const home = mkdtempSync(join(tmpdir(), "kiln-pre-evals-"));
-  cpSync(join(BUNDLED, "prompts"), join(home, "prompts"), { recursive: true });
-  cpSync(join(BUNDLED, "playbook"), join(home, "playbook"), { recursive: true });
+  copyFixtureTree(join(BUNDLED, "prompts"), join(home, "prompts"));
+  copyFixtureTree(join(BUNDLED, "playbook"), join(home, "playbook"));
   mkdirSync(join(home, "evolution"), { recursive: true });
   writeFileSync(join(home, "evolution", "deltas.jsonl"), "{\"legacy\":true}\n");
   writeFileSync(join(home, ".gitignore"), ["runs/", "auth.json", "evolution/candidates/", "evolution/work/", "evolution/evolve.lock", ""].join("\n"));
@@ -23,6 +24,24 @@ function preEvalsHome(): string {
 }
 
 describe("initHome", () => {
+  test("plug-and-play creates a fresh home with adaptive autonomous defaults", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-plug-defaults-"));
+    expect(initHome(home, { plugAndPlay: true }).created).toBe(true);
+    expect(loadConfig(home)).toMatchObject({ routing: { mode: "adaptive" }, autonomous: true });
+  });
+
+  test("plug-and-play preserves an existing operator configuration byte for byte", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-plug-preserved-"));
+    initHome(home);
+    const config = defaultConfig();
+    config.autonomous = false;
+    config.budgets.usd = 7;
+    saveConfig(home, config);
+    const before = readFileSync(join(home, "config.json"), "utf8");
+    expect(initHome(home, { plugAndPlay: true }).created).toBe(false);
+    expect(readFileSync(join(home, "config.json"), "utf8")).toBe(before);
+  });
+
   test("a new config never overwrites existing evolution history", () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-history-preserved-"));
     mkdirSync(join(home, "evolution")); const path = join(home, "evolution", "deltas.jsonl");
@@ -100,7 +119,7 @@ describe("initHome", () => {
     mkdirSync(join(marker, ".."), { recursive: true });
     writeFileSync(marker, `${JSON.stringify({ version: 1, operationId: "home-evals-corpus-v1" }, null, 2)}\n`);
     mkdirSync(join(resumable, "evals"), { recursive: true });
-    cpSync(join(BUNDLED, "evals", "README.md"), join(resumable, "evals", "README.md"));
+    copyFixtureTree(join(BUNDLED, "evals", "README.md"), join(resumable, "evals", "README.md"));
     initHome(resumable);
     expect(existsSync(marker)).toBe(false); expect(existsSync(join(resumable, "evals", "manifest.json"))).toBe(true);
 

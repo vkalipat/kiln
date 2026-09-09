@@ -17,6 +17,18 @@ describe("usage-window pause", () => {
     await expect(pending).rejects.toBeInstanceOf(RunCancelledError);
   });
 
+  test("cancellation releases a usage poll that never settles", async () => {
+    const control = new RunControl();
+    const pending = withRunControl(control, () => pauseInfo(deps(() => new Promise(() => {})), "p", false, NOW));
+    control.cancel("stop hanging usage poll");
+    await expect(pending).rejects.toBeInstanceOf(RunCancelledError);
+  });
+
+  test("a bounded usage poll degrades to unavailable instead of hanging the build", async () => {
+    expect(await pauseInfo(deps(() => new Promise(() => {})), "p", false, NOW, 1)).toBeUndefined();
+    expect(await pauseInfo(deps(() => new Promise(() => {})), "p", true, NOW, 1)).toEqual({ reason: "usage_limit", wakeAt: HOUR_LATER });
+  });
+
   test("isUsageLimit reads the 429 status first and provider wording only as a fallback", () => {
     expect(isUsageLimit(429, undefined)).toBe(true);
     expect(isUsageLimit(500, "usage limit reached")).toBe(true);

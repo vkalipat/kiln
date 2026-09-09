@@ -234,6 +234,65 @@ describe("runFrame", () => {
     expect(model.calls).toHaveLength(1);
     expect(readStatus(d.run)).toMatchObject({ phase: "discover", shape: "product" });
   });
+  test("terminal status carries the frame journal's actual cost", async () => {
+    const d = deps([]); d.cfg.budgets.turns.frame = 1;
+    const model = createMockModel({
+      id: "paid", cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 },
+      responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF } }], usage: { input: 1_000_000, cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 } } }] as never,
+    });
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "ok" });
+    expect(d.record.costUsd()).toBeCloseTo(1);
+    expect(readStatus(d.run).usdSpent).toBeCloseTo(d.record.costUsd());
+  });
+  test("an exhausted run target stops before frame dispatch and records the target", async () => {
+    const d = deps([]); d.cfg.budgets.usd = 0;
+    const model = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["x"] }) } as never);
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 0 });
+    expect(model.calls).toHaveLength(0);
+    expect(readStatus(d.run)).toMatchObject({ phase: "frame", state: "stopped", outcome: { stopKind: "budget", budgetTargetUsd: 0 } });
+  });
+  test("an exhausted wall target stops before frame dispatch", async () => {
+    const d = deps([]); d.cfg.budgets.wallSeconds = 0;
+    const model = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["x"] }) } as never);
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: 0 });
+    expect(model.calls).toHaveLength(0);
+    expect(readStatus(d.run)).toMatchObject({ state: "stopped", outcome: { stopKind: "deadline", wallTargetSeconds: 0 } });
+  });
+  test("frame aborts an in-flight provider call at the remaining run wall deadline", async () => {
+    const d = deps([]); d.cfg.budgets.wallSeconds = 0.03;
+    const model = createMockModel({ id: "slow", handler: async () => ({ delayMs: 5_000, content: ["late"] }) } as never);
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: 0.03 });
+    expect(model.calls).toHaveLength(1);
+    expect(readStatus(d.run)).toMatchObject({ state: "stopped", outcome: { stopKind: "deadline", wallTargetSeconds: 0.03 } });
+  });
+  test("a crossing frame turn may finish but the next corrective dispatch is blocked by the run target", async () => {
+    const d = deps([]); d.cfg.budgets.usd = 1;
+    const model = createMockModel({
+      id: "crossing", cost: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0 },
+      handler: async () => {
+        writeFileSync(d.run.brief, "invalid");
+        return { content: ["invalid draft written"], usage: { input: 1_000_000, cost: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0, total: 2 } } };
+      },
+    });
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 1 });
+    expect(model.calls).toHaveLength(1);
+    expect(d.record.costUsd()).toBeCloseTo(2);
+  });
+  test("a contract-valid brief from a crossing dollar-cap turn is accepted without another call", async () => {
+    const d = deps([]); d.cfg.budgets.usd = 1;
+    const model = createMockModel({
+      id: "crossing-valid", cost: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0 },
+      responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF } }], usage: { input: 1_000_000, cost: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0, total: 2 } } }] as never,
+    });
+    useModel(d, model);
+    expect(await runFrame(d)).toMatchObject({ outcome: "ok" });
+    expect(model.calls).toHaveLength(1); expect(d.record.costUsd()).toBeCloseTo(2);
+  });
   test("a model error is classified, not hardcoded transient", async () => {
     const d = deps([]);
     useModel(d, createMockModel({ id: "mock", responses: [{ throw: "policy: refused" }] as never }));
@@ -243,9 +302,23 @@ describe("runFrame", () => {
   });
   test("a rate-limit error still classifies as transient", async () => {
     const d = deps([]);
-    useModel(d, createMockModel({ id: "mock", responses: [{ throw: "rate limit exceeded" }] as never }));
+    const model = createMockModel({ id: "mock", responses: [{ throw: "rate limit exceeded" }] as never });
+    useModel(d, model);
     const r = await runFrame(d);
-    expect(r.outcome).toBe("failed");
-    if (r.outcome === "failed") expect(r.failureClass).toBe("transient");
+    expect(r).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+    expect(model.calls).toHaveLength(1);
+    expect(readStatus(d.run)).toMatchObject({ phase: "frame", state: "stopped", outcome: { stopKind: "transient", message: expect.stringContaining("rate limit") } });
+  });
+  test("a resumed frame shares its durable turn cap while accepting a valid final-turn brief", async () => {
+    const d = deps([]); d.cfg.budgets.turns.frame = 2;
+    const first = createMockModel({ id: "first", handler: async () => ({ throw: "rate limit exceeded" }) } as never);
+    useModel(d, first);
+    expect(await runFrame(d)).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+
+    const resumed = createMockModel({ id: "resumed", responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: d.run.brief, content: BRIEF } }] }] as never });
+    useModel(d, resumed);
+    expect(await runFrame(d)).toMatchObject({ outcome: "ok" });
+    expect(resumed.calls).toHaveLength(1);
+    expect(d.record.read().filter((event) => event.t === "turn" && event.phase === "frame" && event.role === "brain")).toHaveLength(2);
   });
 });

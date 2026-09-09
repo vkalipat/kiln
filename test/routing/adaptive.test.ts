@@ -1,6 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { getBundledModel, type GeneratedProvider } from "@oh-my-pi/pi-catalog";
 import { defaultConfig, ROLES } from "../../src/core/config";
 import { resolveRoleOn, otherProvider } from "../../src/providers/models";
+import { registerRuntimeEffort } from "../../src/providers/effort-runtime";
 import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../src/routing/adaptive";
 
 const now = new Date("2026-09-08T12:00:00Z");
@@ -8,20 +10,44 @@ const providers = new Set(["anthropic", "openai-codex"]);
 const snapshot = () => structuredClone(DEFAULT_EVIDENCE_SNAPSHOT) as any;
 
 describe("adaptive routing planner", () => {
+  test("records role-specific selection evidence and independence rather than opaque model names", () => {
+    const { report } = planAdaptiveRouting(defaultConfig(), providers, "Find a business idea", now);
+    for (const role of ROLES) {
+      const why = report.roleReasons[role];
+      expect(why.reason).toContain("Effort follows");
+      expect(report.evidence.sources.some((source) => source.id === why.sourceId)).toBe(true);
+      expect(why.selection === "ranked" ? Number.isFinite(why.score) : why.score === null).toBe(true);
+    }
+    expect(report.roleReasons.generator.category).toBe("business");
+    expect(report.roleReasons.auditor.reviewAgainst).toBe(report.selectedRoleRefs.builder);
+    expect(report.roleReasons.judge.reviewAgainst).toBe(report.selectedRoleRefs.generator);
+    expect(report.roleReasons.scout.reviewAgainst).toBe(report.selectedRoleRefs.brain);
+  });
   test("selects category leaders, independent review, and a feasible whole-round plan without mutation", () => {
     const cfg = defaultConfig(); const before = JSON.stringify(cfg);
     const { config, report } = planAdaptiveRouting(cfg, providers, "Find a business idea", now);
     expect(report.domain).toBe("business");
     expect(config.roles.generator[0]).toBe("anthropic/claude-fable-5-1");
-    expect(config.roles.builder[0]).toBe("openai-codex/gpt-6-astra");
-    expect(config.roles.judge[0]).toBe("openai-codex/gpt-6-astra");
-    expect(report.budget.affordableRounds).toBe(1);
+    expect(config.roles.builder[0]).toBe("anthropic/claude-fable-5-1");
+    expect(config.roles.judge[0]).toBe("openai-codex/gpt-5.4");
+    expect(report.budget.affordableRounds).toBeGreaterThanOrEqual(1);
+    expect(report.budget.affordableRounds).toBeLessThanOrEqual(report.budget.requestedRounds);
+    expect(config.ideation.rounds).toBe(report.budget.affordableRounds);
     expect(report.budget.projectedRoundUsd).toBeLessThanOrEqual(report.budget.ideateUsd);
     expect(Object.values(config.budgets.share).reduce((a, b) => a + b, 0)).toBeCloseTo(1, 12);
     expect(config.budgets.usd).toBe(cfg.budgets.usd); expect(config.budgets.wallSeconds).toBe(cfg.budgets.wallSeconds);
     expect(config.build).toEqual(cfg.build); expect(config.budgets.turns).toEqual(cfg.budgets.turns);
     expect(JSON.stringify(cfg)).toBe(before);
     for (const role of ROLES) expect(config.seating.default[role]).toEqual(config.roles[role]);
+    expect(config.roles.builder).toContain("openai-codex/gpt-5.5");
+    expect(config.roles.builder).not.toContain("openai-codex/gpt-6-astra");
+    expect(report.roleRefs).toEqual(config.roles);
+    for (const ref of Object.values(report.selectedRoleRefs)) {
+      const [provider, id] = ref.split("/");
+      const model = getBundledModel(provider as GeneratedProvider, id!);
+      expect(model?.supportsTools).not.toBe(false);
+      expect(model?.toolMode).not.toBe("code_mode_only");
+    }
   });
 
   test.each([["anthropic"], ["openai-codex"], ["openai"], ["openai", "openai-codex"]])("single-vendor transport combination %j preserves distinct model identities", (...items) => {
@@ -40,12 +66,12 @@ describe("adaptive routing planner", () => {
   test("updated reviewed rankings affect the relevant domain instead of hardcoding Fable", () => {
     const evidence = snapshot();
     evidence.rankings.find((r: any) => r.category === "business").entries = [
-      { modelRef: "openai-codex/gpt-6-astra", score: 2000 },
+      { modelRef: "anthropic/claude-opus-5", score: 2000 },
       { modelRef: "anthropic/claude-fable-5-1", score: 1600 },
     ];
     const business = planAdaptiveRouting(defaultConfig(), providers, "A startup business idea", now, evidence);
     const science = planAdaptiveRouting(defaultConfig(), providers, "A scientific research idea", now, evidence);
-    expect(business.config.roles.generator[0]).toContain("gpt-6-astra");
+    expect(business.config.roles.generator[0]).toContain("claude-opus-5");
     expect(science.config.roles.generator[0]).toContain("claude-fable-5-1");
     expect(business.config.roles.generator[0]).not.toBe(business.config.roles.judge[0]);
   });
@@ -61,7 +87,69 @@ describe("adaptive routing planner", () => {
     expect(() => planAdaptiveRouting(cfg, providers, "idea", now)).toThrow("one ideation round");
     expect(() => planAdaptiveRouting(defaultConfig(), new Set(), "idea", now)).toThrow("no supported available model");
     cfg.budgets.usd = 5;
-    expect(() => planAdaptiveRouting(cfg, new Set(["openai"]), "general idea", now)).toThrow("configured minimum");
+    expect(() => planAdaptiveRouting(cfg, new Set(["openai"]), "general idea", now)).toThrow("one ideation round");
+    expect(() => planAdaptiveRouting(cfg, new Set(["openai"]), "implement supplied work", now, snapshot(), {
+      phases: ["frame", "form", "build", "reflect"],
+    })).toThrow("configured minimum");
+  });
+
+  test("an exploration-only workflow does not reserve or validate an unplanned build", () => {
+    const cfg = defaultConfig();
+    cfg.build.minFeatures = 100;
+    const before = cfg.budgets.phaseBudgetUsd("build");
+    const { config, report } = planAdaptiveRouting(
+      cfg,
+      providers,
+      "Explore research directions",
+      now,
+      snapshot(),
+      { phases: ["frame", "discover", "ideate", "checkpoint"] },
+    );
+    expect(report.workflow.phases).toEqual(["frame", "discover", "ideate", "checkpoint"]);
+    expect(report.workflow.buildPlanned).toBe(false);
+    expect(report.budget.maxBuildFeatures).toBe(0);
+    expect(report.budget.affordableRounds).toBeGreaterThanOrEqual(1);
+    expect(report.budget.ideateUsd).toBeGreaterThan(cfg.budgets.phaseBudgetUsd("ideate"));
+    expect(report.budget.buildUsd).toBeLessThan(before);
+    expect(config.build).toEqual(cfg.build);
+  });
+
+  test("a direct build workflow does not require, price, or reserve ideation", () => {
+    const cfg = defaultConfig();
+    cfg.ideation.rounds = 0;
+    cfg.ideation.islands = 0;
+    const initialBuild = cfg.budgets.phaseBudgetUsd("build");
+    const initialIdeate = cfg.budgets.phaseBudgetUsd("ideate");
+    const { config, report } = planAdaptiveRouting(
+      cfg,
+      providers,
+      "Implement the supplied specification",
+      now,
+      snapshot(),
+      { phases: ["frame", "form", "build", "reflect"] },
+    );
+    expect(report.workflow.ideationPlanned).toBe(false);
+    expect(report.workflow.buildPlanned).toBe(true);
+    expect(report.budget.projectedRoundUsd).toBe(0);
+    expect(report.budget.affordableRounds).toBe(0);
+    expect(report.budget.ideateUsd).toBe(0);
+    expect(report.budget.buildUsd).toBeCloseTo(initialBuild + initialIdeate, 12);
+    expect(config.ideation.rounds).toBe(0);
+  });
+
+  test("rejects malformed adaptive phase options before producing a misleading report", () => {
+    expect(() => planAdaptiveRouting(defaultConfig(), providers, "idea", now, snapshot(), { phases: [] })).toThrow("workflow phases");
+    expect(() => planAdaptiveRouting(defaultConfig(), providers, "idea", now, snapshot(), { phases: ["made-up" as any] })).toThrow("workflow phases");
+  });
+
+  test("reports the runtime measured effort that requests will actually use", () => {
+    const cfg = defaultConfig();
+    registerRuntimeEffort(cfg, (role) => role === "generator" ? "max" : undefined);
+    try {
+      expect(planAdaptiveRouting(cfg, providers, "business idea", now).report.effectiveEffort.generator).toBe("max");
+    } finally {
+      registerRuntimeEffort(cfg);
+    }
   });
 });
 

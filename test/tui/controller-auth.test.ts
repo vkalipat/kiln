@@ -1,8 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { AuthStore } from "../../src/providers/auth";
+import { RunRecord } from "../../src/core/record";
+import { createRun } from "../../src/core/run";
 import { RunController } from "../../src/tui/controller";
 import type { TuiEvent } from "../../src/tui/contracts";
 
@@ -61,7 +63,14 @@ describe("TUI provider authentication", () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-tui-auth-active-"));
     let release!: () => void; let entered = false;
     const gate = new Promise<void>((resolve) => { release = resolve; });
-    const controller = new RunController({ home, cli: async () => { entered = true; await gate; return 0; } });
+    const controller = new RunController({ home, cli: async (argv, _io, deps) => {
+      const seedPath = argv[argv.indexOf("--seed-file") + 1]!;
+      const seed = readFileSync(seedPath, "utf8");
+      const run = createRun(home, seed);
+      new RunRecord(run.record).append({ t: "run.created", seed });
+      deps.onRun?.(run);
+      entered = true; await gate; return 0;
+    } });
     const running = controller.start({ seed: "keep this run alive" });
     await until(() => entered);
     await expect(controller.execute("auth: login anthropic")).rejects.toThrow("already active");

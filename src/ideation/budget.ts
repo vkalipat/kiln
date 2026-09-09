@@ -14,6 +14,11 @@ export interface RoundCostProjection {
   costUsd: number;
 }
 
+export interface RoundCostOptions {
+  /** Resolved assignment for this round; when present its exact model mix prices island turns. */
+  islandPlans?: readonly { model: Model }[];
+}
+
 export type ModelResolver = (role: Role) => { model: Model; ref: string };
 
 /** Project one provider call from catalog list prices (rates are dollars per million tokens). */
@@ -35,7 +40,7 @@ const TOKENS = {
 } as const;
 
 /** Calls and dollars for the record §3 minimum viable round, at the configured seats. */
-export function projectedRoundCost(cfg: KilnConfig, models: ModelResolver): RoundCostProjection {
+export function projectedRoundCost(cfg: KilnConfig, models: ModelResolver, opts: RoundCostOptions = {}): RoundCostProjection {
   const capacity = cfg.ideation.islands * cfg.ideation.ideasPerBatch * 2;
   const cheapIslands = cfg.ideation.cheapIsland && cfg.ideation.islands > 0 ? 1 : 0;
   const strongIslands = cfg.ideation.islands - cheapIslands;
@@ -46,8 +51,10 @@ export function projectedRoundCost(cfg: KilnConfig, models: ModelResolver): Roun
   const prober = models("prober").model;
   const brain = models("brain").model;
   const judge = models("judge").model;
-  const mixedIslandCost = strongIslands * callCost(generator, TOKENS.island.input, TOKENS.island.output)
-    + cheapIslands * callCost(cheap, TOKENS.island.input, TOKENS.island.output);
+  const mixedIslandCost = opts.islandPlans
+    ? opts.islandPlans.reduce((sum, plan) => sum + callCost(plan.model, TOKENS.island.input, TOKENS.island.output), 0)
+    : strongIslands * callCost(generator, TOKENS.island.input, TOKENS.island.output)
+      + cheapIslands * callCost(cheap, TOKENS.island.input, TOKENS.island.output);
   const row = (name: string, calls: number, model: Model, usage: { input: number; output: number }): ProjectionRow => ({
     name,
     calls,
@@ -57,12 +64,14 @@ export function projectedRoundCost(cfg: KilnConfig, models: ModelResolver): Roun
     { name: "island first batches", calls: cfg.ideation.islands, costUsd: mixedIslandCost },
     { name: "island second batches", calls: cfg.ideation.islands, costUsd: mixedIslandCost },
     row("novelty tie-breaks", cfg.ideation.arbiterCaps.novelty, arbiter, TOKENS.arbiter),
-    row("prior-art scouts", capacity, scout, TOKENS.scout),
+    // A successful scout necessarily calls a retrieval tool and then synthesizes its findings.
+    row("prior-art scouts", capacity * 2, scout, TOKENS.scout),
     row("collision verdicts", Math.min(capacity, cfg.ideation.arbiterCaps.collision), arbiter, TOKENS.arbiter),
-    row("probe decision", 1, brain, TOKENS.brain),
+    // The selector reads the supplied dossiers, then makes its terminal probe_request decision.
+    row("probe decision", 2, brain, TOKENS.brain),
     row("probe writers", capacity, prober, TOKENS.probe),
     row("criteria", 1, judge, TOKENS.criteria),
-    row("tournament orderings", cfg.ideation.pairCap * 2, judge, TOKENS.judge),
+    row("tournament orderings", Math.min(cfg.ideation.pairCap, cfg.ideation.entrantsCap * (cfg.ideation.entrantsCap - 1) / 2) * 2, judge, TOKENS.judge),
     row("meta-review", 1, judge, TOKENS.meta),
   ];
   return {

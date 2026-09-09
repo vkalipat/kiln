@@ -93,7 +93,7 @@ export async function judgeCommand(cmd: string[], flags: Record<string, string |
   if (!a || !b || a.round !== b.round) { err("both ideas need rendered files from the same round\n"); return 1; }
   const criteria = criteriaFor(run, a.round); if (!criteria) { err(`no criteria for round ${a.round}\n`); return 1; }
   const cfg = applyFrozenRouting(loadConfig(home), run);
-  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false } } : deps);
+  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false, frozen: loadFrozenRouting(run)?.effectiveEffort } } : deps);
   try { runtime.models("judge"); }
   catch (error) { if (error instanceof NoModelError) { err(`${error.message}\n`); return 3; } throw error; }
   const phase: PhaseDeps = { home, run, record, cfg, models: runtime.models, availableProviders: runtime.available, modelsOn: runtime.modelsOn, apiKeyFor: runtime.apiKeyFor, streamFn: deps.streamFn, effort: cfg.effort, fetchImpl: deps.fetchImpl, limiter: new Limiter(cfg.ideation.concurrency) };

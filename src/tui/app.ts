@@ -55,7 +55,6 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
     if (this.#disposed || this.#unsubscribe) return;
     this.#unsubscribe = this.options.controller.subscribe((event) => this.#onEvent(event));
     this.#applySnapshot(this.options.controller.getSnapshot());
-    if (this.#snapshot.auth?.required) queueMicrotask(() => !this.#disposed && this.#openOnboarding());
   }
 
   launch(input: { seed?: string; runId?: string }): void { if (this.#snapshot.auth?.required) {
@@ -207,6 +206,7 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
     if (snapshot.checkpoint && !["paused", "done", "failed"].includes(snapshot.state)) this.#openCheckpoint(snapshot.checkpoint);
     else this.#closeModal("checkpoint");
     if (!snapshot.auth?.required) this.#closeModal("onboarding");
+    else if ((this.#deferredSeed || this.#deferredRunId) && this.modalKind !== "auth-input") this.#openOnboarding();
     if (resumeSeed) {
       this.#deferredSeed = undefined; this.#deferredRunId = undefined;
       this.prompt.setText(""); queueMicrotask(() => !this.#disposed && this.submit(resumeSeed));
@@ -335,7 +335,10 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
   }
 
   async #runCommand(work: Promise<void>): Promise<void> { try { await work; }
-    catch (error) { this.#notice(`Error: ${error instanceof Error ? error.message : String(error)}`); } }
+    catch (error) {
+      this.#notice(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      if (this.#snapshot.auth?.required && (this.#deferredSeed || this.#deferredRunId)) this.#openOnboarding();
+    } }
   #notice(activity: string): void { this.#snapshot = { ...this.#snapshot, activity }; this.#syncStatus(); this.options.tui.requestComponentRender(this); }
 
   #openEffort(): void {

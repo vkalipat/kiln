@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import type { RunRecord } from "../core/record";
-import { rethrowIfRunCancelled, throwIfRunCancelled } from "../core/run-control";
+import { currentRunControl, rethrowIfRunCancelled, RunCancelledError, throwIfRunCancelled } from "../core/run-control";
 import type { PhaseDeps } from "../phases/frame";
 import type { Archive } from "./archive";
 
@@ -14,6 +14,19 @@ export function readJsonIfPresent<T>(path: string): T | undefined {
 export function usageFraction(usage: { used: number; limit?: number }): number {
   if (usage.limit && usage.limit > 0) return usage.used / usage.limit;
   return usage.used > 1 ? usage.used / 100 : usage.used;
+}
+
+function cancellationRace<T>(work: Promise<T>, signal = currentRunControl()?.signal): Promise<T> {
+  if (!signal) return work;
+  throwIfRunCancelled(signal);
+  return new Promise<T>((resolve, reject) => {
+    const cancel = () => reject(signal.reason instanceof RunCancelledError ? signal.reason : new RunCancelledError(signal.reason));
+    signal.addEventListener("abort", cancel, { once: true });
+    work.then(
+      (value) => { signal.removeEventListener("abort", cancel); resolve(value); },
+      (error) => { signal.removeEventListener("abort", cancel); reject(error); },
+    );
+  });
 }
 
 /** Reactive usage-limit detection and the round-boundary 95% poll share one adapter. */
@@ -35,7 +48,7 @@ export async function pauseInfo(d: PhaseDeps, afterSeq?: number, boundary = fals
   const providers = provider ? [provider] : [...new Set(["brain", "generator", "scout", "arbiter", "prober", "judge"].map((role) => String(d.models(role as Parameters<PhaseDeps["models"]>[0]).model.provider)))];
   for (const candidate of providers) {
     try {
-      const usage = await d.fetchUsage(candidate);
+      const usage = await cancellationRace(Promise.resolve().then(() => d.fetchUsage!(candidate)));
       throwIfRunCancelled();
       if (!usage) continue;
       if (!boundary || usageFraction(usage) >= 0.95) return { reason, wakeAt: usage.resetAt ?? new Date(Date.now() + 60 * 60 * 1000).toISOString() };

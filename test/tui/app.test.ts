@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { visibleWidth } from "@oh-my-pi/pi-tui";
@@ -7,7 +7,7 @@ import { startTui } from "../../src/tui/app";
 import { AuthStore } from "../../src/providers/auth";
 import { RunRecord } from "../../src/core/record";
 import { currentRunControl } from "../../src/core/run-control";
-import { runPaths, writeStatus } from "../../src/core/run";
+import { createRun, runPaths, writeStatus } from "../../src/core/run";
 import { RunController, type TuiCli } from "../../src/tui/controller";
 import type {
   TuiCheckpointAnswer,
@@ -97,6 +97,42 @@ class MockController implements TuiControllerPort {
 }
 
 describe("kiln TUI app", () => {
+  test("animation paints new terminal frames after resize and stops on shutdown", async () => {
+    const controller = new MockController();
+    const terminal = new FakeTerminal(72, 18);
+    let advance: (() => void) | undefined;
+    let cleared = 0;
+    const lifecycle = startTui(controller, {
+      terminal, animations: true,
+      tickerOptions: {
+        setIntervalFn: (callback) => { advance = callback; return {} as ReturnType<typeof setInterval>; },
+        clearIntervalFn: () => { cleared += 1; },
+      },
+    });
+    try {
+      controller.setSnapshot({ state: "running", activity: "Thinking" });
+      await eventually(() => terminal.writes.join("").includes("Thinking"));
+      const first = terminal.writes.length;
+      const initial = lifecycle.app.render(72).map(plain).at(-1);
+      advance!();
+      await eventually(() => terminal.writes.length > first);
+      expect(lifecycle.app.render(72).map(plain).at(-1)).not.toBe(initial);
+      terminal.resize(32, 10);
+      await Bun.sleep(25);
+      const resized = terminal.writes.length;
+      advance!();
+      await eventually(() => terminal.writes.length > resized);
+      const lines = lifecycle.app.render(32);
+      expect(lines).toHaveLength(10);
+      expect(lines.every((line) => visibleWidth(line) <= 32)).toBe(true);
+    } finally { await lifecycle.stop(); }
+    expect(cleared).toBe(1);
+    const stopped = terminal.writes.length;
+    advance!();
+    await Bun.sleep(25);
+    expect(terminal.writes.length).toBe(stopped);
+  });
+
   test("drives a frame through streaming, cancellation, checkpoint, resize, and safe exit", async () => {
     const controller = new MockController();
     const terminal = new FakeTerminal(64, 18);
@@ -418,12 +454,17 @@ describe("kiln TUI app", () => {
     const terminal = new FakeTerminal(72, 18);
     const lifecycle = startTui(controller, { terminal, animations: false });
     await settle();
-    expect(lifecycle.app.modalKind).toBe("onboarding");
-    terminal.emitInput("\x1b");
+    expect(lifecycle.app.modalKind).toBeUndefined();
+    expect(lifecycle.app.render(72).map(plain).join("\n")).toContain("connect a provider when you send");
     expect(controller.commands).toEqual([]);
     terminal.emitInput("build a ceramic inventory app");
     terminal.emitInput("\r");
     expect(controller.starts).toEqual([]);
+    expect(lifecycle.app.modalKind).toBe("onboarding");
+    terminal.emitInput("\x1b");
+    expect(lifecycle.app.prompt.getText()).toBe("build a ceramic inventory app");
+    expect(controller.commands).toEqual([]);
+    terminal.emitInput("\r");
     expect(lifecycle.app.modalKind).toBe("onboarding");
     terminal.emitInput("\r");
     await settle();
@@ -435,17 +476,39 @@ describe("kiln TUI app", () => {
     await lifecycle.stop();
   });
 
+  test("returns to provider selection after a failed first-run connection", async () => {
+    const controller = new MockController();
+    controller.snapshot = { ...controller.snapshot, auth: { required: true, configured: [] } };
+    controller.commandError = new Error("authorization was not completed");
+    const terminal = new FakeTerminal(72, 18);
+    const lifecycle = startTui(controller, { terminal, seed: "deferred seed", animations: false });
+    await settle();
+    expect(lifecycle.app.modalKind).toBe("onboarding");
+
+    terminal.emitInput("\r");
+    await settle();
+
+    expect(lifecycle.app.modalKind).toBe("onboarding");
+    expect(lifecycle.app.snapshot.activity).toContain("authorization was not completed");
+    expect(controller.starts).toEqual([]);
+    await lifecycle.stop();
+  });
+
   test("one submitted seed crosses real onboarding and controller intake exactly once", async () => {
     const root = mkdtempSync(join(tmpdir(), "kiln-tui-intake-"));
     const invocations: string[][] = [];
     const steered: string[] = [];
-    const cli: TuiCli = async (argv) => {
+    const cli: TuiCli = async (argv, _io, deps) => {
       invocations.push(argv);
       if (argv[0] === "auth") {
         new AuthStore(join(root, "auth.json")).setApiKey("anthropic", "test-only-credential");
         return 0;
       }
-      const run = runPaths(root, argv[2]!);
+      const seedPath = argv[argv.indexOf("--seed-file") + 1]!;
+      const seed = readFileSync(seedPath, "utf8");
+      const run = createRun(root, seed);
+      new RunRecord(run.record).append({ t: "run.created", seed });
+      deps.onRun?.(run);
       const source = currentRunControl()!.registerSource({ role: "brain", phase: "frame", steer: (text) => steered.push(text) });
       source.text("working");
       source.dispose();
@@ -457,10 +520,11 @@ describe("kiln TUI app", () => {
     const lifecycle = startTui(controller, { terminal, animations: false });
     await settle();
 
-    terminal.emitInput("\r");
-    await eventually(() => controller.getSnapshot().auth?.required === false);
     terminal.emitInput("one ambitious seed");
     terminal.emitInput("\r");
+    expect(lifecycle.app.modalKind).toBe("onboarding");
+    terminal.emitInput("\r");
+    await eventually(() => controller.getSnapshot().auth?.required === false);
     await eventually(() => controller.getSnapshot().state === "done");
 
     const runCalls = invocations.filter((argv) => argv[0] === "run");

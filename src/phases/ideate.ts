@@ -4,6 +4,7 @@ import { createBrain } from "../brain/agent";
 import { loadPlaybook, loadPrompt, playbookSection } from "../brain/prompts";
 import { brainTools, type ExitKind, type ToolContext } from "../brain/tools";
 import { classifyFailure, StallDetector } from "../core/failure";
+import { elapsedByPhase, phaseAvailableWallSeconds } from "../core/budget";
 import { Limiter } from "../core/limiter";
 import { acquireRunLock } from "../core/lock";
 import { writeAtomic } from "../core/paths";
@@ -16,15 +17,15 @@ import { projectedRoundCost, remainingIdeateUsd, type ModelResolver } from "../i
 import { collapsePairs, comparisonCounts, type StrengthInterval } from "../ideation/bt";
 import { renderDossierDetailed, type Evidence } from "../ideation/dossier";
 import { frontier, mmrSelect, trimForCheckpoint, type AxisIntervals } from "../ideation/frontier";
-import { assignIslands, deriveIdeas, rawIslandPath, recordIslandAssignments, runIsland, writeRawIsland, type DerivedIdea, type IslandModels, type IslandRun } from "../ideation/islands";
+import { assignIslands, deriveIdeas, parseRawIsland, rawIslandPath, recordIslandAssignments, runIsland, writeRawIsland, type DerivedIdea, type IslandModels, type IslandRun } from "../ideation/islands";
 import { writeCriteria, writeMetaReview } from "../ideation/judge";
 import { writeMetrics } from "../ideation/metrics";
 import { trigramJaccard } from "../ideation/novelty";
 import { selectEntrants, schedulePairs } from "../ideation/pairing";
-import { collisionVerdict, runPriorArtScout } from "../ideation/priorart";
+import { collisionVerdict, runPriorArtScout, verifiedArtifactUrl } from "../ideation/priorart";
 import { mergeProbeEvidence, runProbeBatch } from "../ideation/probe";
 import { latestSteering, pauseInfo, readJsonIfPresent, searchHealth } from "../ideation/runtime";
-import { fitRound, readTournament, runTournament, seedFor } from "../ideation/tournament";
+import { fitRound, readTournament, runTournament, seedFor, TournamentVerdictError } from "../ideation/tournament";
 import { parseBrief, type PhaseDeps, type PhaseResult } from "./frame";
 import { shapeHash } from "./contracts";
 export interface IdeateDeps extends PhaseDeps { islandModels?: IslandModels }
@@ -64,7 +65,7 @@ function finish(d: PhaseDeps, result: PhaseResult, patch: Parameters<typeof writ
 }
 function stop(
   d: PhaseDeps,
-  stopKind: "stagnant" | "stalled" | "budget",
+  stopKind: "stagnant" | "stalled" | "budget" | "deadline",
   round: number,
   extra: { truncatedRound?: number; frontierEmpty?: boolean; stallTool?: string; stallFingerprint?: string } = {},
 ): PhaseResult {
@@ -92,6 +93,21 @@ function roundsComplete(d: PhaseDeps): PhaseResult {
 
 function latestSeq(d: PhaseDeps): number { return d.record.read().at(-1)?.seq ?? 0; }
 
+function ideateWallRemaining(d: PhaseDeps): number {
+  return phaseAvailableWallSeconds(d.cfg.budgets, "ideate", elapsedByPhase(d.record.read(), Date.now()));
+}
+
+function ensurePhaseStart(d: PhaseDeps): void {
+  const boundary = d.record.read().filter((event) => event.t === "phase.start" || event.t === "phase.end").at(-1);
+  if (!boundary || boundary.t === "phase.end" || boundary.phase !== "ideate") d.record.append({ t: "phase.start", phase: "ideate" });
+}
+
+function roundHasCommittedWork(d: PhaseDeps, round: number): boolean {
+  if (readdirSync(d.run.rawIdeasDir).some((name) => name.startsWith(`r${round}-i`) && name.endsWith(".md"))) return true;
+  if (readdirSync(d.run.criteriaDir).some((name) => name.startsWith(`r${round}-`) && name.endsWith(".md"))) return true;
+  return readTournament(d.run).some((line) => line.round === round && line.source === "judge");
+}
+
 function pause(d: PhaseDeps, info: { reason: string; wakeAt: string }): PhaseResult {
   d.record.append({ t: "pause", reason: info.reason, wakeAt: info.wakeAt });
   return finish(d, { outcome: "ok" }, { state: "paused", phase: "ideate", pausedReason: info.reason, wakeAt: info.wakeAt });
@@ -102,29 +118,43 @@ export async function enrichEvidence(
   d: PhaseDeps, archive: Archive, ids: readonly string[], shape: "research" | "product" | "creative", round: number, searchLimiter: Limiter,
   context: { frontier?: FrontierFile; metaReview?: string } = {},
 ): Promise<EnrichmentResult> {
-  const missingPrior = ids.filter((id) => !archive.get(id)?.evidence.priorArt);
+  const missingPrior = ids.filter((id) => !archive.get(id)?.evidence.priorArt || archive.get(id)?.evidence.priorArt?.status === "search_failed");
   const marker = latestSeq(d);
-  const scouted = await Promise.all(missingPrior.map((id) => d.limiter.run(async () => ({
+  const scoutSettled = await Promise.allSettled(missingPrior.map((id) => d.limiter.run(async () => ({
     id, result: await runPriorArtScout(d, archive.get(id)!.dossier, { shape, arbiter: false, searchLimiter, searchJitterMs: d.searchJitterMs }),
   }))));
+  const scouted = scoutSettled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
   let contextPressure = scouted.some(({ result }) => result.contextPressure);
   const state = () => ({ ...searchHealth(archive, d.cfg.ideation.searchHealthFloor), contextPressure });
   const already = d.record.read().filter((event) => event.t === "arbiter.verdict" && event.kind === "collision" && ids.includes(event.id)).length;
   let collisionSeats = Math.max(0, d.cfg.ideation.arbiterCaps.collision - already);
-  await Promise.all(scouted.map(async ({ id, result }) => {
+  const collisionSettled = await Promise.allSettled(scouted.map(async ({ id, result }) => {
     let priorArt: NonNullable<Evidence["priorArt"]> = result.status === "search_failed" ? { status: "search_failed" } : { status: "not_falsified" };
     if (result.searchOk && collisionSeats-- > 0) {
       const verdict = await d.limiter.run(() => collisionVerdict(d, archive.get(id)!.dossier, result.findings));
-      const hasUrl = verdict.artifactUrl !== undefined && /^https?:\/\//i.test(verdict.artifactUrl);
-      const collided = verdict.same && hasUrl;
-      d.record.append({ t: "arbiter.verdict", kind: "collision", id, against: verdict.artifactUrl, verdict: collided ? "collided" : verdict.same ? "same_without_artifact" : "distinct", costUsd: verdict.costUsd });
-      priorArt = collided
-        ? { status: "collided" as const, artifact: { title: verdict.artifactTitle ?? verdict.artifactUrl!, url: verdict.artifactUrl! }, distance: verdict.reason }
-        : { status: "not_falsified" as const, distance: verdict.reason || undefined };
+      if (!verdict.conclusive) {
+        d.record.append({ t: "arbiter.verdict", kind: "collision", id, verdict: "inconclusive", costUsd: verdict.costUsd });
+        priorArt = { status: "search_failed" };
+      } else {
+        const artifactUrl = verifiedArtifactUrl(verdict.artifactUrl, result.observedUrls);
+        const collided = verdict.same && artifactUrl !== undefined;
+        d.record.append({ t: "arbiter.verdict", kind: "collision", id, against: artifactUrl, verdict: collided ? "collided" : verdict.same ? "same_without_artifact" : "distinct", costUsd: verdict.costUsd });
+        priorArt = collided
+          ? { status: "collided" as const, artifact: { title: verdict.artifactTitle ?? artifactUrl, url: artifactUrl }, distance: verdict.reason }
+          : { status: "not_falsified" as const, distance: verdict.reason || undefined };
+      }
     }
-    archive.mergeEvidence(id, { priorArt });
-    if (priorArt.status === "collided") archive.markRejected(id, "collided", priorArt.artifact?.url);
+    if (priorArt.status === "collided") archive.markRejected(id, "collided", priorArt.artifact?.url, { priorArt });
+    else archive.mergeEvidence(id, { priorArt });
   }));
+  const scoutRejected = scoutSettled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+  const collisionRejected = collisionSettled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+  const workerRejected = scoutRejected ?? collisionRejected;
+  if (workerRejected) {
+    rethrowIfRunCancelled(workerRejected.reason);
+    const message = workerRejected.reason instanceof Error ? workerRejected.reason.message : String(workerRejected.reason);
+    return { ...state(), failure: { failureClass: classifyFailure({ error: workerRejected.reason, message }), message } };
+  }
   const limited = await pauseInfo(d, marker);
   if (limited) return { ...state(), pause: limited };
 
@@ -173,9 +203,14 @@ export async function enrichEvidence(
     const p = await pauseInfo(d, before);
     if (p) return { ...state(), pause: p };
     if (exit || stalled) return { ...state(), exit, stalled };
-    if (result.stopped === "error" || result.stopped === "turn_cap") {
-      const message = result.stopped === "turn_cap" ? "ideate brain reached its per-round turn cap" : result.error ?? "ideate brain error";
-      const failureClass = result.stopped === "turn_cap" ? "budget" : classifyFailure({ message, status: result.errorStatus });
+    if (result.stopped === "error" || result.stopped === "turn_cap" || result.stopped === "usd_cap" || result.stopped === "refused") {
+      const category = result.stopDetails?.category?.trim();
+      const message = result.stopped === "turn_cap" || result.stopped === "usd_cap" ? `ideate brain reached its ${result.stopped}`
+        : result.stopped === "refused" ? `ideate brain refused${category ? `:${category}` : ""}`
+        : result.error ?? "ideate brain error";
+      const failureClass = result.stopped === "turn_cap" || result.stopped === "usd_cap" ? "budget"
+        : result.stopped === "refused" ? "refusal"
+        : classifyFailure({ message, status: result.errorStatus, stopDetails: result.stopDetails });
       d.record.append({ t: "failure", class: failureClass, message });
       return { ...state(), failure: { failureClass, message } };
     }
@@ -184,7 +219,13 @@ export async function enrichEvidence(
   const wanted = new Set(requested.map((item) => item.ideaId).filter((id) => missingProbe.includes(id)));
   const requestedEntries = missingProbe.filter((id) => wanted.has(id)).map((id) => archive.get(id)!);
   const probeMarker = latestSeq(d);
-  await runProbeBatch(d, requestedEntries, { roundWallSeconds: d.cfg.ideation.probe.roundWallSeconds, limiter: d.limiter });
+  const probeResults = await runProbeBatch(d, requestedEntries, { roundWallSeconds: d.cfg.ideation.probe.roundWallSeconds, limiter: d.limiter });
+  const probeFailure = probeResults.find((result) => result.workerFailure);
+  if (probeFailure?.workerFailure) {
+    const message = probeFailure.error ?? `probe worker failed for ${probeFailure.ideaId}`;
+    d.record.append({ t: "failure", class: probeFailure.workerFailure, message });
+    return { ...state(), failure: { failureClass: probeFailure.workerFailure, message } };
+  }
   for (const id of missingProbe.filter((candidate) => !wanted.has(candidate))) {
     mergeProbeEvidence(d.run, id, { status: "not_run", reason: "not_probeable", durationMs: 0 });
     d.record.append({ t: "probe", id, status: "not_run", reason: "not_probeable", durationMs: 0 });
@@ -218,9 +259,17 @@ function renders(d: PhaseDeps, archive: Archive, ids: readonly string[], round: 
 function generationModels(d: PhaseDeps, ids: readonly string[]): Record<string, string> {
   const assigned = new Map<string, string>();
   for (const event of d.record.read()) if (event.t === "island.assign") assigned.set(`${event.round}|${event.island}`, event.model);
+  const committed = new Map<string, string>();
   return Object.fromEntries(ids.map((id) => {
     const match = /^r(\d+)-i(\d+)-/.exec(id);
-    return [id, match ? assigned.get(`${match[1]}|${match[2]}`) ?? "unknown" : "unknown"];
+    if (!match) return [id, "unknown"];
+    const key = `${match[1]}|${match[2]}`;
+    if (!committed.has(key)) {
+      const path = rawIslandPath(d.run, Number(match[1]), Number(match[2]));
+      const model = existsSync(path) ? parseRawIsland(readFileSync(path, "utf8")).meta.model : undefined;
+      committed.set(key, model ?? assigned.get(key) ?? "unknown");
+    }
+    return [id, committed.get(key)!];
   }));
 }
 
@@ -254,13 +303,13 @@ async function runIdeateUnlocked(d: IdeateDeps): Promise<PhaseResult> {
     d.record.append({ t: "failure", class: "integrity", message });
     return finish(d, { outcome: "failed", failureClass: "integrity", message }, { state: "failed", outcome: { kind: "failure", failureClass: "integrity", message } });
   }
-  if (!d.record.read().some((event) => event.t === "phase.start" && event.phase === "ideate")) d.record.append({ t: "phase.start", phase: "ideate" });
+  ensurePhaseStart(d);
   writeStatus(d.run, {
     searchHealth: status.searchHealth ?? 1,
     searchHealthFloor: d.cfg.ideation.searchHealthFloor,
     noveltyEnforced: status.noveltyEnforced ?? true,
   });
-  const projection = projectedRoundCost(d.cfg, d.models as ModelResolver); const archive = new Archive(d.run, d.record);
+  const archive = new Archive(d.run, d.record);
   const searchLimiter = new Limiter(d.cfg.ideation.searchConcurrency); const playbook = loadPlaybook(d.home);
   const routedModels = await islandChoices(d);
   const startRound = status.cursor?.step === "checkpoint" ? d.cfg.ideation.rounds + 1 : Math.max(1, status.cursor?.round ?? 1);
@@ -281,15 +330,18 @@ async function runIdeateUnlocked(d: IdeateDeps): Promise<PhaseResult> {
   }
   for (let round = startRound; round <= d.cfg.ideation.rounds; round += 1) {
     writeStatus(d.run, { cursor: { round, step: "round.start" } });
+    if (ideateWallRemaining(d) <= 0) return stop(d, "deadline", round, { frontierEmpty: !previous });
     const boundaryPause = await pauseInfo(d, undefined, true); if (boundaryPause) return pause(d, boundaryPause);
-    const remaining = remainingIdeateUsd(d.cfg, d.record.read());
-    if (remaining <= 0 || remaining + 1e-12 < projection.costUsd) return stop(d, "budget", round, { frontierEmpty: !previous });
-    const roundBudget = Math.max(projection.costUsd, remaining / (d.cfg.ideation.rounds - round + 1)); const roundStart = d.record.costUsd();
     const judgeRef = d.models("judge").ref;
     const plans = assignIslands(round, d.cfg, playbook, judgeRef, routedModels);
-    if (!d.record.read().some((event) => event.t === "island.assign" && event.round === round)) recordIslandAssignments(d.record, plans);
+    const projection = projectedRoundCost(d.cfg, d.models as ModelResolver, { islandPlans: plans });
+    const remaining = remainingIdeateUsd(d.cfg, d.record.read());
+    const resumedRound = roundHasCommittedWork(d, round);
+    if (remaining <= 0 || (!resumedRound && remaining + 1e-12 < projection.costUsd)) return stop(d, "budget", round, { frontierEmpty: !previous });
+    const roundBudget = resumedRound ? remaining : Math.max(projection.costUsd, remaining / (d.cfg.ideation.rounds - round + 1)); const roundStart = d.record.costUsd();
+    recordIslandAssignments(d.record, plans);
     const generationMarker = latestSeq(d);
-    const generated = await Promise.all(plans.map((plan) => d.limiter.run(async (): Promise<IslandRun> => {
+    const generationSettled = await Promise.allSettled(plans.map((plan) => d.limiter.run(async (): Promise<IslandRun> => {
       const path = rawIslandPath(d.run, round, plan.island);
       if (existsSync(path)) return { raw: readFileSync(path, "utf8"), batches: [], bounded: [], reasked: 0, costUsd: 0, contextPressure: false };
       const seeds = seedIds.flatMap((id) => archive.get(id) ? [renderDossierDetailed(archive.get(id)!.dossier, archive.get(id)!.evidence, { forJudge: true }).text] : []);
@@ -299,15 +351,22 @@ async function runIdeateUnlocked(d: IdeateDeps): Promise<PhaseResult> {
       if (!result.error) writeRawIsland(d.run, round, plan.island, result.raw);
       return result;
     })));
+    const generationRejected = generationSettled.find((item): item is PromiseRejectedResult => item.status === "rejected");
+    if (generationRejected) throw generationRejected.reason;
+    const generated = generationSettled.flatMap((item) => item.status === "fulfilled" ? [item.value] : []);
     const p = await pauseInfo(d, generationMarker); if (p) return pause(d, p);
     let contextPressed = generated.some((result) => result.contextPressure);
     const islandFailure = generated.find((result) => result.error);
     if (islandFailure?.error) {
-      const failureClass = islandFailure.stopped === "turn_cap" ? "budget" : classifyFailure({ message: islandFailure.error, status: islandFailure.errorStatus });
+      const failureClass = islandFailure.stopped === "turn_cap" || islandFailure.stopped === "usd_cap" ? "budget"
+        : islandFailure.stopped === "refused" ? "refusal"
+        : islandFailure.stopped === "verify" ? "verify"
+        : classifyFailure({ message: islandFailure.error, status: islandFailure.errorStatus });
       d.record.append({ t: "failure", class: failureClass, message: islandFailure.error });
       return finish(d, { outcome: "failed", failureClass, message: islandFailure.error }, { state: "failed", outcome: { kind: "failure", failureClass, message: islandFailure.error } });
     }
     if (contextPressed) d.record.append({ t: "note", text: `context pressure observed in ideate round ${round}; the next round rebuilds every model seat fresh from files` });
+    if (ideateWallRemaining(d) <= 0) return stop(d, "deadline", round, { truncatedRound: round, frontierEmpty: !previous });
     const candidates: DerivedIdea[] = generated.flatMap((result, index) => deriveIdeas(result.raw, round, plans[index]!.island, parsed.axes));
     const insertionMarker = latestSeq(d);
     const axis = await applyAxisMappings(d, candidates, parsed.axes, d.cfg.ideation.arbiterCaps.novelty);
@@ -326,8 +385,14 @@ async function runIdeateUnlocked(d: IdeateDeps): Promise<PhaseResult> {
     if (enriched.failure) return finish(d, { outcome: "failed", ...enriched.failure }, { state: "failed", outcome: { kind: "failure", ...enriched.failure } });
     if (enriched.exit) return finish(d, { outcome: "honest_exit", ...enriched.exit }, { state: "done", outcome: { kind: "honest_exit", exitKind: enriched.exit.kind, reasons: enriched.exit.reasons } });
     if (enriched.stalled) return stop(d, "stalled", round, { frontierEmpty: !previous, stallTool: enriched.stalled.tool, stallFingerprint: enriched.stalled.fingerprint });
+    if (ideateWallRemaining(d) <= 0) return stop(d, "deadline", round, { truncatedRound: round, frontierEmpty: !previous });
     if (d.record.costUsd() - roundStart > roundBudget) return stop(d, "budget", round, { truncatedRound: round, frontierEmpty: !previous });
-    const rankable = archive.ids().filter((id) => archive.get(id)?.evidence.status !== "rejected" && archive.get(id)?.evidence.priorArt?.status !== "search_failed");
+    if (ideateWallRemaining(d) <= 0) return stop(d, "deadline", round, { truncatedRound: round, frontierEmpty: !previous });
+    const rankable = archive.ids().filter((id) => {
+      const evidence = archive.get(id)?.evidence;
+      if (!evidence || evidence.status === "rejected" || evidence.priorArt?.status === "collided") return false;
+      return evidence.priorArt?.status !== "search_failed" || !enriched.noveltyEnforced;
+    });
     const rendered = renders(d, archive, rankable, round);
     // Current-round ideas remain candidates on a mid-tournament resume even if their first fit
     // marked them active before the crash simulation. Older active ideas return only as anchors.
@@ -344,7 +409,7 @@ async function runIdeateUnlocked(d: IdeateDeps): Promise<PhaseResult> {
     const pairs = [...incomplete, ...newPairs.filter(([a, b]) => !incomplete.some(([x, y]) => x === a && y === b))];
     let truncated = false; const genModels = generationModels(d, archive.ids());
     for (const pair of pairs) {
-      if (d.record.costUsd() - roundStart > roundBudget) { truncated = true; break; }
+      if (d.record.costUsd() - roundStart > roundBudget || ideateWallRemaining(d) <= 0) { truncated = true; break; }
       const pairMarker = latestSeq(d);
       await runTournament(d, { round, pairs: [pair], renders: rendered, genModels, criteria, limiter: d.limiter });
       const pairPause = await pauseInfo(d, pairMarker); if (pairPause) return pause(d, pairPause);
@@ -369,9 +434,10 @@ async function runIdeateUnlocked(d: IdeateDeps): Promise<PhaseResult> {
     const metaPause = await pauseInfo(d, metaMarker); if (metaPause) return pause(d, metaPause);
     if (d.record.costUsd() - roundStart > roundBudget) truncated = true;
     const seeds = fr.front.length >= 2 ? mmrSelect(fr.front, archive.cells(), (a, b) => trigramJaccard(`${archive.get(a)!.dossier.title} ${archive.get(a)!.dossier.mechanism}`, `${archive.get(b)!.dossier.title} ${archive.get(b)!.dossier.mechanism}`), Math.min(d.cfg.ideation.mmrK, fr.front.length), { values }) : archive.champions().slice(0, d.cfg.ideation.mmrK);
-    seedIds = seeds; writeStatus(d.run, { cursor: { round: round + 1, step: "round.start" } });
+    seedIds = seeds;
     if (!trimmed.shown.some((id) => firstInsertedThisRound.has(id))) return fr.eligible.length === 0 ? mechanicalNoIdea(d, round, ["the eligible frontier is empty after generation stagnated"]) : stop(d, "stagnant", round);
-    if (truncated) return stop(d, "budget", round, { truncatedRound: round, frontierEmpty: false });
+    if (truncated) return stop(d, ideateWallRemaining(d) <= 0 ? "deadline" : "budget", round, { truncatedRound: round, frontierEmpty: false });
+    writeStatus(d.run, { cursor: { round: round + 1, step: "round.start" } });
   }
   if (!previous || previous.eligible.length === 0) return mechanicalNoIdea(d, d.cfg.ideation.rounds, ["no eligible idea cleared the mechanical floor"]);
   return roundsComplete(d);
@@ -389,7 +455,7 @@ export async function runIdeate(d: IdeateDeps): Promise<PhaseResult> {
     } catch (error) {
       rethrowIfRunCancelled(error);
       const message = error instanceof Error ? error.message : String(error);
-      const failureClass = classifyFailure({ error, message });
+      const failureClass = error instanceof TournamentVerdictError ? error.failureClass : classifyFailure({ error, message });
       d.record.append({ t: "failure", class: failureClass, message });
       return finish(d, { outcome: "failed", failureClass, message }, { state: "failed", outcome: { kind: "failure", failureClass, message } });
     }

@@ -6,6 +6,7 @@ import { createMockModel } from "@oh-my-pi/pi-ai";
 import { main } from "../../src/cli/main";
 import { writeStatus } from "../../src/core/run";
 import type { WorkflowPlan } from "../../src/workflow/plan";
+import { initHome } from "../../src/core/home";
 
 test("run new freezes and delivers the adaptive plan to the frame phase", async () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-workflow-cli-"));
@@ -73,6 +74,7 @@ test("a delivery seed runs the complete autonomous route without routine confirm
   expect(code).toBe(0);
   expect(calls).toEqual(["frame", "discover", "ideate", "checkpoint:true", "form", "build:true", "reflect"]);
   expect(output.join("")).toContain("done");
+  expect(output[0]).toBe("I understand this as finding a promising idea and carrying it through implementation and verification.\n");
 });
 
 test("conflicting autonomy controls fail before a run is created", async () => {
@@ -95,8 +97,9 @@ test("interactive JSON is rejected instead of opening an invisible prompt", asyn
   expect(readdirSync(join(home, "runs"))).toEqual([]);
 });
 
-test("JSON exploration stops at a human checkpoint without opening stdin", async () => {
+test("JSON exploration with a configured human checkpoint does not open stdin", async () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-workflow-json-checkpoint-"));
+  initHome(home); // Existing manual/human preference must survive plug-and-play initialization.
   const output: string[] = [];
   let checkpointCalls = 0;
   const model = createMockModel({ id: "seat", responses: [{ content: ["unused"] }] as never });

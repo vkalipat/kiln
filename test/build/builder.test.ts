@@ -195,6 +195,22 @@ describe("runBuilderSession", () => {
     expect(await runBuilderSession(usd.deps, shellFeature(), { project: usd.project, git: usd.git, attempt: 1, usdCap: 0.5 })).toMatchObject({ stopped: "usd_cap", costUsd: 1 });
   });
 
+  test("resumed fresh attempts enforce durable usage before dispatching another call", async () => {
+    const turnModel = createMockModel({ id: "resumed-turn", responses: [{ content: ["must not run"] }] as never });
+    const turn = setup(turnModel);
+    expect(await runBuilderSession(turn.deps, shellFeature(), {
+      project: turn.project, git: turn.git, attempt: 1, turnCap: 1, priorTurns: 1,
+    })).toMatchObject({ stopped: "turn_cap", turns: 0, costUsd: 0 });
+    expect(turn.model.calls).toHaveLength(0);
+
+    const usdModel = createMockModel({ id: "resumed-usd", responses: [{ content: ["must not run"] }] as never });
+    const usd = setup(usdModel);
+    expect(await runBuilderSession(usd.deps, shellFeature(), {
+      project: usd.project, git: usd.git, attempt: 1, usdCap: 0.5, priorSpentUsd: 0.5,
+    })).toMatchObject({ stopped: "usd_cap", turns: 0, costUsd: 0 });
+    expect(usd.model.calls).toHaveLength(0);
+  });
+
   test("omission is not a sandbox: an explicit traversal can still read the record", async () => {
     let sawSentinel = false;
     const model = createMockModel({ id: "traversal", handler: (context: any) => {

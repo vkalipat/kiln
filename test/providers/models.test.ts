@@ -18,10 +18,29 @@ describe("models", () => {
   test("resolveRole throws when nothing is available", () => {
     expect(() => resolveRole("brain", defaultConfig(), new Set())).toThrow(/no model available/i);
   });
+  test("resolvers reject catalog models that explicitly lack tool support", () => {
+    const cfg = defaultConfig();
+    cfg.roles.brain = ["fireworks/gpt-oss-20b"];
+    const available = new Set(["fireworks"]);
+    expect(() => resolveRole("brain", cfg, available)).toThrow(NoModelError);
+    expect(() => resolveRoleOn("brain", "fireworks", cfg, available)).toThrow(NoModelError);
+  });
+  test("resolvers reject code-mode-only models until Kiln supplies a code-mode tool surface", () => {
+    const cfg = defaultConfig();
+    cfg.roles.brain = ["openai-codex/gpt-6-astra"];
+    const available = new Set(["openai-codex"]);
+    expect(() => resolveRole("brain", cfg, available)).toThrow(NoModelError);
+    expect(() => resolveRoleOn("brain", "openai-codex", cfg, available)).toThrow(NoModelError);
+  });
   test("otherProvider prefers a different one", () => {
     expect(otherProvider("anthropic", new Set(["anthropic", "openai-codex"]))).toBe("openai-codex");
     expect(otherProvider("anthropic", new Set(["anthropic"]))).toBe("anthropic");
     expect(otherProvider("anthropic", new Set())).toBeUndefined();
+  });
+  test("otherProvider does not mistake OpenAI transports for independent reviewers", () => {
+    expect(otherProvider("openai", new Set(["openai-codex", "openai"]))).toBe("openai");
+    expect(otherProvider("openai-codex", new Set(["openai", "openai-codex"]))).toBe("openai-codex");
+    expect(otherProvider("openai", new Set(["openai-codex", "anthropic", "openai"]))).toBe("anthropic");
   });
   test("clampEffort respects the model's supported levels", () => {
     const { model } = resolveRole("brain", defaultConfig(), new Set(["anthropic"]));
@@ -136,6 +155,12 @@ describe("resolveRoleOn", () => {
     const alternative = resolveRoleOn("critic", "anthropic", cfg, available, first.ref);
     expect(alternative.ref).not.toBe(first.ref);
     expect(alternative.model.provider).toBe(first.model.provider);
+  });
+  test("exclusion follows model identity across OpenAI transport aliases", () => {
+    const cfg = defaultConfig();
+    cfg.roles.critic = ["openai-codex/gpt-5.5", "openai-codex/gpt-5.4"];
+    const alternative = resolveRoleOn("critic", "openai-codex", cfg, new Set(["openai", "openai-codex"]), "openai/gpt-5.5");
+    expect(alternative.ref).toBe("openai-codex/gpt-5.4");
   });
   test("fails typed when exclusion leaves no admitted alternative", () => {
     const cfg = defaultConfig();

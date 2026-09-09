@@ -235,4 +235,34 @@ describe("AuthStore", () => {
     expect(untouched?.type).toBe("oauth");
     if (untouched?.type === "oauth") expect(untouched.access).toBe(before.access);
   });
+
+  test("logout during an OAuth exchange cannot resurrect or return the removed credential", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const { s } = store({
+      getOAuthApiKey: async (_provider, credentials) => {
+        await gate;
+        return { newCredentials: credentials.anthropic!, apiKey: "late-key" };
+      },
+    });
+    await s.login("anthropic", { onAuth: () => {}, onPrompt: async () => "" });
+    const resolving = s.apiKeyFor("anthropic");
+    s.remove("anthropic");
+    release();
+    expect(await resolving).toBeUndefined();
+    expect(s.get("anthropic")).toBeUndefined();
+    expect(new AuthStore(s.path, { getEnvApiKey: () => undefined, getDefinition: () => undefined }).get("anthropic")).toBeUndefined();
+  });
+
+  test("stale store instances merge unrelated provider writes instead of losing them", () => {
+    const d = mkdtempSync(join(tmpdir(), "kiln-"));
+    const path = join(d, "auth.json");
+    const deps = { getEnvApiKey: () => undefined, getDefinition: () => undefined };
+    const first = new AuthStore(path, deps);
+    const stale = new AuthStore(path, deps);
+    first.setApiKey("anthropic", "a-key");
+    stale.setApiKey("openai", "o-key");
+    const reopened = new AuthStore(path, deps);
+    expect(reopened.providers()).toEqual(["anthropic", "openai"]);
+  });
 });

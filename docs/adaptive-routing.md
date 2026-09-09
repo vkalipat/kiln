@@ -8,7 +8,7 @@ kiln model plan "Find a business idea and build a prototype" --json
 kiln run new "Find a business idea and build a prototype"
 ```
 
-The TUI uses the same run path. In its command palette (`Ctrl+O`), choose `model: adaptive`, `model: manual`, or `model: preview` to preview the current prompt draft. Enable routing once, then submit seeds normally. `kiln model routing manual` restores configured role lists for future runs. Manual mode remains the installation default; existing configurations and evaluator model assignments are not silently migrated.
+The TUI uses the same run path. In its command palette (`Ctrl+O`), choose `model: adaptive`, `model: manual`, or `model: preview` to preview the current prompt draft. Fresh CLI/TUI homes enable adaptive routing and autonomous selection; existing configurations and evaluator model assignments are not silently migrated. `kiln model routing manual` restores configured role lists for future runs.
 
 ## What adapts
 
@@ -20,7 +20,7 @@ The TUI uses the same run path. In its command palette (`Ctrl+O`), choose `model
 
 ## Stable resumes and inspection
 
-Each adaptive run writes `routing.json` alongside `workflow.json`. It records selected roles, effort, strict decision-tool policy, phase shares, planned rounds, and the planner's report. The run summary includes that report. `kiln run show <id>` lists the file. Interrupted setup without its required plan cannot silently resume with a different configuration.
+Each adaptive run writes `routing.json` alongside `workflow.json`. It records selected roles, effort, strict decision-tool policy, phase shares, planned rounds, and the planner's report. New reports include per-role category, metric, source, score (or an explicit unscored fallback), review counterpart, and selection explanation. These are inspectable decision criteria, not hidden model reasoning. The run summary includes that report. `kiln run show <id>` lists the file. Interrupted setup without its required plan cannot silently resume with a different configuration.
 
 Resuming, forming, building, or judging that run uses the frozen routing instead of silently adopting a new leaderboard. Changing the home routing mode affects new runs, not frozen runs. Explicit changes to the total budget/time remain available for recovery; frozen estimates describe the original plan and are not measurements of later spending. Runs created before this feature are not retroactively replanned. Evaluator and embedding-provided model seats remain authoritative.
 

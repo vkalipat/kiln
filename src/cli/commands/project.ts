@@ -54,7 +54,7 @@ function phaseExit(result: PhaseResult, run: RunPaths): number {
 
 async function formCommand(run: RunPaths, flags: Record<string, string | boolean>, io: CliIo, deps: CliDeps, home: string): Promise<number> {
   const cfg = applyFrozenRouting(loadConfig(home), run); if (flags.autonomous === true) cfg.autonomous = true;
-  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false } } : deps);
+  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false, frozen: loadFrozenRouting(run)?.effectiveEffort } } : deps);
   const base = baseDeps(home, run, cfg, runtime, flags, io, deps);
   const status = readStatus(run); const record = base.record;
   const ideaId = status.chosenIdeaId ?? lastChosenIdea(record);
@@ -84,7 +84,7 @@ async function reflectAfterBuild(base: PhaseDeps, deps: CliDeps): Promise<void> 
 
 async function buildCommand(run: RunPaths, flags: Record<string, string | boolean>, io: CliIo, deps: CliDeps, home: string): Promise<number> {
   const cfg = applyFrozenRouting(loadConfig(home), run); if (flags.autonomous === true) cfg.autonomous = true;
-  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false } } : deps);
+  const runtime = await createCliRuntime(home, cfg, loadFrozenRouting(run) ? { ...deps, runtimeEffort: { enabled: false, frozen: loadFrozenRouting(run)?.effectiveEffort } } : deps);
   const base = baseDeps(home, run, cfg, runtime, flags, io, deps);
   const record = base.record;
   let result: PhaseResult = { outcome: "ok" };

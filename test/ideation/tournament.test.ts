@@ -85,6 +85,18 @@ describe("runTournament", () => {
     expect(readTournament(deps.run).filter((line) => line.source === "human")).toHaveLength(2);
   });
 
+  test("a refusing judge produces no completed comparison evidence", async () => {
+    const refusing = createMockModel({ id: "refusing-judge", cost: COST, handler: () => ({
+      stopReason: "error",
+      errorMessage: "request refused",
+      stopDetails: { type: "refusal", category: "safety" },
+      usage: USAGE,
+    }) } as never);
+    const { deps, run, renders, genModels } = setup(refusing);
+    await expect(runTournament(deps, { round: 1, pairs: [["x", "y"]], renders, genModels, criteria: CRITERIA })).rejects.toThrow(/refus/i);
+    expect(readTournament(run)).toEqual([]);
+  });
+
   test("runs through a limiter without exceeding its concurrency", async () => {
     const { deps, renders, genModels } = setup(consistent());
     const limiter = new Limiter(2);

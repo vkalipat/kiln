@@ -47,6 +47,14 @@ export interface ValidateFeatureOptions {
 
 export const PROJECTED_FORMATION_USD = 1.315;
 const FEATURE_KEYS = new Set(["id", "title", "description", "acceptance"]);
+const FILE_KEYS = new Set(["version", "init", "features"]);
+const INIT_KEYS = new Set(["needs"]);
+const ACCEPTANCE_KEYS: Record<Acceptance["type"], ReadonlySet<string>> = {
+  shell: new Set(["type", "command", "expect", "timeoutSeconds", "needs"]),
+  file: new Set(["type", "path", "contains", "needs"]),
+  manual: new Set(["type", "instructions"]),
+};
+const PREDICATE_KEYS = new Set(["type", "value"]);
 
 export function parseFeatures(text: string): FeaturesDraft {
   let value: unknown;
@@ -125,7 +133,8 @@ function validateNeeds(value: unknown, prefix: string, problems: string[]): void
 
 function validatePredicate(value: unknown, prefix: string, problems: string[]): void {
   if (value === undefined) return;
-  if (!value || typeof value !== "object") { problems.push(`${prefix} must be an object`); return; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) { problems.push(`${prefix} must be an object`); return; }
+  for (const key of Object.keys(value)) if (!PREDICATE_KEYS.has(key)) problems.push(`${prefix}.${key} is not allowed`);
   const predicate = value as Partial<Predicate>;
   if (predicate.type !== "substring" && predicate.type !== "regex") problems.push(`${prefix}.type must be substring or regex`);
   if (typeof predicate.value !== "string" || predicate.value === "") problems.push(`${prefix}.value must be a non-empty string`);
@@ -136,8 +145,10 @@ function validatePredicate(value: unknown, prefix: string, problems: string[]): 
 
 function validateAcceptance(value: unknown, index: number, problems: string[]): boolean {
   const prefix = `features[${index}].acceptance`;
-  if (!value || typeof value !== "object") { problems.push(`${prefix} must be an object`); return false; }
+  if (!value || typeof value !== "object" || Array.isArray(value)) { problems.push(`${prefix} must be an object`); return false; }
   const acceptance = value as Record<string, unknown>;
+  const allowed = typeof acceptance.type === "string" ? ACCEPTANCE_KEYS[acceptance.type as Acceptance["type"]] : undefined;
+  if (allowed) for (const key of Object.keys(acceptance)) if (!allowed.has(key)) problems.push(`${prefix}.${key} is not allowed`);
   if (acceptance.type === "shell") {
     if (typeof acceptance.command !== "string" || acceptance.command.trim() === "") problems.push(`${prefix}.command must be non-empty`);
     else if (acceptance.expect === undefined && isTrivialCommand(acceptance.command)) problems.push(`${prefix}.command is trivial and cannot verify the feature`);
@@ -172,11 +183,15 @@ export function validateFeatures(
 ): string[] {
   const problems: string[] = [];
   const raw = file as unknown as Record<string, unknown>;
+  for (const key of Object.keys(raw)) if (!FILE_KEYS.has(key)) problems.push(`${key} is not allowed in frozen features.json`);
   if (raw.version !== 1) problems.push("version must be 1");
   const init = raw.init;
   if (!init || typeof init !== "object") problems.push("init must be an object");
-  else if ((init as Record<string, unknown>).needs === undefined) problems.push("init.needs must be a list");
-  else validateNeeds((init as Record<string, unknown>).needs, "init.needs", problems);
+  else {
+    for (const key of Object.keys(init)) if (!INIT_KEYS.has(key)) problems.push(`init.${key} is not allowed`);
+    if ((init as Record<string, unknown>).needs === undefined) problems.push("init.needs must be a list");
+    else validateNeeds((init as Record<string, unknown>).needs, "init.needs", problems);
+  }
   if (!Array.isArray(raw.features)) {
     problems.push("features must be a list");
     return problems;

@@ -158,6 +158,21 @@ describe("validateFeatures", () => {
     expect(problems.some((problem) => problem.startsWith("feature ids changed"))).toBe(false);
   });
 
+  test("rejects unknown fields at every frozen schema level", () => {
+    const cfg = defaultConfig(); const invalid = file(3) as unknown as Record<string, any>;
+    invalid.generatedBy = "model";
+    invalid.init.hint = "trust me";
+    invalid.features[0].acceptance.passes = true;
+    invalid.features[1].acceptance = { type: "file", path: "result.txt", expect: { type: "substring", value: "unused" } };
+    invalid.features[2].acceptance = { type: "shell", command: "bun test", expect: { type: "substring", value: "pass", flags: "i" } };
+    const problems = validateFeatures(invalid as unknown as FeaturesFile, SPEC, cfg);
+    expect(problems).toContain("generatedBy is not allowed in frozen features.json");
+    expect(problems).toContain("init.hint is not allowed");
+    expect(problems).toContain("features[0].acceptance.passes is not allowed");
+    expect(problems).toContain("features[1].acceptance.expect is not allowed");
+    expect(problems).toContain("features[2].acceptance.expect.flags is not allowed");
+  });
+
   test("applies the wall-clock sizing assertion independently of the dollar cap", () => {
     const cfg = defaultConfig(); cfg.budgets.usd = 41;
     expect(derivedCaps(cfg).maxFeatures).toBe(12);

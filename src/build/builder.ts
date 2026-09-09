@@ -36,6 +36,9 @@ export interface BuilderRunContext {
   progress?: readonly ProgressEntry[];
   turnCap?: number;
   usdCap?: number;
+  /** Durable usage from this same picked attempt when a process died before builder.session landed. */
+  priorSpentUsd?: number;
+  priorTurns?: number;
 }
 
 export interface BuilderSessionResult {
@@ -290,6 +293,8 @@ export async function runBuilderSession(deps: PhaseDeps, feature: Feature, conte
     git: context.git,
     turnCap: context.turnCap ?? deps.cfg.build.sessionTurnCap,
     usdCap: context.usdCap ?? deps.cfg.build.builderUsdCap,
+    priorSpentUsd: context.priorSpentUsd === undefined ? undefined : () => context.priorSpentUsd!,
+    priorTurns: context.priorTurns === undefined ? undefined : () => context.priorTurns!,
   });
   return driver.runFeature(feature, context);
 }

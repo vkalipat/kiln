@@ -1,13 +1,34 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { acquireRunLock, type RunLock } from "../../src/core/lock";
 import { currentRunControl } from "../../src/core/run-control";
-import { readStatus, runPaths, writeStatus } from "../../src/core/run";
-import { RunController, type TuiCli } from "../../src/tui/controller";
+import { RunRecord } from "../../src/core/record";
+import { createRun, readStatus, runPaths, writeStatus } from "../../src/core/run";
+import { RunController, type RunControllerOptions, type TuiCli } from "../../src/tui/controller";
 
 function home(): string { return mkdtempSync(join(tmpdir(), "kiln-tui-cancel-")); }
+
+const invocationRuns = new WeakMap<string[], string>();
+
+function withNewRun(root: string, delegate: TuiCli): TuiCli {
+  return async (argv, io, deps) => {
+    if (argv[0] === "run" && argv[1] === "new") {
+      const seedPath = argv[argv.indexOf("--seed-file") + 1]!;
+      const seed = readFileSync(seedPath, "utf8");
+      const run = createRun(root, seed);
+      new RunRecord(run.record).append({ t: "run.created", seed });
+      invocationRuns.set(argv, run.id);
+      deps.onRun?.(run);
+    }
+    return delegate(argv, io, deps);
+  };
+}
+
+function testController(options: RunControllerOptions & { home: string }): RunController {
+  return new RunController(options.cli ? { ...options, cli: withNewRun(options.home, options.cli) } : options);
+}
 
 function deferred(): { promise: Promise<void>; resolve(): void } {
   let resolve!: () => void;
@@ -23,7 +44,7 @@ async function until(predicate: () => boolean): Promise<void> {
 }
 
 function runId(argv: readonly string[]): string {
-  const id = argv[2];
+  const id = invocationRuns.get(argv as string[]) ?? argv[2];
   if (!id) throw new Error("missing run id");
   return id;
 }
@@ -40,7 +61,7 @@ describe("RunController cancellation", () => {
       finally { await Bun.sleep(5); unwound = true; source.dispose(); }
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "cancel me" });
     await until(() => controller.getSnapshot().transcript.some((entry) => entry.kind === "brain" && entry.text.includes("Clarify")));
 
@@ -70,7 +91,7 @@ describe("RunController cancellation", () => {
       await Bun.sleep(10);
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "CLI owns pause" });
     await ready.promise;
 
@@ -95,7 +116,7 @@ describe("RunController cancellation", () => {
       writeStatus(run, { phase: "discover", state: "running", pausedReason: undefined, cursor: { step: "new-generation" } });
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "generation race" });
     await ready.promise;
 
@@ -121,7 +142,7 @@ describe("RunController cancellation", () => {
       finally { lock.release(); }
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "released generation" });
     await ready.promise;
 
@@ -150,7 +171,7 @@ describe("RunController cancellation", () => {
       await release.promise;
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "double cancel" });
     await ready.promise;
     const firstCancel = controller.cancel();
@@ -176,7 +197,7 @@ describe("RunController cancellation", () => {
       await new Promise<void>((resolve) => control.signal.addEventListener("abort", () => resolve(), { once: true }));
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     await controller.start({ seed: "attached A" });
     const attached = runPaths(root, controller.getSnapshot().runId!);
     const before = readStatus(attached);
@@ -199,7 +220,7 @@ describe("RunController cancellation", () => {
       writeStatus(runPaths(root, runId(argv)), { phase: "reflect", state: "done", outcome: { kind: "success" } });
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "success during unwind" });
     await ready.promise;
 
@@ -220,7 +241,7 @@ describe("RunController cancellation", () => {
       await Bun.sleep(10);
       return 0;
     };
-    const controller = new RunController({ home: root, cli });
+    const controller = testController({ home: root, cli });
     const running = controller.start({ seed: "finish race" });
     await durable.promise;
     await controller.cancel();

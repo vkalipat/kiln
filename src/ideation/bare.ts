@@ -1,4 +1,4 @@
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { createBrain } from "../brain/agent";
 import { loadPrompt } from "../brain/prompts";
@@ -42,45 +42,60 @@ async function runBareUnlocked(d: PhaseDeps): Promise<PhaseResult> {
   }
   if (!d.record.read().some((event) => event.t === "phase.start" && event.phase === "ideate")) d.record.append({ t: "phase.start", phase: "ideate" });
   writeStatus(d.run, { searchHealth: status.searchHealth ?? 1, searchHealthFloor: d.cfg.ideation.searchHealthFloor, noveltyEnforced: status.noveltyEnforced ?? true });
-  const { model } = d.models("generator");
-  const brain = createBrain({
-    model,
-    getApiKey: () => d.apiKeyFor(String(model.provider)),
-    tools: [],
-    systemPrompt: [loadPrompt(d.home, "kernel"), loadPrompt(d.home, "generator")],
-    pinned: `Bare baseline. Write exactly ${BARE_COUNT} dossiers in one answer. Axis vocabulary:\n${parsed.axes.map((axis) => `- ${axis.name}: ${axis.values.join(" | ")}`).join("\n")}`,
-    record: d.record,
-    role: "generator",
-    phase: "ideate",
-    turnCap: 1,
-    effort: effortFor(d.cfg, "generator", model),
-    streamFn: d.streamFn,
-    shaping: { cfg: d.cfg, runId: d.run.id },
-  });
-  const result = await brain.run(`Brief:\n${brief}\n\nWrite exactly ${BARE_COUNT} \`# Idea <n>\` dossiers now.`);
-  if (result.stopped === "error" || result.stopped === "turn_cap") {
-    const message = result.error ?? `bare generator stopped: ${result.stopped}`;
-    const failureClass = result.stopped === "turn_cap" ? "budget" : classifyFailure({ message, status: result.errorStatus });
-    d.record.append({ t: "failure", class: failureClass, message });
-    return done(d, { outcome: "failed", failureClass, message }, { state: "failed", outcome: { kind: "failure", failureClass, message } });
+  const rawPath = join(d.run.rawIdeasDir, "bare.md");
+  const rawWasCommitted = existsSync(rawPath);
+  let raw: string;
+  if (rawWasCommitted) {
+    raw = readFileSync(rawPath, "utf8");
+  } else {
+    const { model } = d.models("generator");
+    const brain = createBrain({
+      model,
+      getApiKey: () => d.apiKeyFor(String(model.provider)),
+      tools: [],
+      systemPrompt: [loadPrompt(d.home, "kernel"), loadPrompt(d.home, "generator")],
+      pinned: `Bare baseline. Write exactly ${BARE_COUNT} dossiers in one answer. Axis vocabulary:\n${parsed.axes.map((axis) => `- ${axis.name}: ${axis.values.join(" | ")}`).join("\n")}`,
+      record: d.record,
+      role: "generator",
+      phase: "ideate",
+      turnCap: 1,
+      effort: effortFor(d.cfg, "generator", model),
+      streamFn: d.streamFn,
+      shaping: { cfg: d.cfg, runId: d.run.id },
+    });
+    const result = await brain.run(`Brief:\n${brief}\n\nWrite exactly ${BARE_COUNT} \`# Idea <n>\` dossiers now.`);
+    if (result.stopped === "error" || result.stopped === "turn_cap" || result.stopped === "usd_cap" || result.stopped === "refused") {
+      const message = result.error ?? `bare generator stopped: ${result.stopped}`;
+      const failureClass = result.stopped === "turn_cap" || result.stopped === "usd_cap" ? "budget"
+        : result.stopped === "refused" ? "refusal"
+        : classifyFailure({ message, status: result.errorStatus, stopDetails: result.stopDetails });
+      d.record.append({ t: "failure", class: failureClass, message });
+      return done(d, { outcome: "failed", failureClass, message }, { state: "failed", outcome: { kind: "failure", failureClass, message } });
+    }
+    if (result.contextPressure) d.record.append({ t: "note", text: "context pressure observed in bare ideation; any resumed model seat rebuilds fresh from files" });
+    raw = result.text;
   }
-  if (result.contextPressure) d.record.append({ t: "note", text: "context pressure observed in bare ideation; any resumed model seat rebuilds fresh from files" });
-  const blocks = splitIdeas(result.text);
+  const blocks = splitIdeas(raw);
   if (blocks.length !== BARE_COUNT) {
     const message = `bare generator wrote ${blocks.length} ideas; expected ${BARE_COUNT}`;
     d.record.append({ t: "failure", class: "verify", message });
     return done(d, { outcome: "failed", failureClass: "verify", message }, { state: "failed", outcome: { kind: "failure", failureClass: "verify", message } });
   }
-  const archive = new Archive(d.run, d.record);
-  const ids: string[] = [];
-  for (let i = 0; i < blocks.length; i += 1) {
-    const parsedDossier = parseDossier(blocks[i]!).dossier;
+  const parsedDossiers = blocks.map((block) => parseDossier(block).dossier);
+  for (let i = 0; i < parsedDossiers.length; i += 1) {
+    const parsedDossier = parsedDossiers[i]!;
     const problems = validateDossier(parsedDossier, parsed.axes);
     if (problems.length > 0) {
       const message = `bare idea ${i + 1} is not a valid dossier: ${problems.join("; ")}`;
       d.record.append({ t: "failure", class: "verify", message });
       return done(d, { outcome: "failed", failureClass: "verify", message }, { state: "failed", outcome: { kind: "failure", failureClass: "verify", message } });
     }
+  }
+  if (!rawWasCommitted) writeAtomic(rawPath, raw.endsWith("\n") ? raw : `${raw}\n`);
+  const archive = new Archive(d.run, d.record);
+  const ids: string[] = [];
+  for (let i = 0; i < blocks.length; i += 1) {
+    const parsedDossier = parsedDossiers[i]!;
     const axes = normalizeAxes(parsedDossier, parsed.axes);
     const axisValues = { ...axes.axisValues };
     for (const unknown of axes.unknown) if (unknown.allowed[0]) axisValues[unknown.axis] = unknown.allowed[0];

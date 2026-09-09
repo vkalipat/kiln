@@ -3,7 +3,7 @@ import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { BrainResult } from "../../src/brain/agent";
-import { runValidatedFile } from "../../src/phases/shared";
+import { createDisposableDeadline, runValidatedFile } from "../../src/phases/shared";
 
 const done = (text = "ok"): BrainResult => ({ text, turns: 1, costUsd: 0, stopped: "done" });
 
@@ -73,6 +73,22 @@ describe("runValidatedFile", () => {
     expect(r.result.stopped).toBe("turn_cap");
   });
 
+  test("halt still returns the artifact validation observed after the completed turn", async () => {
+    const path = tmpFile();
+    const s = scripted([() => writeFileSync(path, "good")], () => ({ text: "", turns: 1, costUsd: 0, stopped: "turn_cap" }));
+    const r = await runValidatedFile({
+      brain: s.brain,
+      path,
+      parse: (md) => md.trim(),
+      validate: (parsed) => parsed === "good" ? [] : ["bad"],
+      prompt: "p",
+      fix: () => "f",
+      halt: (result) => result.stopped === "turn_cap",
+    });
+    expect(r).toMatchObject({ halted: true, parsed: "good", problems: [], attempts: 1 });
+    expect(s.prompts).toHaveLength(1);
+  });
+
   test("attempts is configurable", async () => {
     const path = tmpFile();
     const s = scripted([() => {}, () => {}, () => {}]);
@@ -91,5 +107,31 @@ describe("runValidatedFile", () => {
     });
     expect(result.problems).toEqual([]);
     expect(seen.map((value) => value.text)).toEqual(["call-1", "call-2"]);
+  });
+});
+
+describe("createDisposableDeadline", () => {
+  test("does not keep a Bun child alive while strongly referenced", async () => {
+    const module = new URL("../../src/phases/shared.ts", import.meta.url).href;
+    const source = `import { createDisposableDeadline } from ${JSON.stringify(module)}; globalThis.held = createDisposableDeadline(60_000); console.log("created");`;
+    const child = Bun.spawn([process.execPath, "-e", source], { stdout: "pipe", stderr: "pipe" });
+    const outcome = await Promise.race([child.exited.then((code) => ({ kind: "exit" as const, code })), Bun.sleep(1_000).then(() => ({ kind: "timeout" as const }))]);
+    if (outcome.kind === "timeout") child.kill();
+    expect(outcome).toEqual({ kind: "exit", code: 0 });
+  });
+
+  test("dispose clears a pending deadline without aborting completed work", async () => {
+    const deadline = createDisposableDeadline(10);
+    deadline.dispose(); deadline.dispose();
+    await Bun.sleep(20);
+    expect(deadline.signal.aborted).toBe(false);
+  });
+
+  test("an undisposed deadline aborts with a timeout error", async () => {
+    const deadline = createDisposableDeadline(1);
+    await Bun.sleep(10);
+    expect(deadline.signal.aborted).toBe(true);
+    expect(deadline.signal.reason).toMatchObject({ name: "TimeoutError" });
+    deadline.dispose();
   });
 });

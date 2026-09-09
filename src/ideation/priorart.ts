@@ -27,6 +27,8 @@ export interface PriorArtFinding {
   searchOk: boolean;
   costUsd: number;
   contextPressure: boolean;
+  /** URLs observed in successful retrieval tool results, never model-authored synthesis alone. */
+  observedUrls: string[];
 }
 
 const DEFAULT_TEMPLATE = [
@@ -42,8 +44,9 @@ export function priorArtTemplate(home: string): string {
   const md = loadPrompt(home, "scout");
   const section = md.split(/^## prior art\s*$/mi)[1];
   if (!section) return DEFAULT_TEMPLATE;
-  const at = section.indexOf("Template:");
-  const body = (at === -1 ? section : section.slice(at + "Template:".length)).trim();
+  const ownSection = section.split(/^##\s+/m)[0] ?? section;
+  const at = ownSection.indexOf("Template:");
+  const body = (at === -1 ? ownSection : ownSection.slice(at + "Template:".length)).trim();
   return body === "" ? DEFAULT_TEMPLATE : body;
 }
 
@@ -52,14 +55,16 @@ export function facetQuery(d: Dossier, shape: IdeaShape, template = DEFAULT_TEMP
   const who = d.axisValues["who it serves"] ?? Object.values(d.axisValues)[0] ?? "";
   const purpose = who ? `${d.testableClaim} (for ${who})` : d.testableClaim;
   return template
-    .replace("{purpose}", purpose)
-    .replace("{mechanism}", `${d.title}: ${d.mechanism}`)
-    .replace("{evaluation}", d.cheapestTest)
-    .replace("{shape}", shape);
+    .replaceAll("{purpose}", purpose)
+    .replaceAll("{mechanism}", `${d.title}: ${d.mechanism}`)
+    .replaceAll("{evaluation}", d.cheapestTest)
+    .replaceAll("{shape}", shape);
 }
 
 export interface CollisionVerdict {
   same: boolean;
+  /** False means the arbiter never produced a decision; it must not be persisted as distinct. */
+  conclusive: boolean;
   artifactTitle?: string;
   artifactUrl?: string;
   reason: string;
@@ -102,9 +107,28 @@ export async function collisionVerdict(deps: PhaseDeps, d: Dossier, findings: st
     shaping: { cfg: deps.cfg, runId: deps.run.id },
   });
   const prompt = ["## Idea", `Title: ${d.title}`, `Mechanism: ${d.mechanism}`, `Testable claim: ${d.testableClaim}`, "", "## What the prior-art search found", findings.trim() || "(nothing)", "", "Call the collision tool."].join("\n");
-  const { costUsd } = await brain.run(prompt);
-  if (!captured) return { same: false, reason: "arbiter gave no verdict", costUsd };
-  return { ...captured, costUsd };
+  const result = await brain.run(prompt);
+  if (!captured) {
+    const category = result.stopDetails?.category?.trim();
+    const reason = result.stopped === "refused" ? `arbiter refused${category ? `:${category}` : ""}`
+      : result.stopped === "error" ? `arbiter failed: ${result.error ?? "provider error"}`
+      : "arbiter gave no verdict";
+    return { same: false, conclusive: false, reason, costUsd: result.costUsd };
+  }
+  return { ...captured, conclusive: true, costUsd: result.costUsd };
+}
+
+/** A collision may cite only a valid web URL that is present in the scout's retrieved findings. */
+export function verifiedArtifactUrl(candidate: string | undefined, observed: string | readonly string[]): string | undefined {
+  const raw = candidate?.trim();
+  const seen = typeof observed === "string" ? observed.includes(raw ?? "") : observed.includes(raw ?? "");
+  if (!raw || !seen) return undefined;
+  try {
+    const url = new URL(raw);
+    return (url.protocol === "http:" || url.protocol === "https:") && url.hostname !== "" ? raw : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export interface PriorArtOptions {
@@ -134,6 +158,7 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
     onSearchHealth: (status) => searchHealth.push(status),
   };
   const question = facetQuery(d, opts.shape, priorArtTemplate(deps.home));
+  const marker = deps.record.read().at(-1)?.seq ?? 0;
   const scout = await runScout({
     question,
     brief: `Prior-art check for one idea. Shape: ${opts.shape}.`,
@@ -150,20 +175,28 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
     streamFn: deps.streamFn,
     searchHealth,
   });
+  const observedUrls = [...new Set(deps.record.read().flatMap((event) => {
+    if (event.seq <= marker || event.t !== "tool.call" || !event.ok || !["scholar_search", "web_search", "web_fetch"].includes(event.name)) return [];
+    return event.excerpt.match(/https?:\/\/[^\s<>"'\])}]+/gi) ?? [];
+  }))];
   // This is deliberately scout-local. A sequence-window scan of the journal attributes another
   // concurrently running scout's successful search to this one (carry-forward ruling 25).
-  const searchOk = scout.stopped === "done" && scout.searchHealth.some((status) => status === "ok");
+  const searchOk = scout.stopped === "done" && scout.searchHealth.length > 0 && scout.searchHealth.every((status) => status === "ok");
   const scoutCost = scout.costUsd;
   if (!searchOk) {
-    return { status: "search_failed", findings: scout.findings, searchOk: false, costUsd: scoutCost, contextPressure: scout.contextPressure };
+    return { status: "search_failed", findings: scout.findings, searchOk: false, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
   }
-  if (opts.arbiter === false) return { status: "not_falsified", findings: scout.findings, searchOk: true, costUsd: scoutCost, contextPressure: scout.contextPressure };
+  if (opts.arbiter === false) return { status: "not_falsified", findings: scout.findings, searchOk: true, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
   const v = await collisionVerdict(deps, d, scout.findings);
-  const hasUrl = v.artifactUrl !== undefined && /^https?:\/\//i.test(v.artifactUrl);
-  const collided = v.same && hasUrl;
-  deps.record.append({ t: "arbiter.verdict", kind: "collision", id: d.id, against: v.artifactUrl, verdict: collided ? "collided" : v.same ? "same_without_artifact" : "distinct", costUsd: v.costUsd });
-  if (collided) {
-    return { status: "collided", artifact: { title: v.artifactTitle ?? v.artifactUrl!, url: v.artifactUrl! }, distance: v.reason, findings: scout.findings, searchOk: true, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure };
+  if (!v.conclusive) {
+    deps.record.append({ t: "arbiter.verdict", kind: "collision", id: d.id, verdict: "inconclusive", costUsd: v.costUsd });
+    return { status: "search_failed", findings: scout.findings, searchOk: false, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
   }
-  return { status: "not_falsified", distance: v.reason || undefined, findings: scout.findings, searchOk: true, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure };
+  const artifactUrl = verifiedArtifactUrl(v.artifactUrl, observedUrls);
+  const collided = v.same && artifactUrl !== undefined;
+  deps.record.append({ t: "arbiter.verdict", kind: "collision", id: d.id, against: artifactUrl, verdict: collided ? "collided" : v.same ? "same_without_artifact" : "distinct", costUsd: v.costUsd });
+  if (collided) {
+    return { status: "collided", artifact: { title: v.artifactTitle ?? artifactUrl, url: artifactUrl }, distance: v.reason, findings: scout.findings, searchOk: true, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
+  }
+  return { status: "not_falsified", distance: v.reason || undefined, findings: scout.findings, searchOk: true, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
 }

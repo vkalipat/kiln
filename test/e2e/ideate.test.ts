@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
@@ -7,6 +7,11 @@ import type { Model } from "@oh-my-pi/pi-catalog";
 import { main } from "../../src/cli/main";
 import { defaultConfig, saveConfig, type Role } from "../../src/core/config";
 import { initHome } from "../../src/core/home";
+import { Limiter } from "../../src/core/limiter";
+import { RunRecord } from "../../src/core/record";
+import { createRun, runPaths, writeStatus } from "../../src/core/run";
+import { ideateSpentUsd, projectedRoundCost } from "../../src/ideation/budget";
+import { runIdeate } from "../../src/phases/ideate";
 
 const BRIEF = `# Brief
 
@@ -139,4 +144,69 @@ describe("kiln run through checkpoint", () => {
     expect(existsSync(join(summary.dir, "tournament.jsonl"))).toBe(false);
     expect(summary.status).toMatchObject({ phase: "form", state: "running" });
   }, 20_000);
+
+  test("a total prior-art outage stays visible as unknown novelty instead of a false no-idea exit", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-e2e-search-outage-")); initHome(home);
+    const cfg = defaultConfig(); cfg.ideation.rounds = 1; cfg.ideation.islands = 1; cfg.ideation.cheapIsland = false;
+    cfg.ideation.entrantsCap = 5; cfg.ideation.anchorsCap = 2; cfg.ideation.pairCap = 10; cfg.ideation.minComparisons = 3; cfg.ideation.bootstrapSamples = 20;
+    saveConfig(home, cfg);
+    const output: string[] = [];
+    const code = await main(["run", "new", "indexing tool", "--home", home, "--through", "checkpoint", "--autonomous", "--yes", "--json"], { write: (text) => output.push(text), error: (text) => output.push(text) }, {
+      streamFn: streamMock as never, models: models(), apiKeyFor: async () => "key",
+      fetchImpl: (async () => new Response("search unavailable", { status: 503 })) as unknown as typeof fetch,
+      fetchUsage: async () => ({ used: 0, limit: 1 }),
+    });
+    expect(code).toBe(0);
+    const summary = JSON.parse(output.join(""));
+    expect(summary.frontier).toMatchObject({ searchHealth: 0, noveltyEnforced: false });
+    expect(summary.frontier.eligible.length).toBeGreaterThan(0);
+    expect(summary.status).toMatchObject({ phase: "form", state: "running" });
+  }, 20_000);
+
+  test("a near-floor resume judges only the missing ordering instead of demanding a fresh full round", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-e2e-ideate-resume-")); initHome(home);
+    const cfg = defaultConfig(); cfg.routing = { mode: "manual" }; cfg.ideation.rounds = 1; cfg.ideation.islands = 1; cfg.ideation.cheapIsland = false;
+    cfg.ideation.entrantsCap = 5; cfg.ideation.anchorsCap = 2; cfg.ideation.pairCap = 10; cfg.ideation.minComparisons = 3; cfg.ideation.bootstrapSamples = 20;
+    saveConfig(home, cfg);
+    const output: string[] = []; const seats = models();
+    const code = await main(["run", "new", "indexing tool", "--home", home, "--through", "ideate", "--autonomous", "--yes", "--json"], { write: (text) => output.push(text), error: (text) => output.push(text) }, {
+      streamFn: streamMock as never, models: seats, apiKeyFor: async () => "key",
+      fetchImpl: (async () => new Response(JSON.stringify({ results: [] }), { headers: { "content-type": "application/json" } })) as unknown as typeof fetch,
+      fetchUsage: async () => ({ used: 0, limit: 1 }),
+    });
+    expect(code).toBe(0);
+    const summary = JSON.parse(output.join("")); const run = runPaths(home, summary.id); const record = new RunRecord(run.record);
+    const lines = readFileSync(run.tournament, "utf8").trim().split("\n");
+    writeFileSync(run.tournament, `${lines.slice(0, -1).join("\n")}\n`);
+    writeStatus(run, { phase: "ideate", state: "running", cursor: { round: 1, step: "round.start" }, outcome: undefined });
+    const full = projectedRoundCost(cfg, (role) => ({ model: seats[role], ref: `mock/${role}` })).costUsd;
+    const spent = ideateSpentUsd(record.read());
+    cfg.budgets.usd = (spent + full / 10) / cfg.budgets.share.ideate;
+    const before = record.read().filter((event) => event.t === "model.call" && event.role === "judge").length;
+    const result = await runIdeate({
+      home, run, record, cfg, limiter: new Limiter(4), streamFn: streamMock as never,
+      models: (role: Role) => ({ model: seats[role], ref: `mock/${role}` }), apiKeyFor: async () => "key",
+      fetchUsage: async () => ({ used: 0, limit: 1 }), islandModels: { generator: [{ model: seats.generator, ref: "mock/generator" }] },
+    } as never);
+    const after = record.read().filter((event) => event.t === "model.call" && event.role === "judge").length;
+    expect(result).toMatchObject({ outcome: "stopped", stopKind: "rounds" });
+    expect(after - before).toBeGreaterThanOrEqual(1);
+    expect(after - before).toBeLessThanOrEqual(2); // one ordering, plus at most its bounded retry
+  }, 20_000);
+
+  test("an exhausted ideation wall allocation stops before any generator call", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-e2e-ideate-wall-")); initHome(home);
+    const run = createRun(home, "indexing tool");
+    writeFileSync(run.brief, BRIEF); writeFileSync(run.landscape, LANDSCAPE);
+    writeStatus(run, { phase: "ideate", state: "running", shape: "product" });
+    const cfg = defaultConfig(); cfg.budgets.wallSeconds = 0; cfg.ideation.rounds = 1; cfg.ideation.islands = 1; cfg.ideation.cheapIsland = false;
+    const seats = models(); const record = new RunRecord(run.record);
+    const result = await runIdeate({
+      home, run, record, cfg, limiter: new Limiter(2), streamFn: streamMock as never,
+      models: (role: Role) => ({ model: seats[role], ref: `mock/${role}` }), apiKeyFor: async () => "key",
+      islandModels: { generator: [{ model: seats.generator, ref: "mock/generator" }] },
+    } as never);
+    expect(result).toMatchObject({ outcome: "stopped", stopKind: "deadline" });
+    expect((seats.generator as unknown as { calls: unknown[] }).calls).toHaveLength(0);
+  });
 });

@@ -1,13 +1,16 @@
+import { randomUUID } from "node:crypto";
+import { unlinkSync } from "node:fs";
+import { join } from "node:path";
 import type { CliDeps, CliIo } from "../cli/main";
 import { main } from "../cli/main";
 import { loadConfig, saveConfig } from "../core/config";
 import { classifyFailure } from "../core/failure";
 import { initHome } from "../core/home";
-import { kilnHome } from "../core/paths";
+import { kilnHome, writeAtomic } from "../core/paths";
 import { localAuthState } from "../onboarding/auth";
 import { RunRecord } from "../core/record";
 import { RunCancelledError, RunControl, throwIfRunCancelled, withRunControl, type RunControlEvent } from "../core/run-control";
-import { createRun, readStatus, runExists, runPaths, writeStatus, type RunPaths, type RunStatus } from "../core/run";
+import { readStatus, runExists, runPaths, writeStatus, type RunPaths, type RunStatus } from "../core/run";
 import { settleCancelledRunFallback } from "./controller-cancel";
 import { commandWithHome, displayCommand, paletteArgv } from "./controller-command";
 import { checkpointAnswerText, describeControllerAsk, validateCheckpointAnswer, type ControllerAskDescription } from "./controller-checkpoint";
@@ -15,6 +18,7 @@ import { ControllerTranscript, restoredTranscript, type TranscriptChange } from 
 import { INITIAL_TUI_SNAPSHOT, isTerminalRun } from "./controller-status";
 import type { TuiCheckpointAnswer, TuiConfigEffort, TuiControllerPort, TuiEvent, TuiEventListener, TuiPhase, TuiSendResult, TuiSnapshot } from "./contracts";
 import { fromConfigEffort } from "./dial";
+import { loadWorkflowPlan, workflowInterpretation } from "../workflow/plan";
 export type TuiCli = (argv: string[], io: CliIo, deps: CliDeps) => Promise<number>;
 export interface RunControllerOptions {
   home?: string; branch?: string; cli?: TuiCli; cliDeps?: CliDeps; historyLimit?: number;
@@ -25,10 +29,12 @@ interface PendingAsk {
   resolve(value: string): void;
   reject(reason: unknown): void;
   detach(): void;
+  rememberSensitive?(value: string): void;
 }
 interface ActiveInvocation {
   control: RunControl; promise: Promise<void>; generation: number;
   run?: RunPaths;
+  newSeed: boolean;
   cancelRequested: boolean; preserveTerminalAtCancel: boolean;
   statusAtCancel?: RunStatus;
 }
@@ -58,7 +64,7 @@ export class RunController implements TuiControllerPort {
     this.#cli = options.cli ?? main;
     this.#cliDeps = options.cliDeps ?? {};
     this.#historyLimit = options.historyLimit ?? 24;
-    initHome(this.home);
+    initHome(this.home, { plugAndPlay: true });
     const config = loadConfig(this.home);
     this.#snapshot = {
       ...INITIAL_TUI_SNAPSHOT, directory: this.home, branch: this.#branch,
@@ -74,16 +80,24 @@ export class RunController implements TuiControllerPort {
   async start(input: { seed?: string; runId?: string }): Promise<void> {
     this.#assertIdle();
     if ((input.seed === undefined) === (input.runId === undefined)) throw new Error("start requires exactly one of seed or runId");
-    let run: RunPaths;
     if (input.seed !== undefined) {
       if (!input.seed.trim()) throw new Error("a run seed is required");
-      run = createRun(this.home, input.seed);
-      new RunRecord(run.record).append({ t: "run.created", seed: input.seed });
-    } else {
-      if (!runExists(this.home, input.runId!)) throw new Error(`unknown run ${input.runId}`);
-      run = runPaths(this.home, input.runId!);
+      this.#queuedSteering = [];
+      const seedPath = join(this.home, "evolution", "work", `tui-seed-${randomUUID()}.md`);
+      writeAtomic(seedPath, input.seed, { mode: 0o600 });
+      try {
+        await this.#begin(commandWithHome(["run", "new", "--seed-file", seedPath], this.home), false, true);
+      } finally {
+        try { unlinkSync(seedPath); } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "ENOENT")) throw error;
+        }
+      }
+      return;
     }
+    if (!runExists(this.home, input.runId!)) throw new Error(`unknown run ${input.runId}`);
+    const run = runPaths(this.home, input.runId!);
     this.#attach(run);
+    if (isTerminalRun(readStatus(run))) return;
     await this.#begin(commandWithHome(["run", "resume", run.id], this.home), false, true, run);
   }
 
@@ -134,14 +148,14 @@ export class RunController implements TuiControllerPort {
 
   async setEffort(effort: TuiConfigEffort): Promise<void> {
     this.#pendingEffort = effort;
-    this.#snapshot = { ...this.#snapshot, effort: fromConfigEffort(effort) };
-    this.#emit({ type: "snapshot", snapshot: this.#snapshot });
     const active = this.#active;
     if (active) {
-      active.control.steer(`[Kiln control] Apply ${effort} reasoning effort at the next safe model boundary.`);
+      this.#snapshot = { ...this.#snapshot, activity: `${fromConfigEffort(effort)} effort queued for future new runs; this run is frozen` };
+      this.#emit({ type: "snapshot", snapshot: this.#snapshot });
       return;
     }
     this.#persistEffort();
+    this.#emit({ type: "snapshot", snapshot: this.#snapshot });
   }
 
   async answerCheckpoint(answer: TuiCheckpointAnswer): Promise<void> {
@@ -185,10 +199,10 @@ export class RunController implements TuiControllerPort {
 
   #assertIdle(): void { if (this.#active) throw new Error("a controller invocation is already active"); }
 
-  #attach(run: RunPaths): void {
+  #attach(run: RunPaths, preserveQueuedSteering = false): void {
     this.#run = run;
     this.#record = new RunRecord(run.record);
-    this.#queuedSteering = [];
+    if (!preserveQueuedSteering) this.#queuedSteering = [];
     this.#transcript.restore(restoredTranscript(run.id, this.#record.read(), this.#historyLimit));
     this.#refreshSnapshot();
     this.#emit({ type: "snapshot", snapshot: this.#snapshot });
@@ -198,7 +212,8 @@ export class RunController implements TuiControllerPort {
     const control = new RunControl();
     const active: ActiveInvocation = {
       control, promise: Promise.resolve(), generation: ++this.#generation,
-      run, cancelRequested: false, preserveTerminalAtCancel: false,
+      run, newSeed: argv[0] === "run" && argv[1] === "new",
+      cancelRequested: false, preserveTerminalAtCancel: false,
     };
     this.#active = active;
     const unsubscribe = control.subscribe((event) => this.#onRunEvent(active, event));
@@ -209,13 +224,19 @@ export class RunController implements TuiControllerPort {
   async #invoke(active: ActiveInvocation, argv: string[], captureOutput: boolean, lifecycle: boolean): Promise<void> {
     const output: string[] = [];
     const errors: string[] = [];
+    const sensitiveValues = new Set<string>();
+    const redact = (text: string): string => {
+      let safe = text;
+      for (const value of sensitiveValues) if (value) safe = safe.replaceAll(value, "[REDACTED]");
+      return safe;
+    };
     const beforeAmbient = this.#ambientEvents;
     const liveOutput = captureOutput && argv[0] === "auth";
     const io: CliIo = {
-      write: (text) => { if (captureOutput) { output.push(text); if (liveOutput) this.#appendCliOutput(text); } },
-      error: (text) => errors.push(text),
+      write: (text) => { if (captureOutput) { const safe = redact(text); output.push(safe); if (liveOutput) this.#appendCliOutput(safe); } },
+      error: (text) => errors.push(redact(text)),
       ask: (prompt) => this.#ask(active, prompt, false),
-      askSecret: (prompt) => this.#ask(active, prompt, true),
+      askSecret: (prompt) => this.#ask(active, prompt, true, (value) => sensitiveValues.add(value)),
     };
     try {
       const externalOnRun = this.#cliDeps.onRun;
@@ -223,7 +244,11 @@ export class RunController implements TuiControllerPort {
         ...this.#cliDeps,
         onRun: (run) => {
           active.run = run;
-          if (this.#run?.dir !== run.dir) this.#attach(run);
+          if (this.#run?.dir !== run.dir) {
+            this.#attach(run, active.newSeed);
+            const plan = active.newSeed ? loadWorkflowPlan(run) : undefined;
+            if (plan) this.#appendCliOutput(workflowInterpretation(plan));
+          }
           externalOnRun?.(run);
         },
       };
@@ -240,20 +265,27 @@ export class RunController implements TuiControllerPort {
         this.#persistCancellation(active);
         return;
       }
-      if (lifecycle && this.#run) {
-        const status = readStatus(this.#run);
+      if (lifecycle && active.run && this.#run?.dir === active.run.dir) {
+        const status = readStatus(active.run);
         if (!isTerminalRun(status)) {
-          const message = error instanceof Error ? error.message : String(error);
+          const message = redact(error instanceof Error ? error.message : String(error));
           const failureClass = classifyFailure({ error });
-          writeStatus(this.#run, { state: "failed", outcome: { kind: "failure", failureClass, message } });
+          writeStatus(active.run, { state: "failed", outcome: { kind: "failure", failureClass, message } });
         }
       }
       this.#finalizeTranscript(false);
-      this.#appendCliOutput(errors.join("") || (error instanceof Error ? error.message : String(error)));
+      const safeMessage = redact(error instanceof Error ? error.message : String(error));
+      this.#appendCliOutput(errors.join("") || safeMessage);
       this.#refreshSnapshot();
+      if (error instanceof Error && safeMessage !== error.message) {
+        const safeError = new Error(safeMessage);
+        safeError.name = error.name;
+        throw safeError;
+      }
       throw error;
     } finally {
       this.#rejectAsk(new Error("the CLI invocation ended before answering the prompt"));
+      if (active.newSeed && !active.run) this.#queuedSteering = [];
       this.#persistEffort();
       if (this.#active === active) this.#active = undefined;
       this.#snapshot = { ...this.#snapshot, auth: localAuthState(this.home) };
@@ -279,7 +311,7 @@ export class RunController implements TuiControllerPort {
     this.#emitTranscript(change);
   }
 
-  #ask(active: ActiveInvocation, prompt: string, secret: boolean): Promise<string> {
+  #ask(active: ActiveInvocation, prompt: string, secret: boolean, rememberSensitive?: (value: string) => void): Promise<string> {
     if (this.#pendingAsk) return Promise.reject(new Error("another CLI question is already pending"));
     throwIfRunCancelled(active.control.signal);
     const description = describeControllerAsk(this.#run, this.#record, prompt);
@@ -300,6 +332,7 @@ export class RunController implements TuiControllerPort {
         resolve,
         reject,
         detach: () => active.control.signal.removeEventListener("abort", abort),
+        rememberSensitive,
       };
     });
     this.#emit({ type: "input_requested", prompt, secret });
@@ -310,6 +343,7 @@ export class RunController implements TuiControllerPort {
     pending.detach();
     this.#pendingAsk = undefined;
     this.#emit({ type: "input_cleared" });
+    pending.rememberSensitive?.(value);
     pending.resolve(value);
   }
   #rejectAsk(reason: unknown): void {
@@ -347,6 +381,7 @@ export class RunController implements TuiControllerPort {
     latest.effortByRole ??= {};
     for (const role of Object.keys(latest.roles) as Array<keyof typeof latest.roles>) latest.effortByRole[role] = effort;
     saveConfig(this.home, latest);
+    this.#snapshot = { ...this.#snapshot, effort: fromConfigEffort(effort) };
     this.#pendingEffort = undefined;
   }
 

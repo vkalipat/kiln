@@ -149,4 +149,44 @@ describe("build loop", () => {
     expect(priorCost).toBeCloseTo(0.5, 12);
     expect(priorTurns).toBe(2);
   });
+
+  test("fresh-session resume charges and caps an interrupted attempt's recorded builder usage", async () => {
+    const s = setupLoop();
+    s.record.append({ t: "feature.pick", featureId: "f01", attempt: 1, phaseBudgetUsd: 10, featureBudgetUsd: 5 });
+    s.record.append({ t: "turn", role: "builder", phase: "build", n: 1 });
+    s.record.append({
+      t: "model.call", role: "builder", provider: "mock", model: "builder", inputHash: "interrupted",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, costUsd: 0.45, stopReason: "stop", excerpt: "",
+    });
+    let context: Record<string, unknown> | undefined;
+    s.deps.runBuilder = async (_deps, _feature, value) => {
+      context = value as unknown as Record<string, unknown>;
+      return builderResult({ costUsd: 0.2, turns: 1 });
+    };
+
+    expect(await runBuild(s.deps)).toEqual({ outcome: "ok" });
+    expect(context).toMatchObject({ priorSpentUsd: 0.45, priorTurns: 1 });
+    expect(s.record.read().find((event) => event.t === "builder.session")).toMatchObject({ costUsd: 0.65, turns: 2 });
+    expect(s.record.read().find((event) => event.t === "attempt")).toMatchObject({ builderCostUsd: 0.65, costUsd: 0.75 });
+  });
+
+  test("single-session resume attributes interrupted usage to the in-flight feature exactly once", async () => {
+    const s = setupLoop();
+    s.record.append({ t: "feature.pick", featureId: "f01", attempt: 1, phaseBudgetUsd: 10, featureBudgetUsd: 5 });
+    s.record.append({ t: "turn", role: "builder", phase: "build", n: 1 });
+    s.record.append({
+      t: "model.call", role: "builder", provider: "mock", model: "builder", inputHash: "interrupted",
+      usage: { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 }, costUsd: 0.45, stopReason: "stop", excerpt: "",
+    });
+    let prior = -1;
+    s.deps.createDriver = (_deps, options) => {
+      prior = options.priorSpentUsd?.() ?? 0;
+      return { spentUsd: 0, turns: 0, runFeature: async () => builderResult({ costUsd: 0.2, turns: 1 }) };
+    };
+
+    expect(await runBuildSingleSession(s.deps)).toEqual({ outcome: "ok" });
+    expect(prior).toBe(0.45);
+    expect(s.record.read().find((event) => event.t === "builder.session")).toMatchObject({ costUsd: 0.65, turns: 2 });
+    expect(s.record.read().find((event) => event.t === "attempt")).toMatchObject({ builderCostUsd: 0.65, costUsd: 0.75 });
+  });
 });

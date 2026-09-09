@@ -59,7 +59,7 @@ export function isProtectedRunFile(ctx: ToolContext, path: string): boolean {
   // The workflow planner owns workflow.json, but RunPaths does not: derive its canonical run-local
   // location here so every current and future ToolContext protects the frozen plan by default.
   const workflow = join(run.dir, "workflow.json");
-  for (const f of [run.record, run.status, run.tournament, run.frontier, run.metrics, run.lock, workflow, run.features, run.acceptanceLock, run.featureState, ...(ctx.protectedPaths ?? [])]) {
+  for (const f of [run.record, run.status, run.tournament, run.frontier, run.metrics, run.lock, workflow, join(run.dir, "routing.json"), join(run.dir, "clarification.json"), run.features, run.acceptanceLock, run.featureState, ...(ctx.protectedPaths ?? [])]) {
     if (abs === realPath(f)) return true;
   }
   // `run.dir` is `<home>/runs/<id>` for ordinary and staged eval homes. Deriving the home here
