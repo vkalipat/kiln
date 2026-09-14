@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, writeFileSync, readFileSync, statSync, symlinkSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
@@ -8,7 +8,8 @@ import { Limiter } from "../../src/core/limiter";
 import { RunRecord } from "../../src/core/record";
 import { createRun } from "../../src/core/run";
 import type { Dossier } from "../../src/ideation/dossier";
-import { collisionVerdict, facetQuery, priorArtTemplate, runPriorArtScout } from "../../src/ideation/priorart";
+import { collisionVerdict, facetQuery, priorArtTemplate, runPriorArtScout, priorArtCacheDir, retirePriorArtCheckpoint } from "../../src/ideation/priorart";
+import { hashInput } from "../../src/core/record";
 import type { PhaseDeps } from "../../src/phases/frame";
 
 function setup(responses: unknown[] = [], fetchImpl?: typeof fetch) {
@@ -180,6 +181,72 @@ describe("collisionVerdict", () => {
 });
 
 describe("runPriorArtScout", () => {
+  test.each(["dossier", "prompt", "provider", "effort", "config"])("checkpoint invalidates when %s context changes", async (change) => {
+    const base = setup([scholarCall(), { content: ["first report"] }, scholarCall(), { content: ["second report"] }], okFetch);
+    if (change === "effort") {
+      (base.deps.models("scout").model as unknown as { thinking: unknown }).thinking = { efforts: ["low", "high"] };
+      base.cfg.effortByRole = { ...base.cfg.effortByRole, scout: "low" };
+    }
+    let idea = dossier();
+    await runPriorArtScout(base.deps, idea, { shape: "product", arbiter: false });
+    if (change === "dossier") idea = dossier({ cheapestTest: "changed oracle" });
+    if (change === "prompt") { mkdirSync(join(base.home, "prompts")); writeFileSync(join(base.home, "prompts", "kernel.md"), "Changed governing context"); }
+    if (change === "provider") { const resolve = base.deps.models; base.deps.models = (role) => ({ ...resolve(role), ref: "other/scout" }); }
+    if (change === "effort") base.cfg.effortByRole = { ...base.cfg.effortByRole, scout: "high" };
+    if (change === "config") base.cfg.provider.batchNudge = !base.cfg.provider.batchNudge;
+    const second = await runPriorArtScout(base.deps, idea, { shape: "product", arbiter: false });
+    expect(second.findings).toBe("second report");
+    expect(base.record.read().filter((e) => e.t === "model.call")).toHaveLength(4);
+  });
+
+  test("private packet rejects altered bytes even with a recomputed signature, and retirement prevents replay", async () => {
+    const base = setup([scholarCall(), { content: ["original"] }, scholarCall(), { content: ["replacement"] }, scholarCall(), { content: ["after retirement"] }], okFetch);
+    await runPriorArtScout(base.deps, dossier(), { shape: "product", arbiter: false });
+    const path = join(priorArtCacheDir(base.run), `${dossier().id}.json`);
+    expect(statSync(path).mode & 0o777).toBe(0o600);
+    const { signature: _old, ...packet } = JSON.parse(readFileSync(path, "utf8"));
+    expect(packet.scout.turns).toBe(2);
+    packet.scout.findings = "forged";
+    writeFileSync(path, JSON.stringify({ ...packet, signature: hashInput(packet) }));
+    expect((await runPriorArtScout(base.deps, dossier(), { shape: "product", arbiter: false })).findings).toBe("replacement");
+    retirePriorArtCheckpoint(base.deps, dossier().id);
+    expect((await runPriorArtScout(base.deps, dossier(), { shape: "product", arbiter: false })).findings).toBe("after retirement");
+  });
+
+  test("redirected checkpoint directory is rejected before model dispatch", async () => {
+    const base = setup([], okFetch);
+    const outside = mkdtempSync(join(tmpdir(), "kiln-checkpoint-outside-"));
+    symlinkSync(outside, priorArtCacheDir(base.run));
+    await expect(runPriorArtScout(base.deps, dossier(), { shape: "product", arbiter: false })).rejects.toThrow("redirected");
+    expect(base.record.read().filter((e) => e.t === "model.call")).toHaveLength(0);
+    await expect(runPriorArtScout(base.deps, dossier({ id: "../outside" }), { shape: "product", arbiter: false })).rejects.toThrow("invalid prior-art");
+  });
+
+  test("completed retrieval survives a handoff interruption without paying for the scout again", async () => {
+    const { deps, record, cfg } = setup([scholarCall("owned"), { content: ["Exact report tail: https://openalex.org/W1 ; uncertainty remains."] }], okFetch);
+    const first = await runPriorArtScout(deps, dossier(), { shape: "product", arbiter: false });
+    const calls = record.read().filter((e) => e.t === "model.call").length;
+    cfg.budgets.usd += 100;
+    cfg.budgets.wallSeconds += 100;
+    const resumed = await runPriorArtScout(deps, dossier(), { shape: "product", arbiter: false });
+    expect(resumed.findings).toBe(first.findings);
+    expect(resumed.observedUrls).toEqual(first.observedUrls);
+    expect(resumed.searchOk).toBe(true);
+    expect(resumed.costUsd).toBe(0);
+    expect(record.read().filter((e) => e.t === "model.call")).toHaveLength(calls);
+  });
+
+  test.each([false, true])("only a valid inadequate review retires completed research (valid: %s)", async (valid) => {
+    const reviews = valid ? [collisionCall({ coverageAdequate: false, same: false, reason: "Relevant evidence missing" })]
+      : [{ content: ["review unavailable"] }];
+    const base = setup([scholarCall(), { content: ["held findings"] }, ...reviews, scholarCall(), { content: ["improved findings"] }], okFetch);
+    const result = await runPriorArtScout(base.deps, dossier(), { shape: "product" });
+    expect(result.status).toBe("search_failed");
+    const before = base.record.read().filter((e) => e.t === "model.call" && e.role === "scout").length;
+    const again = await runPriorArtScout(base.deps, dossier(), { shape: "product", arbiter: false });
+    expect(again.findings).toBe(valid ? "improved findings" : "held findings");
+    expect(base.record.read().filter((e) => e.t === "model.call" && e.role === "scout")).toHaveLength(before + (valid ? 2 : 0));
+  });
   test("a primary fetch after a blocked search can support an explicit adequate review", async () => {
     const url = "https://example.test/primary";
     const { deps } = setup([

@@ -67,6 +67,8 @@ export function isProtectedRunFile(ctx: ToolContext, path: string): boolean {
   const home = dirname(dirname(run.dir));
   for (const d of [
     run.toolOutputDir, run.criteriaDir, run.renderedDir, run.rawIdeasDir,
+    // Completed scout handoffs are harness-written facts awaiting independent review.
+    join(run.dir, "prior-art"),
     ...homeProtectedDirs(home), ...(ctx.protectedDirs ?? []),
   ]) {
     const dir = realPath(d);

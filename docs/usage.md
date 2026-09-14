@@ -32,6 +32,8 @@ Bare `kiln` opens an editable prompt. Type a task and press Enter; if unauthenti
 
 The original request, frozen checks and full evidence are authoritative. Compact handoffs do not silently replace them. Historical workflows and existing framed work are not rewritten into the new direct-intake mode on resume. Prior-art reviewers assess relevance and coverage explicitly; a parsed search response alone cannot clear the check, and one scout cannot authenticate a collision using another scout's sources. Unassessed or inadequate coverage stays unknown with its reason attached.
 
+Completed prior-art reports are saved before review, with their source URLs and context fingerprint. If a sibling or reviewer is interrupted, compatible saved research can be reused without paying for it again. A completed finding of inadequate coverage retires that pending handoff so new research can address the gap. Cached research never counts as an approval by itself.
+
 Keep the checkout and dependencies downloaded locally. Cloud-optimized folders can evict files and delay startup or testing; Kiln does not move the checkout or change cloud-sync settings automatically.
 
 ## Provider access

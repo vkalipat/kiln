@@ -99,6 +99,15 @@ test("owned successful calls must match canonical model, input hash, usage and c
   expect(reconcileRecordedCalls([attempt],[{...row,usage:{...usage,output:21}}]).ok).toBe(false);
   expect(reconcileRecordedCalls([attempt],[row,row]).ok).toBe(false);
 });
+test("controller cancellation alone admits exact stop-to-aborted normalization",()=>{
+  const usage={input:10,output:20,cacheRead:0,cacheWrite:0};
+  const attempt={request:67,model:"anthropic/claude-fable-5-1",inputHash:"owned",dispatched:true,stop:"stop",usage,costUsd:.12,chargedUsd:.12};
+  const row={seq:403,provider:"anthropic",model:"claude-fable-5-1",inputHash:"owned",stopReason:"aborted",usage:{...usage},costUsd:.12};
+  expect(reconcileRecordedCalls([attempt],[row],true).ok).toBe(true);
+  expect(reconcileRecordedCalls([attempt],[row]).ok).toBe(false);
+  for(const changed of [{...row,model:"other"},{...row,inputHash:"foreign"},{...row,stopReason:"error"},{...row,costUsd:.11},...Object.keys(usage).map(k=>({...row,usage:{...usage,[k]:1}}))])expect(reconcileRecordedCalls([attempt],[changed],true).ok).toBe(false);
+  for(const changed of [{...attempt,stop:"error"},{...attempt,error:"provider failure"},{...attempt,usage:undefined},{...attempt,dispatched:false},{...attempt,chargedUsd:.1}])expect(reconcileRecordedCalls([changed],[row],true).ok).toBe(false);
+});
 function cancellationFixture(){
   const before=Buffer.from(JSON.stringify({seq:1,ts:"2026-01-01T00:00:00.000Z",t:"phase.start",phase:"discover"})+"\n");
   const receipt={at:"2026-01-01T00:00:02.000Z",history:{bytes:before.length,sha256:createHash("sha256").update(before).digest("hex"),lastSequence:1,openPhases:["discover"],costUsd:1.25}};

@@ -1,6 +1,9 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createBrain } from "../brain/agent";
 import { loadPrompt } from "../brain/prompts";
+import { composeAddenda } from "../brain/addenda";
+import { adaptiveEvidencePrompt } from "../brain/adaptive-evidence";
+import { hashInput } from "../core/record";
 import { scoutTools, type ToolContext } from "../brain/tools";
 import { fail } from "../brain/tools/shape";
 import type { IdeaShape } from "../core/config";
@@ -10,6 +13,8 @@ import type { PhaseDeps } from "../phases/frame";
 import { effortFor } from "../providers/models";
 import { runScout } from "../scouts/scout";
 import type { Dossier } from "./dossier";
+import { readPriorArtCheckpoint, writePriorArtCheckpoint, retirePriorArtCheckpoint } from "./priorart-checkpoint";
+export { priorArtCacheDir, retirePriorArtCheckpoint } from "./priorart-checkpoint";
 
 /**
  * Prior-art falsification (record §5). A templated facet query is answered by a short scout; an
@@ -64,6 +69,8 @@ export function facetQuery(d: Dossier, shape: IdeaShape, template = DEFAULT_TEMP
 }
 
 export interface CollisionVerdict {
+  /** A valid coverage decision, including explicitly inadequate coverage, was received. */
+  decisionRecorded?: boolean;
   same: boolean;
   coverageAdequate: boolean;
   /** False includes inadequate coverage and invalid/missing decisions; never persist as distinct. */
@@ -127,7 +134,7 @@ export async function collisionVerdict(deps: PhaseDeps, d: Dossier, findings: st
       : invalidReason ? `arbiter gave no valid verdict: ${invalidReason}` : "arbiter gave no verdict";
     return { same: false, coverageAdequate: false, conclusive: false, reason, costUsd: result.costUsd };
   }
-  return { ...captured, conclusive: captured.coverageAdequate, costUsd: result.costUsd };
+  return { ...captured, decisionRecorded: true, conclusive: captured.coverageAdequate, costUsd: result.costUsd };
 }
 
 /** A collision may cite only a valid web URL that is present in the scout's retrieved findings. */
@@ -155,7 +162,7 @@ export interface PriorArtOptions {
 
 /** Scout for prior art, then let the arbiter decide; records `arbiter.verdict` and returns the finding. */
 export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorArtOptions): Promise<PriorArtFinding> {
-  const { model } = deps.models("scout");
+  const { model, ref } = deps.models("scout");
   const searchHealth: SearchStatus[] = [];
   const ctx: ToolContext = {
     cwd: deps.run.dir,
@@ -169,13 +176,26 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
     searchJitterMs: opts.searchJitterMs,
     onSearchHealth: (status) => searchHealth.push(status),
   };
-  const question = facetQuery(d, opts.shape, priorArtTemplate(deps.home));
-  const scout = await runScout({
+  const template = priorArtTemplate(deps.home);
+  const question = facetQuery(d, opts.shape, template);
+  const brief = `Prior-art check for one idea. Shape: ${opts.shape}.`;
+  const tools = scoutTools(ctx);
+  const systemPrompt = [loadPrompt(deps.home, "kernel"), loadPrompt(deps.home, "scout")];
+  const fingerprint = hashInput({ policy: 1, dossier: d, template, question, brief, ref,
+    model: { id: model.id, provider: model.provider, api: model.api, baseUrl: model.baseUrl, compat: model.compat, thinking: model.thinking, contextWindow: model.contextWindow },
+    effort: effortFor(deps.cfg, "scout", model), systemPrompt,
+    addenda: composeAddenda(model, "scout", deps.cfg), provider: deps.cfg.provider,
+    adaptive: adaptiveEvidencePrompt({ cfg: deps.cfg, role: "scout", phase: "ideate", toolNames: tools.map((t) => t.name), systemPrompt, recordPath: deps.record.path }),
+    tools: tools.map(({ name, description, parameters }) => ({ name, description, parameters })),
+    scoutTurnCap: deps.cfg.ideation.scoutTurnCap, mailto: deps.cfg.ideation.mailto, webTimeoutMs: deps.cfg.ideation.webTimeoutMs,
+  });
+  const cached = readPriorArtCheckpoint(deps, d.id, fingerprint);
+  const scout = cached ?? await runScout({
     question,
-    brief: `Prior-art check for one idea. Shape: ${opts.shape}.`,
+    brief,
     model,
     getApiKey: () => deps.apiKeyFor(String(model.provider)),
-    tools: scoutTools(ctx),
+    tools,
     record: deps.record,
     home: deps.home,
     cfg: deps.cfg,
@@ -191,11 +211,13 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
   // concurrently running scout's successful search to this one (carry-forward ruling 25).
   const searchOk = scout.stopped === "done" && (scout.searchHealth.includes("ok") || (scout.successfulFetches ?? 0) > 0);
   const scoutCost = scout.costUsd;
+  if (!cached && searchOk && scout.findings.trim()) writePriorArtCheckpoint(deps, d.id, fingerprint, scout);
   if (!searchOk) {
     return { status: "search_failed", distance: scout.stopped === "done" ? "No successful source retrieval was observed." : `Scout did not complete its report (${scout.stopped}).`, findings: scout.findings, searchOk: false, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
   }
   if (opts.arbiter === false) return { status: "search_failed", distance: "Search coverage has not been assessed by the arbiter.", findings: scout.findings, searchOk: true, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
   const v = await collisionVerdict(deps, d, scout.findings);
+  if (v.decisionRecorded && !v.coverageAdequate) retirePriorArtCheckpoint(deps, d.id);
   if (!v.conclusive) {
     deps.record.append({ t: "arbiter.verdict", kind: "collision", id: d.id, verdict: "inconclusive", costUsd: v.costUsd });
     return { status: "search_failed", distance: v.reason, findings: scout.findings, searchOk: false, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };

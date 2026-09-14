@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
@@ -7,6 +7,7 @@ import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
 import { defaultConfig, type Role } from "../../src/core/config";
 import { Limiter } from "../../src/core/limiter";
 import { RunRecord } from "../../src/core/record";
+import { RunControl, withRunControl } from "../../src/core/run-control";
 import { createRun } from "../../src/core/run";
 import { Archive } from "../../src/ideation/archive";
 import type { Dossier } from "../../src/ideation/dossier";
@@ -38,6 +39,97 @@ function fixture(models: Partial<Record<Role, unknown>>) {
 }
 
 describe("ideation evidence enrichment", () => {
+  test("a completed scout survives sibling cancellation and resumes into review without replay", async () => {
+    const control = new RunControl();
+    let ready!: () => void;
+    const checkpointReady = new Promise<void>((resolve) => { ready = resolve; });
+    let resumed = false;
+    let completedCalls = 0, siblingCalls = 0, completedFetches = 0, siblingFetches = 0;
+    const report = "Complete findings with a retained report tail: TAIL-COMPLETE-REPORT https://openalex.org/W1";
+    let reviewedExactReport = false;
+    const scout = createMockModel({ id: "durable-scout", handler: async (context: unknown) => {
+      const text = JSON.stringify(context);
+      const complete = text.includes("Completed handoff");
+      if (complete) completedCalls += 1; else siblingCalls += 1;
+      if (!complete && !resumed) {
+        await checkpointReady;
+        control.cancel("test sibling interruption after first report persisted");
+        throw control.signal.reason;
+      }
+      if (!text.includes("toolResult")) return { content: [{ type: "toolCall", name: "scholar_search", arguments: { query: complete ? "completed" : "sibling" } }] };
+      return { content: [complete ? report : "Sibling findings https://openalex.org/W2"] };
+    } } as never);
+    const arbiter = createMockModel({ id: "durable-review", handler: (context: unknown) => {
+      const text = JSON.stringify(context);
+      if (text.includes("Completed handoff")) reviewedExactReport = text.includes(report);
+      return { content: [{ type: "toolCall", name: "collision", arguments: { coverageAdequate: true, same: false, reason: "Relevant sources reviewed; the mechanisms differ." } }] };
+    } } as never);
+    const { deps, archive, record } = fixture({ scout, arbiter });
+    archive.get("r1-i1-1")!.dossier.title = "Completed handoff";
+    archive.insert({ ...dossier(), id: "r1-i1-2", title: "Interrupted sibling" });
+    const ids = ["r1-i1-1", "r1-i1-2"];
+    for (const id of ids) archive.mergeEvidence(id, { probe: { status: "not_run", reason: "not_probeable" } });
+    deps.fetchImpl = (async (input: string | URL | Request) => {
+      const url = new URL(input instanceof Request ? input.url : String(input));
+      const complete = url.searchParams.get("search") === "completed";
+      if (complete) completedFetches += 1; else siblingFetches += 1;
+      return new Response(JSON.stringify({ results: [{ id: `https://openalex.org/${complete ? "W1" : "W2"}`, display_name: "Retrieved work" }] }));
+    }) as typeof fetch;
+    const append = record.append.bind(record);
+    record.append = (event) => {
+      const saved = append(event);
+      if (event.t === "note" && event.text.startsWith("prior-art checkpoint r1-i1-1: ")) ready();
+      return saved;
+    };
+    await expect(withRunControl(control, () => enrichEvidence(deps, archive, ids, "product", 1, new Limiter(2)))).rejects.toThrow();
+    const originalJournal = readFileSync(deps.run.record, "utf8");
+    const historicalSpend = record.costUsd();
+    const historicalCalls = record.read().filter((event) => event.t === "model.call").length;
+    expect(completedCalls).toBe(2);
+    expect(completedFetches).toBe(1);
+    expect(archive.get(ids[0]!)?.evidence.priorArt).toBeUndefined();
+    resumed = true;
+    const restored = new Archive(deps.run, record);
+    for (const item of archive.all()) restored.adopt(item);
+    const result = await enrichEvidence(deps, restored, ids, "product", 1, new Limiter(2));
+    expect(result.failure).toBeUndefined();
+    expect(completedCalls).toBe(2);
+    expect(completedFetches).toBe(1);
+    expect(siblingCalls).toBe(3);
+    expect(siblingFetches).toBe(1);
+    expect(reviewedExactReport).toBe(true);
+    expect(restored.get(ids[0]!)?.evidence.priorArt?.status).toBe("not_falsified");
+    expect(restored.get(ids[1]!)?.evidence.priorArt?.status).toBe("not_falsified");
+    expect(readFileSync(deps.run.record, "utf8").startsWith(originalJournal)).toBe(true);
+    expect(record.costUsd()).toBeGreaterThanOrEqual(historicalSpend);
+    const newCalls = record.read().filter((event) => event.t === "model.call").slice(historicalCalls);
+    expect(newCalls.filter((event) => event.role === "scout")).toHaveLength(2);
+    expect(newCalls.filter((event) => event.role === "arbiter")).toHaveLength(2);
+  });
+
+  test.each([false, true])("review interruption retains research; an explicit inadequate decision retires it (inadequate: %s)", async (inadequate) => {
+    let recovered = false, scoutCalls = 0;
+    const scout = createMockModel({ id: "review-recovery-scout", handler: (context: unknown) => {
+      scoutCalls += 1;
+      if (!JSON.stringify(context).includes("toolResult")) return { content: [{ type: "toolCall", name: "scholar_search", arguments: { query: "journal indexing" } }] };
+      return { content: ["Full saved research from https://openalex.org/W1"] };
+    } } as never);
+    const arbiter = createMockModel({ id: "recovering-reviewer", handler: () => {
+      if (!recovered && !inadequate) return { stopReason: "error", errorMessage: "transient reviewer unavailable" };
+      return { content: [{ type: "toolCall", name: "collision", arguments: { coverageAdequate: recovered, same: false, reason: recovered ? "Relevant evidence supports the comparison." : "The retrieved evidence does not cover this mechanism." } }] };
+    } } as never);
+    const { deps, archive } = fixture({ scout, arbiter });
+    const id = "r1-i1-1";
+    archive.mergeEvidence(id, { probe: { status: "not_run", reason: "not_probeable" } });
+    await enrichEvidence(deps, archive, [id], "product", 1, new Limiter(1));
+    expect(archive.get(id)?.evidence.priorArt?.status).toBe("search_failed");
+    expect(scoutCalls).toBe(2);
+    recovered = true;
+    await enrichEvidence(deps, archive, [id], "product", 1, new Limiter(1));
+    expect(scoutCalls).toBe(inadequate ? 4 : 2);
+    expect(archive.get(id)?.evidence.priorArt?.status).toBe("not_falsified");
+  });
+
   test("an unobserved collision URL cannot become either a rejection or a conclusive negative", async () => {
     const scout = createMockModel({ id: "owned-search", responses: [
       { content: [{ type: "toolCall", name: "scholar_search", arguments: { query: "journal indexing" } }] },

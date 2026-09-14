@@ -61,11 +61,16 @@ function history(run:RunPaths){const bytes=readFileSync(run.record),events=new R
 const USAGE_FIELDS=["input","output","cacheRead","cacheWrite"] as const;
 const zeroUsage=(u:any)=>!!u&&USAGE_FIELDS.every(k=>u[k]===0);
 /** Match journaled calls by model/input hash, not by the number of created streams. */
-export function reconcileRecordedCalls(attempts:any[],rows:any[]){
+export function reconcileRecordedCalls(attempts:any[],rows:any[],controllerCancelled=false){
   const unused=new Set(attempts.map((_,i)=>i)),errors:string[]=[],matches:any[]=[];
   for(const row of rows){
     const ref=`${row.provider}/${row.model}`;
-    const index=[...unused].find(i=>attempts[i].model===ref&&attempts[i].inputHash===row.inputHash&&attempts[i].stop===row.stopReason);
+    // Native cancellation can normalize a completed provider stop after its usage settled.
+    // Admit only that label change; identity, exact usage/cost and exposure remain binding.
+    const cancelledStop=(a:any)=>controllerCancelled&&a.dispatched===true&&a.error===undefined&&a.stop==="stop"&&row.stopReason==="aborted"
+      &&Number.isFinite(a.costUsd)&&a.costUsd===row.costUsd
+      &&USAGE_FIELDS.every(k=>typeof a.usage?.[k]==="number"&&Number.isFinite(a.usage[k])&&a.usage[k]>=0&&a.usage[k]===row.usage?.[k]);
+    const index=[...unused].find(i=>attempts[i].model===ref&&attempts[i].inputHash===row.inputHash&&(attempts[i].stop===row.stopReason||cancelledStop(attempts[i])));
     if(index===undefined){errors.push(`Journal call ${row.seq} has no matching owned model/input/stop receipt`);continue;}
     unused.delete(index);const a=attempts[index];
     if(!a.dispatched&&(!zeroUsage(row.usage)||row.costUsd!==0))errors.push(`Undispatched attempt ${a.request} has nonzero canonical usage`);
@@ -203,7 +208,7 @@ async function execute(){
     if(!journalOwnership.ok)integrityErrors.push(`Final journal is not the owned receipt or exact native controller-cancellation closure: ${journalOwnership.kind}`);
     events=new RunRecord(run.record).read();const added=events.filter(e=>e.seq>p.baselineHistory.lastSequence);
     let currentPhase="discover";for(const e of added){if(e.t==="phase.start")currentPhase=e.phase;if(currentPhase==="discover"&&((e.t==="model.call"&&e.role==="scout")||(e.t==="tool.call"&&["web_search","web_fetch","scholar_search","scout"].includes(e.name))))integrityErrors.push("Unexpected discovery research/replay in recovery trace");}
-    callAccounting=reconcileRecordedCalls(calls,added.filter(e=>e.t==="model.call"));integrityErrors.push(...callAccounting.errors);
+    callAccounting=reconcileRecordedCalls(calls,added.filter(e=>e.t==="model.call"),control.signal.aborted);integrityErrors.push(...callAccounting.errors);
     final=snapshot(worker,controller,run,Object.keys(p.immutableHashes),"after");
     if(existsSync(run.frontier))frontier=json(run.frontier);if(existsSync(run.tournament))tournament=readFileSync(run.tournament,"utf8").split("\n").filter(Boolean).map(s=>JSON.parse(s));
     for(const id of Array.isArray(frontier?.shown)?frontier.shown:[])if(typeof id==="string"&&/^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(id)&&!id.includes("..")){try{const e=json(join(run.ideasDir,`${id}.evidence.json`)),render=join(run.renderedDir,`${id}-r${frontier.round}.md`);evidenceByIdea[id]={...e,renderPresent:existsSync(render)&&readFileSync(render,"utf8").trim().length>0};}catch{}}

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, symlinkSync, realpathSync, readdirSync } from "node:fs";
+import { mkdtempSync, mkdirSync, readFileSync, writeFileSync, existsSync, symlinkSync, realpathSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRun } from "../../src/core/run";
@@ -387,6 +387,7 @@ describe("tools", () => {
       run.tournament,
       run.frontier,
       run.metrics,
+      join(run.dir, "prior-art", "r1-i0-1.json"),
       join(run.criteriaDir, "c1.md"),
       join(run.renderedDir, "r1-i0-1-r1.md"),
       join(run.rawIdeasDir, "r1-i0.md"),
@@ -408,6 +409,19 @@ describe("tools", () => {
     const fresh = join(run.ideasDir, "r1-i0-2.md");
     expect((await call("write", { path: fresh, content: "# Idea\n" })).isError).toBe(false);
     expect(readFileSync(fresh, "utf8")).toBe("# Idea\n");
+  });
+
+  test("pending prior-art handoffs stay protected through a symlink alias", async () => {
+    const { call, run } = ctx();
+    const cache = join(run.dir, "prior-art");
+    mkdirSync(cache);
+    const file = join(cache, "r1-i0-1.json");
+    writeFileSync(file, "original evidence");
+    const alias = join(run.dir, "research-alias");
+    symlinkSync(cache, alias);
+    expect((await call("write", { path: join(alias, "r1-i0-1.json"), content: "forged evidence" })).isError).toBe(true);
+    expect((await call("edit", { path: join(alias, "r1-i0-1.json"), old: "original", new: "forged" })).isError).toBe(true);
+    expect(readFileSync(file, "utf8")).toBe("original evidence");
   });
 
   test("web_search reports blocked when the page is a challenge and records search health", async () => {

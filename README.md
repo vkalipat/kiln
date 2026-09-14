@@ -36,7 +36,7 @@ TUI: `/login` connects providers, `Ctrl+O` opens commands, `Ctrl+S` changes effo
 - **Verified delivery:** a validated specification and frozen acceptance criteria, feature-scoped builders, actual executable checks, and independent audits of detached repository snapshots. Unavailable audit evidence cannot approve a feature.
 - **Inspectable context:** exact task requirements, ownership-aware review, full retained audit evidence, and source/hash references for material too large to inline.
 - **Bounded work:** portfolio sizing, affordable research units, answer-time reserves, task-specific workflows, and provider-supported reasoning/cache settings. Estimates are not guarantees.
-- **Durable operation:** file-backed runs, Git evidence, live steering, interrupted-work recovery, and recorded model/tool usage. Recovery does not reset spent budgets or silently replace accepted requirements.
+- **Durable operation:** file-backed runs, completed-research checkpoints, Git evidence, live steering, interrupted-work recovery, and recorded model/tool usage. Recovery does not reset spent budgets or silently replace accepted requirements.
 - **Gated improvement:** reflection proposes playbook changes; promotion requires separate evaluation and integrity checks. A suggestion is not automatically a verified lesson.
 
 [Adaptive routing details](docs/adaptive-routing.md) explain model eligibility and role selection. Reviewed benchmark evidence informs routing; Kiln does not claim every selected model leads every live leaderboard.
@@ -49,7 +49,7 @@ The [operator plugin](plugins/kiln/README.md) lets a coding assistant launch, mo
 
 A live CSV task completed with **16/16 independent behavioral checks**, 14 generated tests and a usable independent audit. Its simple tool-using baseline hit a per-call output limit without delivering. A separate CLI recovery passed 7/7 external checks and 11 generated tests. These are small development qualifications, not proof of general benchmark superiority.
 
-Earlier ideation trials stopped before producing a usable shortlist. Research-budget and handoff fixes have regression coverage; updated native ideation qualification is still pending. See the [development results](docs/testing/2026-09-10-completion-development.md) and [consolidation record](docs/testing/2026-09-13-consolidation.md). Software tests, model preferences and small examples do not establish AGI, biological-discovery or clinical reliability.
+The latest live ideation recovery completed discovery and generated eight draft candidates, but its evaluation spending guard stopped it before evidence review and ranking finished. That is progress, not a validated shortlist. Completed-research persistence was fixed afterward and regression-tested; full live ideation qualification remains open. See the [development results](docs/testing/2026-09-10-completion-development.md) and [consolidation record](docs/testing/2026-09-13-consolidation.md). These examples do not establish AGI, biological-discovery or clinical reliability.
 
 Kiln is a single-operator local tool. **Shell commands are not OS-sandboxed.** Use an appropriately isolated environment for untrusted work. Shell scratch defaults are unique and run-local, but this is not filesystem isolation. Run dollar budgets are planning targets checked at turn boundaries; an admitted provider turn may finish above its target. Evaluations require explicit spending authorization.
 

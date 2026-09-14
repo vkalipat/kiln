@@ -23,7 +23,7 @@ import { writeCriteria, writeMetaReview } from "../ideation/judge";
 import { writeMetrics } from "../ideation/metrics";
 import { trigramJaccard } from "../ideation/novelty";
 import { selectEntrants, schedulePairs } from "../ideation/pairing";
-import { collisionVerdict, runPriorArtScout, verifiedArtifactUrl } from "../ideation/priorart";
+import { collisionVerdict, retirePriorArtCheckpoint, runPriorArtScout, verifiedArtifactUrl } from "../ideation/priorart";
 import { mergeProbeEvidence, runProbeBatch } from "../ideation/probe";
 import { latestSteering, pauseInfo, readJsonIfPresent, searchHealth } from "../ideation/runtime";
 import { fitRound, readTournament, runTournament, seedFor, TournamentVerdictError } from "../ideation/tournament";
@@ -172,6 +172,7 @@ export async function enrichEvidence(
     if (result.searchOk && collisionSeats-- > 0) {
       const verdict = await d.limiter.run(() => collisionVerdict(d, archive.get(id)!.dossier, result.findings));
       if (!verdict.conclusive) {
+        if (verdict.decisionRecorded === true && !verdict.coverageAdequate) retirePriorArtCheckpoint(d, id);
         d.record.append({ t: "arbiter.verdict", kind: "collision", id, verdict: "inconclusive", costUsd: verdict.costUsd });
         priorArt = { status: "search_failed", distance: verdict.reason || "The prior-art reviewer could not establish adequate coverage." };
       } else {
