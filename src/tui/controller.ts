@@ -18,6 +18,7 @@ import { ControllerTranscript, restoredTranscript, type TranscriptChange } from 
 import { INITIAL_TUI_SNAPSHOT, isTerminalRun } from "./controller-status";
 import type { TuiCheckpointAnswer, TuiConfigEffort, TuiControllerPort, TuiEvent, TuiEventListener, TuiPhase, TuiSendResult, TuiSnapshot } from "./contracts";
 import { fromConfigEffort } from "./dial";
+import { localIntakeReply } from "./intake";
 import { loadWorkflowPlan, workflowInterpretation } from "../workflow/plan";
 export type TuiCli = (argv: string[], io: CliIo, deps: CliDeps) => Promise<number>;
 export interface RunControllerOptions {
@@ -82,6 +83,12 @@ export class RunController implements TuiControllerPort {
     if ((input.seed === undefined) === (input.runId === undefined)) throw new Error("start requires exactly one of seed or runId");
     if (input.seed !== undefined) {
       if (!input.seed.trim()) throw new Error("a run seed is required");
+      const reply = localIntakeReply(input.seed);
+      if (reply) {
+        this.#emitTranscript({ type: "text", entry: this.#transcript.appendUser(input.seed.trim()) });
+        this.#appendCliOutput(reply);
+        return;
+      }
       this.#queuedSteering = [];
       const seedPath = join(this.home, "evolution", "work", `tui-seed-${randomUUID()}.md`);
       writeAtomic(seedPath, input.seed, { mode: 0o600 });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { attemptCeiling, effectiveReflectReserveUsd, elapsedByPhase, phaseAvailableUsd, phaseAvailableWallSeconds, spentByPhase } from "../../src/core/budget";
+import { attemptCeiling, effectiveReflectReserveUsd, elapsedByPhase, phaseAvailableExecutionWallSeconds, phaseAvailableUsd, phaseAvailableWallSeconds, spentByPhase } from "../../src/core/budget";
 import type { RecordEvent, StoredEvent } from "../../src/core/events";
 import { defaultConfig } from "../../src/core/config";
 
@@ -17,6 +17,18 @@ describe("phase budget ledgers", () => {
     expect(phaseAvailableWallSeconds(b, "form", { frame: 0, discover: 0, ideate: 5_000 })).toBeCloseTo(2_416);
     expect(phaseAvailableWallSeconds(b, "build", { frame: 500, discover: 500, ideate: 7_000, form: 1_000 })).toBeCloseTo(5_256);
     expect(phaseAvailableWallSeconds(b, "build", { frame: 20_000 })).toBe(0);
+  });
+
+  test("shares only frozen-unrequested future wall with completion and ideation without resetting elapsed time", () => {
+    const b = defaultConfig().budgets;
+    b.wallSeconds = 1500;
+    b.share = { frame: 0.05, discover: 0.15, ideate: 0.40, form: 0.075, build: 0.30, reflect: 0.025 };
+    const active = ["frame", "discover", "ideate"] as const;
+    expect(phaseAvailableExecutionWallSeconds(b, "discover", { frame: 85.841, discover: 214.176 }, active)).toBeCloseTo(599.983, 3);
+    expect(phaseAvailableExecutionWallSeconds(b, "ideate", { frame: 85.841, discover: 274.176 }, active)).toBeCloseTo(1139.983, 3);
+    expect(phaseAvailableExecutionWallSeconds(b, "discover", { frame: 85.841, discover: 314.176 }, active)).toBeCloseTo(499.983, 3);
+    expect(phaseAvailableExecutionWallSeconds(b, "discover", { frame: 85.841, discover: 214.176 }, ["frame", "discover", "ideate", "form", "build", "reflect"])).toBe(0);
+    expect(phaseAvailableExecutionWallSeconds(b, "discover", { frame: 85.841, discover: 214.176, build: 1500 }, active)).toBe(0);
   });
 
   test("protects reflect minima after prior overshoot", () => {

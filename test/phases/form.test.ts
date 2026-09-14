@@ -16,6 +16,7 @@ import type { FeaturesFile } from "../../src/formation/features";
 import { lastChosenIdea, runForm, type FormDeps } from "../../src/phases/form";
 import { parseBrief } from "../../src/phases/frame";
 import { shapeHash } from "../../src/phases/contracts";
+import { planWorkflow } from "../../src/workflow/plan";
 import { FakeGitRunner } from "../build/fake-git";
 
 const BRIEF = `# Brief\n\n## Problem\nOperators need a tool.\n\n## Constraints\n- local only\n\n## Search success\n- visible output\n\n## Non-goals\n- hosted service\n\n## Shape\nproduct\n\n## Axes\n- buyer: solo | team | enterprise\n- mechanism: cli | web | api\n- value: speed | quality | cost\n\n## Discovery questions\n- What exists?\n- What fails?\n`;
@@ -74,7 +75,7 @@ function critic(verdicts: Array<"ok" | "revise">, cost?: unknown, noTool = false
   return createMockModel({ id: "critic", cost, handler: () => {
     const verdict = verdicts[Math.min(n++, verdicts.length - 1)] ?? "ok";
     return noTool ? { content: ["no structured call"], usage: { input: 1_000, output: 1_000 } }
-      : { content: [{ type: "toolCall", name: "critique", arguments: { scopeCreep: [], unverifiable: [], missing: [], verdict } }], usage: cost ? { input: 1_000, output: 1_000 } : undefined };
+      : { content: [{ type: "toolCall", name: "critique", arguments: { scopeCreep: [], unverifiable: [], missing: verdict === "revise" ? [{ text: "Required behavior lacks an executable check" }] : [], verdict } }], usage: cost ? { input: 1_000, output: 1_000 } : undefined };
   } } as never);
 }
 
@@ -100,6 +101,26 @@ function setup(opts: { chosen?: string; criticVerdicts?: Array<"ok" | "revise">;
 }
 
 describe("runForm", () => {
+  test("truncated criticism pauses formation and resumes the same idea with a complete review", async () => {
+    const truncated = createMockModel({ id: "critic", handler: () => ({ content: ["partial review"], stopReason: "length", usage: { input: 100, output: 6144 } }) } as never);
+    const s = setup({ criticModels: [truncated, truncated] });
+    expect(await runForm(s.deps)).toMatchObject({ outcome: "stopped", stopKind: "budget" });
+    expect(readStatus(s.run)).toMatchObject({ state: "stopped", chosenIdeaId: "idea-a", outcome: { message: expect.stringMatching(/output.*limit/i) } });
+    expect(readStatus(s.run).outcome?.budgetTargetUsd).toBeUndefined();
+    expect(s.record.read().filter((event) => event.t === "honest_exit")).toHaveLength(0);
+    expect(existsSync(s.paths.repo)).toBe(false);
+    s.deps.modelsOn = () => ({ model: truncated as never, ref: "other/critic" });
+    for (let retry = 0; retry < 2; retry += 1) {
+      expect(await runForm(s.deps)).toMatchObject({ outcome: "stopped", stopKind: "budget" });
+    }
+    expect(truncated.calls).toHaveLength(3);
+    const complete = critic(["ok", "ok"]);
+    s.deps.modelsOn = () => ({ model: complete as never, ref: "other/critic" });
+    expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.record.read().filter((event) => event.t === "formation.attempt")).toHaveLength(1);
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(5);
+  });
+
   test("lastChosenIdea ignores reject and another-round ids", () => {
     const s = setup({ chosen: undefined });
     s.record.append({ t: "checkpoint.decision", kind: "pick", id: "idea-a" });
@@ -108,6 +129,21 @@ describe("runForm", () => {
     expect(lastChosenIdea(s.record)).toBe("idea-a");
     s.record.append({ t: "checkpoint.decision", kind: "autonomous_pick", id: "idea-b" });
     expect(lastChosenIdea(s.record)).toBe("idea-b");
+  });
+
+  test("a truncated second review resumes without replaying the approved first review or revision", async () => {
+    const truncated = createMockModel({ id: "critic", handler: () => ({ content: ["partial review"], stopReason: "length" }) } as never);
+    const first = critic(["ok"]);
+    const s = setup({ criticModels: [first, truncated] });
+    expect(await runForm(s.deps)).toMatchObject({ outcome: "stopped", stopKind: "budget" });
+    const producerCalls = s.brain.calls.length;
+    const complete = critic(["ok"]);
+    s.deps.modelsOn = () => ({ model: complete as never, ref: "other/critic" });
+    expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    expect(first.calls).toHaveLength(1);
+    expect(complete.calls).toHaveLength(1);
+    expect(s.brain.calls).toHaveLength(producerCalls);
+    expect(s.record.read().filter((event) => event.t === "honest_exit")).toHaveLength(0);
   });
 
   test("reuses one form brain, critiques twice, revises once, freezes and advances", async () => {
@@ -179,8 +215,9 @@ describe("runForm", () => {
 
   test("a direct unranked task keeps the full user request and brief authoritative", async () => {
     const s = setup({ chosen: "supplied-task" });
-    const seed = "Build the complete supplied task, including this detail beyond any dossier summary: PRESERVE-9471.\n";
+    const seed = "Build the complete supplied CLI task, including this detail beyond any dossier summary: PRESERVE-9471.\n";
     writeFileSync(s.run.seed, seed);
+    s.deps.workflow = planWorkflow(seed);
     writeFileSync(join(s.run.ideasDir, "supplied-task.evidence.json"), JSON.stringify({
       status: "unranked", parents: [], probe: { status: "not_run", reason: "direct supplied task; no ideation probe" },
     }));
@@ -191,6 +228,119 @@ describe("runForm", () => {
     expect(system).toContain("## Complete framing brief");
     expect(system).toContain("provisional axes as a competitive ranking");
     expect(system).toContain("Probe: not run (direct supplied task; no ideation probe)");
+    const criticSystem = (s.critic.calls[0]!.context.systemPrompt ?? []).join("\n");
+    expect(criticSystem).toContain("## Original user request (authoritative)");
+    expect(criticSystem).toContain("PRESERVE-9471");
+    expect(system).toContain("derived context, subordinate to that request");
+    expect(system).toContain("Never put prose, version constraints, or command arguments in needs");
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(1);
+    expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(0);
+    expect(s.critic.calls).toHaveLength(1);
+  });
+
+  test("a direct first-review revision still repairs and requires independent re-review", async () => {
+    const s = setup({ chosen: "supplied-task", criticVerdicts: ["revise", "ok"] });
+    const seed = "Build a dependency-free CSV parser CLI with tests.\n";
+    writeFileSync(s.run.seed, seed);
+    s.deps.workflow = planWorkflow(seed);
+    expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
+    expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(1);
+    expect(s.critic.calls).toHaveLength(2);
+    expect(existsSync(s.run.acceptanceLock)).toBe(true);
+  });
+
+  test("a historical supplied-task workflow retains the review sequence it froze with", async () => {
+    const s = setup({ chosen: "supplied-task" });
+    const seed = "Build a dependency-free: historical CLI task.\n";
+    writeFileSync(s.run.seed, seed);
+    // No deterministic-v1 workflow marker: this represents an existing or evaluator-created run.
+    expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
+    expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(1);
+  });
+
+  test("a direct approving review resumes without replay and cannot approve changed bytes", async () => {
+    const resumable = setup({ chosen: "supplied-task" });
+    const seed = "Build a dependency-free JSON formatter CLI with tests.\n";
+    writeFileSync(resumable.run.seed, seed);
+    resumable.deps.workflow = planWorkflow(seed);
+    resumable.deps.onFormStage = (stage) => { if (stage === "first_critique") throw new Error("after-direct-review"); };
+    expect(await runForm(resumable.deps)).toMatchObject({ outcome: "failed", message: "after-direct-review" });
+    const brainCalls = resumable.brain.calls.length;
+    const criticCalls = resumable.critic.calls.length;
+    resumable.deps.onFormStage = undefined;
+    resumable.deps.modelsOn = () => { throw new Error("completed direct review must not replay"); };
+    expect(await runForm(resumable.deps)).toEqual({ outcome: "ok" });
+    expect(resumable.brain.calls).toHaveLength(brainCalls);
+    expect(resumable.critic.calls).toHaveLength(criticCalls);
+    expect(resumable.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(0);
+
+    const tampered = setup({ chosen: "supplied-task" });
+    writeFileSync(tampered.run.seed, seed);
+    tampered.deps.workflow = planWorkflow(seed);
+    tampered.deps.onFormStage = (stage) => { if (stage === "first_critique") writeFileSync(tampered.paths.spec, `${SPEC}\nchanged after review\n`); };
+    expect(await runForm(tampered.deps)).toMatchObject({ outcome: "failed", failureClass: "integrity", message: expect.stringContaining("changed after") });
+    expect(existsSync(formationApprovalPath(tampered.deps))).toBe(false);
+    expect(existsSync(tampered.run.acceptanceLock)).toBe(false);
+
+    const reformatted = setup({ chosen: "supplied-task" });
+    writeFileSync(reformatted.run.seed, seed);
+    reformatted.deps.workflow = planWorkflow(seed);
+    reformatted.deps.onFormStage = (stage) => {
+      if (stage === "first_critique") writeFileSync(reformatted.paths.featuresMirror, readFileSync(reformatted.paths.featuresMirror, "utf8").trim());
+    };
+    expect(await runForm(reformatted.deps)).toMatchObject({ outcome: "failed", failureClass: "integrity", message: expect.stringContaining("changed after") });
+    expect(existsSync(formationApprovalPath(reformatted.deps))).toBe(false);
+
+    const revising = setup({ chosen: "supplied-task" });
+    writeFileSync(revising.run.seed, seed);
+    revising.deps.workflow = planWorkflow(seed);
+    revising.deps.onFormStage = (stage) => {
+      if (stage !== "first_critique") return;
+      revising.record.append({ t: "formation.revision", ideaId: "supplied-task", attempt: 1 });
+      writeFileSync(revising.paths.spec, `${SPEC}\npartial revision\n`);
+      throw new Error("revision-interrupted");
+    };
+    expect(await runForm(revising.deps)).toMatchObject({ outcome: "failed", message: "revision-interrupted" });
+    expect(existsSync(formationApprovalPath(revising.deps))).toBe(false);
+    revising.deps.onFormStage = undefined;
+    expect(await runForm(revising.deps)).toEqual({ outcome: "ok" });
+    expect(revising.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
+    expect(revising.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(1);
+  });
+
+  test("critic receives only executions from the current formation attempt", async () => {
+    const s = setup();
+    s.record.append({ t: "tool.call", name: "bash", args: { command: "OLD-EXECUTION" }, ok: true, durationMs: 1, excerpt: "old" });
+    s.deps.onFormStage = (stage) => {
+      if (stage === "initial") s.record.append({ t: "tool.call", name: "bash", args: { command: "CURRENT-EXECUTION" }, ok: true, durationMs: 1, excerpt: "exit 0\nobserved" });
+    };
+    expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    for (const call of s.critic.calls) {
+      const system = (call.context.systemPrompt ?? []).join("\n");
+      expect(system).toContain("CURRENT-EXECUTION");
+      expect(system).not.toContain("OLD-EXECUTION");
+      expect(system).toContain("unknown (legacy record)");
+      expect(system).toContain('"omittedExecutions":0');
+    }
+  });
+
+  test("prose dependency needs are repaired before review and freeze", async () => {
+    const s = setup();
+    const project = materializeProjectPath(s.run, undefined, { ideaId: "idea-a" });
+    writeFileSync(project.spec, SPEC);
+    writeFileSync(project.initSh, "#!/bin/sh\nexit 0\n");
+    const draft = features(false);
+    draft.init.needs = ["python3 (CPython 3.8 or newer) on PATH"];
+    writeFileSync(project.featuresMirror, JSON.stringify(draft));
+    expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.brain.calls.some((call) => lastUser(call.context).includes(project.featuresMirror))).toBe(true);
+    for (const call of s.critic.calls) {
+      expect((call.context.systemPrompt ?? []).join("\n")).not.toContain("python3 (CPython 3.8 or newer) on PATH");
+    }
+    expect(JSON.parse(readFileSync(s.run.features, "utf8")).init.needs).toEqual([]);
+    expect(existsSync(s.run.acceptanceLock)).toBe(true);
   });
 
   test("invalid chosen-idea content cannot reach a form model or acceptance lock", async () => {
@@ -228,14 +378,13 @@ describe("runForm", () => {
     }
   });
 
-  test("a second revise verdict exits not_formable without creating a repo", async () => {
-    const s = setup({ criticVerdicts: ["ok", "revise"] });
+  test("a second revise verdict repairs again and freezes only after third approval", async () => {
+    const s = setup({ criticVerdicts: ["ok", "revise", "ok"] });
     const result = await runForm(s.deps);
-    expect(result).toMatchObject({ outcome: "honest_exit", kind: "not_formable" });
-    expect(existsSync(s.paths.repo)).toBe(false);
-    expect(existsSync(s.run.acceptanceLock)).toBe(false);
-    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
-    expect(s.record.read().findLast((event) => event.t === "honest_exit")).toMatchObject({ source: "mechanical" });
+    expect(result).toEqual({ outcome: "ok" });
+    expect(existsSync(s.run.acceptanceLock)).toBe(true);
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(3);
+    expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(2);
   });
 
   test("a declared not_formable exit is allowed and creates no repo", async () => {
@@ -243,6 +392,50 @@ describe("runForm", () => {
     expect(result).toMatchObject({ outcome: "honest_exit", kind: "not_formable" });
     expect(existsSync(s.paths.repo)).toBe(false);
     expect(s.record.read().find((event) => event.t === "honest_exit")).toMatchObject({ kind: "not_formable", source: "declared" });
+  });
+
+  test("repair exhaustion preserves feedback and cannot buy more reviews on resume", async () => {
+    const s = setup({ criticVerdicts: ["revise"] });
+    expect(await runForm(s.deps)).toMatchObject({ outcome: "failed", failureClass: "budget", message: expect.stringContaining("three-review") });
+    const saved = readFileSync(join(s.run.dir, "formation.progress.json"), "utf8");
+    const brainCalls = s.brain.calls.length;
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(3);
+    expect(s.record.read().filter((event) => event.t === "honest_exit")).toHaveLength(0);
+    expect(existsSync(s.run.acceptanceLock)).toBe(false);
+    s.deps.modelsOn = () => { throw new Error("completed reviews must not replay"); };
+    expect(await runForm(s.deps)).toMatchObject({ outcome: "failed", failureClass: "budget" });
+    expect(s.brain.calls).toHaveLength(brainCalls);
+    expect(readFileSync(join(s.run.dir, "formation.progress.json"), "utf8")).toBe(saved);
+  });
+
+  test("additional repair cancellation preserves snapshots, completed reviews and paid usage", async () => {
+    for (const pause of ["second_critique", "revised", "third_critique"] as const) {
+      const priced = critic(["ok", "revise", "ok"], { input: 1, output: 1, cacheRead: 0, cacheWrite: 0 });
+      const s = setup({ criticModels: [priced, priced, priced] });
+      const control = new RunControl();
+      let revisedStages = 0;
+      s.deps.onFormStage = (stage) => {
+        if (stage === "revised") revisedStages += 1;
+        if (stage === pause && (pause !== "revised" || revisedStages === 2)) control.cancel("pause repair");
+      };
+      await expect(withRunControl(control, () => runForm(s.deps))).rejects.toBeInstanceOf(RunCancelledError);
+      const saved = JSON.parse(readFileSync(join(s.run.dir, "formation.progress.json"), "utf8"));
+      const costs = s.record.read().filter((event) => event.t === "model.call" && event.role === "critic");
+      expect(costs.length).toBe(pause === "third_critique" ? 3 : 2);
+      const calls = s.brain.calls.length;
+      s.deps.onFormStage = undefined;
+      expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+      expect(priced.calls).toHaveLength(3);
+      if (pause !== "second_critique") expect(s.brain.calls).toHaveLength(calls);
+      const final = JSON.parse(readFileSync(join(s.run.dir, "formation.progress.json"), "utf8"));
+      const snapshots = [...final.history, final.snapshot];
+      for (const snapshot of [...saved.history, saved.snapshot]) expect(snapshots).toContainEqual(snapshot);
+      for (const snapshot of snapshots) expect(snapshot.hash).toBe(hashInput({ spec: snapshot.spec, features: snapshot.features, init: snapshot.init }));
+      const finalCosts = s.record.read().filter((event) => event.t === "model.call" && event.role === "critic");
+      expect(finalCosts.slice(0, costs.length)).toEqual(costs);
+      expect(finalCosts.reduce((total, event) => total + (event.t === "model.call" ? event.costUsd : 0), 0)).toBeCloseTo(0.006);
+      expect(JSON.parse(readFileSync(s.run.features, "utf8")).features.map((feature: any) => feature.id)).toEqual(["f01", "f02", "f03"]);
+    }
   });
 
   test("each invalid initial file gets exactly one corrective write, including JSON parse and hashbang failures", async () => {
@@ -269,16 +462,44 @@ describe("runForm", () => {
     expect(existsSync(s.paths.repo)).toBe(false);
   });
 
-  test("binding items constrain revision but do not veto a second ok verdict", async () => {
+  test("a contradictory second ok is corrected by the critic without another producer revision", async () => {
     const first = critic(["ok"]);
     const second = createMockModel({ id: "critic-binding", responses: [{ content: [{
       type: "toolCall", name: "critique", arguments: {
         scopeCreep: [], missing: [], verdict: "ok", unverifiable: [{ featureId: "f02", text: "manual check remains" }],
       },
-    }] }] as never });
+    }] }, { content: [{ type: "toolCall", name: "critique", arguments: { scopeCreep: [], missing: [], unverifiable: [], verdict: "ok" } }] }] as never });
     const s = setup({ oneManualRevision: true, criticModels: [first, second] });
     expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
     expect(existsSync(s.run.acceptanceLock)).toBe(true);
+    expect(second.calls).toHaveLength(2);
+    expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(1);
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
+  });
+
+  test("first-review coherence repair stays in the critic and repeated contradiction cannot freeze", async () => {
+    for (const corrected of [true, false]) {
+      const contradiction = { content: [{ type: "toolCall", name: "critique", arguments: {
+        scopeCreep: [], missing: [{ text: "An optional nonblocking observation" }], unverifiable: [], verdict: "ok",
+      } }] };
+      const coherent = { content: [{ type: "toolCall", name: "critique", arguments: {
+        scopeCreep: [], missing: [], unverifiable: [], verdict: "ok",
+      } }] };
+      const first = createMockModel({ id: "first", responses: [contradiction, corrected ? coherent : contradiction] as never });
+      const s = setup({ criticModels: [first] });
+      const result = await runForm(s.deps);
+      expect(first.calls).toHaveLength(2);
+      if (corrected) {
+        expect(result).toEqual({ outcome: "ok" });
+        expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(1);
+        expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
+      } else {
+        expect(result).toMatchObject({ outcome: "failed", failureClass: "verify" });
+        expect(existsSync(s.run.acceptanceLock)).toBe(false);
+        expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(0);
+        expect(s.record.read().filter((event) => event.t === "critique")).toMatchObject([{ stopped: "error", verdict: "revise" }]);
+      }
+    }
   });
 
   test("an existing lock skips every model and reconciles all post-lock state from authoritative copies", async () => {
@@ -473,7 +694,7 @@ describe("runForm", () => {
     mkdirSync(project.repo); mkdirSync(project.checksDir); mkdirSync(project.blockedDir);
     writeFileSync(join(project.repo, "sentinel"), "repo survives"); writeFileSync(join(project.checksDir, "sentinel"), "checks survive");
     const result = await runForm(s.deps, "idea-b");
-    expect(result).toMatchObject({ outcome: "honest_exit", kind: "not_formable" });
+    expect(result).toMatchObject({ outcome: "failed", failureClass: "budget" });
     expect(readProjectMarker(project.dir)).toMatchObject({ runId: s.run.id, ideaId: "idea-b" });
     expect(readFileSync(join(project.repo, "sentinel"), "utf8")).toBe("repo survives");
     expect(readFileSync(join(project.checksDir, "sentinel"), "utf8")).toBe("checks survive");
@@ -494,7 +715,7 @@ describe("runForm", () => {
     writeFileSync(s.run.features, JSON.stringify(features(true))); writeFileSync(s.run.acceptanceLock, "stale lock"); writeFileSync(s.run.featureState, "");
 
     const result = await runForm(s.deps, "idea-b", { out: target, force: true });
-    expect(result).toMatchObject({ outcome: "honest_exit", kind: "not_formable" });
+    expect(result).toMatchObject({ outcome: "failed", failureClass: "budget" });
     expect(readProjectMarker(target)).toMatchObject({ runId: s.run.id, ideaId: "idea-b" });
     expect(readFileSync(join(target, "sentinel"), "utf8")).toBe("preserve");
     expect(readFileSync(join(oldTarget, "old-sentinel"), "utf8")).toBe("old survives");
@@ -593,7 +814,7 @@ describe("runForm", () => {
     expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(2);
   });
 
-  test("a larger formation budget advances autonomously to the next value-ladder idea", async () => {
+  test("a larger formation budget repairs the chosen idea before trying another value-ladder idea", async () => {
     const s = setup({ criticVerdicts: ["ok", "revise", "ok", "ok"] });
     s.deps.cfg.budgets.usd = 50; s.deps.cfg.autonomous = true;
     const ids = ["idea-a", "idea-b"];
@@ -604,15 +825,15 @@ describe("runForm", () => {
     }));
     for (const id of ids) writeFileSync(join(s.run.renderedDir, `${id}-r1.md`), `# ${id}\n`);
     expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
-    expect(readStatus(s.run)).toMatchObject({ phase: "build", state: "running", chosenIdeaId: "idea-b" });
-    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(4);
-    expect(s.record.read().filter((event) => event.t === "formation.attempt").map((event) => event.t === "formation.attempt" ? event.attempt : 0)).toEqual([1, 2]);
+    expect(readStatus(s.run)).toMatchObject({ phase: "build", state: "running", chosenIdeaId: "idea-a" });
+    expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(3);
+    expect(s.record.read().filter((event) => event.t === "formation.attempt").map((event) => event.t === "formation.attempt" ? event.attempt : 0)).toEqual([1]);
     expect(s.record.read().filter((event) => event.t === "formation.revision")).toHaveLength(2);
     expect(s.record.read().filter((event) => event.t === "phase.start" && event.phase === "form")).toHaveLength(1);
   });
 
   test("returning to an older idea starts a new attempt and cannot reuse its old critiques", async () => {
-    const s = setup({ criticVerdicts: ["ok", "revise", "ok", "ok", "ok", "ok"] });
+    const s = setup({ criticVerdicts: ["ok", "ok", "ok", "ok", "ok", "ok"] });
     s.deps.cfg.budgets.usd = 50; s.deps.cfg.autonomous = true;
     const ids = ["idea-a", "idea-b"];
     writeFileSync(s.run.frontier, JSON.stringify({
@@ -622,6 +843,7 @@ describe("runForm", () => {
     }));
     for (const id of ids) writeFileSync(join(s.run.renderedDir, `${id}-r1.md`), `# ${id}\n`);
     expect(await runForm(s.deps)).toEqual({ outcome: "ok" });
+    expect(await runForm(s.deps, "idea-b", { force: true })).toEqual({ outcome: "ok" });
     expect(await runForm(s.deps, "idea-a", { force: true })).toEqual({ outcome: "ok" });
     expect(s.record.read().filter((event) => event.t === "formation.attempt").map((event) => event.t === "formation.attempt" ? event.attempt : 0)).toEqual([1, 2, 3]);
     expect(s.record.read().filter((event) => event.t === "critique")).toHaveLength(6);

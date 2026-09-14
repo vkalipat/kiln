@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRun, type RunPaths } from "../../src/core/run";
-import { RunRecord } from "../../src/core/record";
+import { hashInput, RunRecord } from "../../src/core/record";
 import { projectPaths } from "../../src/formation/paths";
 import type { FeaturesFile } from "../../src/formation/features";
 import { appendAudit } from "../../src/build/audit-contract";
@@ -30,6 +30,7 @@ function setup() {
 /** The durable links `authenticated()` requires before a feature trailer can recover a pass. */
 const EVIDENCE_LINKS = ["pick", "session", "check", "audit", "stored", "disposition"] as const;
 type EvidenceLink = (typeof EVIDENCE_LINKS)[number];
+type EvidenceProvenance = "complete" | "legacy" | "incomplete";
 
 function evidenceChain(run: RunPaths, record: RunRecord) {
   const featureId = "f01";
@@ -40,12 +41,26 @@ function evidenceChain(run: RunPaths, record: RunRecord) {
       if (omit !== "session") record.append({ t: "builder.session", featureId, attempt, arm: "fresh", builderModelRef: "producer/builder", beforeHead: "a".repeat(40), afterHead: "a".repeat(40), stopped: "done", turns: 1, costUsd: 0.2, selfVerified: false, headMoved: false, contextPressure: false, pinnedTruncated: false, exitReasons: [] });
     },
     /** The per-check links: one check event, one audit event, one stored audit, one disposition. */
-    check(checkId: string, attempt: number, options: { verdict?: "agree" | "disagree"; voided?: boolean; omit?: EvidenceLink } = {}) {
+    check(checkId: string, attempt: number, options: {
+      verdict?: "agree" | "disagree"; voided?: boolean; omit?: EvidenceLink; provenance?: EvidenceProvenance;
+      legacyDisposition?: boolean; evidenceUsable?: boolean;
+      disposition?: Partial<{ rawVerdict: "agree" | "disagree"; effectiveVerdict: "agree" | "disagree" | "unavailable"; emptyDisagree: boolean; malformed: boolean; truncated: boolean }>;
+    } = {}) {
       const verdict = options.verdict ?? "agree";
+      const raw = { verified: ["ok"], claimedUnverified: [], regressions: [], nextSessionNotes: "", checkQuality: { adequate: true, reason: "good" }, verdict };
       if (options.omit !== "check") record.append({ t: "check", checkId, featureId, attempt, kind: "file", phase: "acceptance", ok: true, durationMs: 1, overrunMs: 0, timedOut: false, outputPath: checkId, outputTruncated: false });
       const sourceEventSeq = options.omit === "audit" ? record.read().length + 1 : record.append({ t: "audit", featureId, attempt, checkId, shape: "full", verdict, verifiedCount: 1, claimedUnverifiedCount: 0, regressions: [], checkQualityAdequate: true, truncated: false, usdCapHit: false, crossProvider: true, costUsd: 0.1 });
-      if (options.omit !== "stored") appendAudit(run, { featureId, attempt, checkId, sourceEventSeq, createdAt: "2026-09-04T00:00:00.000Z", shape: "full", raw: { verified: ["ok"], claimedUnverified: [], regressions: [], nextSessionNotes: "", checkQuality: { adequate: true, reason: "good" }, verdict }, model: { provider: "other", model: "audit", ref: "other/audit" } });
-      if (options.omit !== "disposition") record.append({ t: "audit.disposition", featureId, attempt, checkId, rawVerdict: verdict, effectiveVerdict: verdict, emptyDisagree: false, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: options.voided ?? false });
+      if (options.omit !== "stored") appendAudit(run, {
+        featureId, attempt, checkId, sourceEventSeq, createdAt: "2026-09-04T00:00:00.000Z", shape: "full", raw,
+        ...(options.provenance === "legacy" ? {} : { evidence: { version: 2 as const, complete: options.provenance !== "incomplete", payloadHash: hashInput(raw), scopeHash: "fixture-scope" } }),
+        model: { provider: "other", model: "audit", ref: "other/audit" },
+      });
+      if (options.omit !== "disposition") record.append({
+        t: "audit.disposition", featureId, attempt, checkId, rawVerdict: verdict, effectiveVerdict: verdict, emptyDisagree: false, malformed: false,
+        truncated: false, retried: false, evidenceUsable: options.evidenceUsable ?? true, checkVoided: options.voided ?? false,
+        ...(options.legacyDisposition ? {} : { evidenceVersion: 2 as const }),
+        ...options.disposition,
+      });
     },
   };
 }
@@ -129,11 +144,51 @@ describe("build state", () => {
     }
   });
 
+  test("authenticated recovery rejects legacy, incomplete, unusable, and tampered audit provenance", () => {
+    const cases: Array<[string, Parameters<ReturnType<typeof evidenceChain>["check"]>[2]]> = [
+      ["legacy stored audit", { provenance: "legacy" }],
+      ["incomplete stored audit", { provenance: "incomplete" }],
+      ["legacy disposition", { legacyDisposition: true }],
+      ["unusable disposition", { evidenceUsable: false }],
+      ["truncated disposition", { disposition: { truncated: true } }],
+      ["malformed disposition", { disposition: { malformed: true } }],
+      ["empty disagreement disposition", { disposition: { emptyDisagree: true } }],
+      ["contradictory raw verdict", { disposition: { rawVerdict: "disagree", effectiveVerdict: "agree" } }],
+    ];
+    for (const [name, options] of cases) {
+      const { run } = setup(); const record = new RunRecord(run.record);
+      const chain = evidenceChain(run, record); chain.attempt(1); chain.check("check", 1, options);
+      expect({ name, passes: recover(run, record, name, "check", 1).passes }).toEqual({ name, passes: false });
+    }
+
+    const { run } = setup(); const record = new RunRecord(run.record);
+    const chain = evidenceChain(run, record); chain.attempt(1); chain.check("check", 1);
+    const stored = JSON.parse(readFileSync(run.audits, "utf8")) as { raw: { verified: string[] } };
+    stored.raw.verified = ["changed after persistence"];
+    writeFileSync(run.audits, `${JSON.stringify(stored)}\n`);
+    expect(() => recover(run, record, "tampered", "check", 1)).toThrow("audit evidence hash or provenance mismatch");
+  });
+
+  test("authenticated recovery does not erase an already durable pass with legacy evidence", () => {
+    const { run } = setup(); const record = new RunRecord(run.record);
+    appendState(run, { t: "feature.state", featureId: "f01", from: "pending", to: "passed", source: "executed", attempt: 1, attempts: 1, commitSha: "durable" });
+    const chain = evidenceChain(run, record); chain.attempt(1); chain.check("check", 1, { provenance: "legacy", legacyDisposition: true });
+    expect(recover(run, record, "durable", "check", 1)).toMatchObject({ passes: true, passCommitShas: ["durable"] });
+  });
+
   test("authenticated recovery accepts an auditor record re-persisted after an interior crash and rejects records that disagree", () => {
-    const storedAudit = (run: RunPaths, attempt: number, verdict: "agree" | "disagree", sourceEventSeq: number) => appendAudit(run, { featureId: "f01", attempt, checkId: "new", sourceEventSeq, createdAt: "2026-09-04T00:00:00.000Z", shape: "full", raw: { verified: ["ok"], claimedUnverified: [], regressions: [], nextSessionNotes: "", checkQuality: { adequate: true, reason: "good" }, verdict }, model: { provider: "other", model: "audit", ref: "other/audit" } });
+    const storedAudit = (run: RunPaths, attempt: number, verdict: "agree" | "disagree", sourceEventSeq: number, provenance: EvidenceProvenance = "complete") => {
+      const raw = { verified: ["ok"], claimedUnverified: [], regressions: [], nextSessionNotes: "", checkQuality: { adequate: true, reason: "good" }, verdict };
+      return appendAudit(run, {
+        featureId: "f01", attempt, checkId: "new", sourceEventSeq, createdAt: "2026-09-04T00:00:00.000Z", shape: "full", raw,
+        ...(provenance === "legacy" ? {} : { evidence: { version: 2 as const, complete: provenance !== "incomplete", payloadHash: hashInput(raw), scopeHash: "fixture-scope" } }),
+        model: { provider: "other", model: "audit", ref: "other/audit" },
+      });
+    };
     const auditEvent = (record: RunRecord, attempt: number, verdict: "agree" | "disagree") => record.append({ t: "audit", featureId: "f01", attempt, checkId: "new", shape: "full", verdict, verifiedCount: 1, claimedUnverifiedCount: 0, regressions: [], checkQualityAdequate: true, truncated: false, usdCapHit: false, crossProvider: true, costUsd: 0.1 });
     const cases: Array<[string, (run: RunPaths, record: RunRecord) => void, boolean]> = [
       ["a second identical audit event and stored audit", (run, record) => { storedAudit(run, 2, "agree", auditEvent(record, 2, "agree")); }, true],
+      ["a second matching legacy stored audit", (run, record) => { storedAudit(run, 2, "agree", auditEvent(record, 2, "agree"), "legacy"); }, false],
       ["a second audit event with another verdict", (_run, record) => { auditEvent(record, 2, "disagree"); }, false],
       ["a second audit event for another attempt", (_run, record) => { auditEvent(record, 3, "agree"); }, false],
       ["a second stored audit with another verdict", (run) => { storedAudit(run, 2, "disagree", 99); }, false],

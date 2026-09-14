@@ -9,7 +9,7 @@ import type { ProjectPaths } from "../formation/paths";
 import type { PhaseDeps, PhaseResult } from "../phases/frame";
 import type { BuilderSessionResult, createBuilderDriver, runBuilderSession } from "./builder";
 import type { AuditorSessionResult, runAuditorSession } from "./auditor";
-import { readAudits } from "./audit-contract";
+import { auditEvidenceComplete, readAudits } from "./audit-contract";
 import { archiveBlocked } from "./blocked";
 import type { GitRunner } from "./git";
 import { writeMetrics } from "./metrics";
@@ -121,11 +121,13 @@ export function auditorSession(deps: PhaseDeps, featureId: string, attempt: numb
   const disposition = events.findLast((event) => event.t === "audit.disposition" && event.featureId === featureId && event.attempt === attempt && event.checkId === check.checkId);
   const audit = readAudits(deps.run).findLast((value) => value.featureId === featureId && value.attempt === attempt && value.checkId === check.checkId);
   if (!disposition || disposition.t !== "audit.disposition" || !audit) return undefined;
+  const evidenceUsable = disposition.evidenceUsable && disposition.evidenceVersion === 2 && !disposition.truncated && !disposition.malformed && !disposition.emptyDisagree && !disposition.checkVoided
+    && auditEvidenceComplete(audit) && audit.raw.verdict === disposition.rawVerdict && disposition.effectiveVerdict === disposition.rawVerdict;
   const costs = events.reduce((sum, event) => event.t === "audit" && event.featureId === featureId && event.attempt === attempt ? sum + event.costUsd : sum, 0);
   return {
-    audit, rawVerdict: disposition.rawVerdict, effectiveVerdict: disposition.effectiveVerdict,
+    audit, rawVerdict: disposition.rawVerdict, effectiveVerdict: evidenceUsable ? disposition.effectiveVerdict : "unavailable",
     truncated: disposition.truncated, malformed: disposition.malformed, retried: disposition.retried,
-    evidenceUsable: disposition.evidenceUsable,
+    evidenceUsable,
     crossProvider: events.some((event) => event.t === "audit" && event.featureId === featureId && event.attempt === attempt && event.crossProvider),
     costUsd: costs, check, recoveredFromVoid: events.some((event) => event.t === "audit.disposition" && event.featureId === featureId && event.attempt === attempt && event.checkVoided && event.checkId !== check.checkId),
     finalCheckVoided: disposition.checkVoided, checkVoided: disposition.checkVoided,

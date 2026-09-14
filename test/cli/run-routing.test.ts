@@ -12,8 +12,21 @@ function status(patch: Partial<RunStatus>): RunStatus {
 }
 
 describe("routeResume", () => {
+  test.each(["verify", "transient"] as const)("explicit resume wakes a recoverable failed build (%s)", (failureClass) => {
+    expect(routeResume(status({ phase: "build", state: "failed", outcome: { kind: "failure", failureClass, message: "interrupted" } }), false, defaultConfig()))
+      .toEqual({ kind: "phase", phase: "build", wake: true });
+  });
+  test.each(["policy", "refusal", "unsatisfiable", "budget", "deadline"] as const)("failed build %s remains refused", (failureClass) => {
+    expect(routeResume(status({ phase: "build", state: "failed", outcome: { kind: "failure", failureClass } }), false, defaultConfig()).kind).toBe("refuse");
+  });
   test("an explicit resume re-enters a transient discovery stop and clears its stopped state", () => {
     expect(routeResume(status({ phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "transient" } }), false, defaultConfig())).toEqual({ kind: "phase", phase: "discover", wake: true });
+  });
+  test("a same-target discovery deadline resumes only for prechecked cached synthesis", () => {
+    const cfg = defaultConfig();
+    const stopped = status({ phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "deadline", wallTargetSeconds: cfg.budgets.wallSeconds } });
+    expect(routeResume(stopped, false, cfg, 0).kind).toBe("stop");
+    expect(routeResume(stopped, false, cfg, 0, { cachedDiscoverySynthesis: true })).toEqual({ kind: "phase", phase: "discover", wake: true });
   });
   test.each(["frame", "discover", "ideate", "form", "build", "reflect"] as const)("re-enters a running %s phase", (phase) => {
     expect(routeResume(status({ phase }), false, defaultConfig(), 0)).toEqual({ kind: "phase", phase });

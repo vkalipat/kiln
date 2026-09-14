@@ -12,6 +12,7 @@ import { RunRecord } from "../../src/core/record";
 import { createRun, runPaths, writeStatus } from "../../src/core/run";
 import { ideateSpentUsd, projectedRoundCost } from "../../src/ideation/budget";
 import { runIdeate } from "../../src/phases/ideate";
+import { freezeRouting } from "../../src/workflow/routing";
 
 const BRIEF = `# Brief
 
@@ -99,7 +100,7 @@ function models(): Record<Role, Model> {
     ? { content: [{ type: "toolCall", name: "axis_map", arguments: { value: "solo", reason: "closest" } }] }
     : allText(ctx).includes('"name":"novelty"')
       ? { content: [{ type: "toolCall", name: "novelty", arguments: { restatement: false, reason: "different mechanism" } }] }
-      : { content: [{ type: "toolCall", name: "collision", arguments: { same: false, reason: "different" } }] } } as never);
+      : { content: [{ type: "toolCall", name: "collision", arguments: { coverageAdequate: true, same: false, reason: "different" } }] } } as never);
   const judge = createMockModel({ id: "judge", cost, handler: (ctx: Context) => {
     if ((ctx.tools ?? []).some((tool) => tool.name === "verdict")) return { content: [{ type: "toolCall", name: "verdict", arguments: { valueWinner: "A", feasibilityWinner: "B", reason: "tradeoff" } }] };
     return { content: [lastUser(ctx).includes("Losing reasons") ? "Prefer concrete mechanisms." : "Prefer measurable value and feasible tests."] };
@@ -109,6 +110,50 @@ function models(): Record<Role, Model> {
 }
 
 describe("kiln run through checkpoint", () => {
+  test("adaptive islands dispatch resolved seats without rotating recovery providers", async () => {
+    for (const mode of ["fresh", "quality_first", "injected", "legacy_frozen", "legacy_recorded"]) {
+      const injected = mode === "injected";
+      const legacy = mode.startsWith("legacy");
+      const home = mkdtempSync(join(tmpdir(), "kiln-adaptive-islands-")); initHome(home);
+      const run = createRun(home, "indexing tool");
+      writeFileSync(run.brief, BRIEF); writeFileSync(run.landscape, LANDSCAPE);
+      writeStatus(run, { phase: "ideate", state: "running", shape: "product" });
+      const cfg = defaultConfig(); cfg.routing = { mode: "adaptive" };
+      cfg.ideation.rounds = 1; cfg.ideation.islands = 3; cfg.ideation.cheapIsland = false;
+      cfg.roles.generator = ["anthropic/claude-fable-5.1", "openai/gpt-5.5"];
+      cfg.roles.prober = ["anthropic/claude-opus-5", "openai/gpt-5.5"];
+      const seats = models();
+      const generator = createMockModel({ id: "primary-generator", responses: [{ throw: "stop after dispatch" }] as never });
+      const override = createMockModel({ id: "explicit-generator", responses: [{ throw: "stop after dispatch" }] as never });
+      const record = new RunRecord(run.record);
+      if (mode === "quality_first") freezeRouting(run, cfg, { selectionPolicy: "quality_first" });
+      if (mode === "legacy_frozen") freezeRouting(run, cfg, {});
+      if (mode === "legacy_recorded") record.append({ t: "island.assign", round: 1, island: 1, model: "mock/primary-generator" });
+      const requestedKeys: string[] = [];
+      await runIdeate({
+        home, run, record, cfg, limiter: new Limiter(4), streamFn: streamMock as never,
+        models: (role: Role) => role === "generator"
+          ? { model: generator as never, ref: "mock/primary-generator" }
+          : { model: seats[role], ref: `mock/${role}` },
+        apiKeyFor: async (provider: string) => { requestedKeys.push(provider); return legacy && provider !== "mock" ? undefined : "key"; },
+        fetchUsage: async () => ({ used: 0, limit: 1 }),
+        ...(injected ? { islandModels: { generator: [{ model: override as never, ref: "mock/explicit-generator" }] } } : {}),
+      } as never);
+      const assignments = record.read().filter((event) => event.t === "island.assign");
+      expect(assignments).toHaveLength(3);
+      expect(assignments.every((event) => event.model === (injected ? "mock/explicit-generator" : "mock/primary-generator"))).toBe(true);
+      expect((injected ? override : generator).calls).toHaveLength(3);
+      expect((injected ? generator : override).calls).toHaveLength(0);
+      if (legacy) {
+        expect(requestedKeys).toContain("openai");
+        expect(requestedKeys).toContain("anthropic");
+      } else {
+        expect(requestedKeys).not.toContain("openai");
+        expect(requestedKeys).not.toContain("anthropic");
+      }
+    }
+  });
+
   test("runs frame, discover, ideate and autonomous checkpoint with mocks", async () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-e2e-ideate-")); initHome(home);
     const cfg = defaultConfig(); cfg.ideation.rounds = 1; cfg.ideation.islands = 1; cfg.ideation.cheapIsland = false;

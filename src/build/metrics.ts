@@ -11,7 +11,7 @@ import { foldState, reconcile, type BuildState } from "./state";
 
 const BLOCK_REASONS = ["attempts_exhausted", "not_verifiable", "missing_dependency", "declared_unsatisfiable", "regression_unrepairable", "feature_budget"] as const;
 type BlockReason = (typeof BLOCK_REASONS)[number];
-const DISPOSITIONS: readonly AttemptDisposition[] = ["passed", "verify_failed", "audit_disagreed", "stalled", "transient", "budget", "declared_failed", "commit_failed", "refused", "paused"];
+const DISPOSITIONS: readonly AttemptDisposition[] = ["passed", "verify_failed", "audit_disagreed", "audit_unavailable", "stalled", "transient", "budget", "declared_failed", "commit_failed", "refused", "paused"];
 
 export interface BuildMetrics {
   featuresTotal: number;
@@ -169,6 +169,15 @@ export function foldBuildMetrics(paths: RunPaths): BuildMetrics {
   const regression = checks.filter((event) => event.phase === "regression");
   const dispositions = events.filter((event) => event.t === "audit.disposition");
   const effective = dispositions.filter((event) => !event.checkVoided);
+  const eligibleVerdicts = effective.filter((event) =>
+    event.evidenceVersion === 2
+    && event.evidenceUsable
+    && !event.truncated
+    && !event.malformed
+    && !event.emptyDisagree
+    && event.effectiveVerdict !== "unavailable"
+    && event.effectiveVerdict === event.rawVerdict
+  );
   const audits = events.filter((event) => event.t === "audit");
   const sweeps = events.filter((event) => event.t === "sweep");
   const totalTokens = events.reduce((sum, event) => event.t === "model.call" ? sum + event.usage.input + event.usage.output + event.usage.cacheRead + event.usage.cacheWrite : sum, 0);
@@ -194,8 +203,8 @@ export function foldBuildMetrics(paths: RunPaths): BuildMetrics {
     regressionChecksRun: sweeps.reduce((sum, event) => sum + event.run, 0),
     regressionChecksSkipped: sweeps.reduce((sum, event) => sum + event.skipped.length, 0),
     sweepsIncomplete: sweeps.filter((event) => !event.complete || event.scope === "partial").length,
-    auditorAgreeRate: effective.length === 0 ? null : effective.filter((event) => event.effectiveVerdict === "agree").length / effective.length,
-    auditorDisagreeRate: effective.length === 0 ? null : effective.filter((event) => event.effectiveVerdict === "disagree").length / effective.length,
+    auditorAgreeRate: eligibleVerdicts.length === 0 ? null : eligibleVerdicts.filter((event) => event.effectiveVerdict === "agree").length / eligibleVerdicts.length,
+    auditorDisagreeRate: eligibleVerdicts.length === 0 ? null : eligibleVerdicts.filter((event) => event.effectiveVerdict === "disagree").length / eligibleVerdicts.length,
     auditorEmptyDisagreeRate: effective.length === 0 ? null : effective.filter((event) => event.emptyDisagree).length / effective.length,
     auditorTruncated: dispositions.filter((event) => event.truncated).length,
     auditEvidenceUsable: effective.filter((event) => event.evidenceUsable).length,

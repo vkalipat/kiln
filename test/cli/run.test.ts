@@ -7,12 +7,14 @@ import { main } from "../../src/cli/main";
 import { defaultConfig, saveConfig } from "../../src/core/config";
 import { initHome } from "../../src/core/home";
 import { acquireRunLock } from "../../src/core/lock";
-import { RunRecord } from "../../src/core/record";
+import { hashInput, RunRecord } from "../../src/core/record";
 import { createRun, readStatus, runPaths, writeStatus } from "../../src/core/run";
 import { RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
 import { parseBrief } from "../../src/phases/frame";
 import { shapeHash } from "../../src/phases/contracts";
 import { loadSeeds } from "../../src/evals/seeds";
+import { runDiscover, SCOUT_CHECKPOINT_POLICY_VERSION } from "../../src/phases/discover";
+import { freezeRouting } from "../../src/workflow/routing";
 
 const AXES = "- who it serves: hobbyists | sideliners | commercial\n- mechanism class: sensing | modeling | logistics\n- where the value shows up: prevention | diagnosis | recovery";
 const BRIEF = `# Brief\n\n## Problem\np\n\n## Constraints\n- c\n\n## Search success\n- s\n\n## Non-goals\n- n\n\n## Shape\nproduct\n\n## Axes\n${AXES}\n\n## Discovery questions\n- Q1?\n- Q2?\n`;
@@ -44,6 +46,80 @@ function io() {
 }
 
 describe("kiln run", () => {
+  test("cached-discovery resume rechecks checkpoints under the command lock before dispatch", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-cached-resume-")); initHome(home);
+    const cfg = defaultConfig(); cfg.budgets.usd = 25; cfg.budgets.wallSeconds = 1500;
+    cfg.roles.scout = ["missing/not-real"];
+    cfg.budgets.share = { frame: 0.05, discover: 0.15, ideate: 0.4, form: 0.075, build: 0.3, reflect: 0.025 };
+    saveConfig(home, cfg);
+    const run = createRun(home, "Find business ideas", { id: "cached-resume" }); writeFileSync(run.brief, BRIEF);
+    const parsed = parseBrief(BRIEF); writeStatus(run, { phase: "discover", state: "stopped", shape: parsed.shape, shapeHash: shapeHash(parsed), outcome: { kind: "stopped", stopKind: "deadline", wallTargetSeconds: 1500 } });
+    const brief = readFileSync(run.brief, "utf8");
+    for (const [index, question] of parsed.questions.entries()) {
+      const metadata = { fingerprint: hashInput({ brief, question }), state: "ok", policyVersion: SCOUT_CHECKPOINT_POLICY_VERSION };
+      const encoded = Buffer.from(JSON.stringify(metadata), "utf8").toString("base64url");
+      writeFileSync(join(run.discoveryDir, `${index + 1}-q${index + 1}.md`), `<!-- kiln-scout-v1:${encoded} -->\n# Question\n${question}\n\n# Findings\n- cached\n`);
+    }
+    const now = Date.now(); const iso = (offset: number) => new Date(now + offset).toISOString();
+    writeFileSync(run.record, [
+      { seq: 1, ts: iso(-300_000), t: "phase.start", phase: "frame" },
+      { seq: 2, ts: iso(-214_000), t: "phase.end", phase: "frame", outcome: "ok" },
+      { seq: 3, ts: iso(-214_000), t: "phase.start", phase: "discover" },
+      { seq: 4, ts: iso(0), t: "phase.end", phase: "discover", outcome: "stopped" },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+    freezeRouting(run, cfg, { workflow: { phases: ["frame", "discover", "ideate", "checkpoint"] } });
+    const model = createMockModel({ id: "must-not-dispatch", responses: [{ content: ["must not run"] }] as never });
+    const output = io();
+    expect(await main(["run", "resume", run.id, "--home", home, "--through", "discover", "--json"], output.io, {
+      models: { brain: model as never }, apiKeyFor: async () => "key",
+      runDiscover: async (d) => {
+        const first = readdirSync(run.discoveryDir).sort()[0]!;
+        const path = join(run.discoveryDir, first); const body = readFileSync(path, "utf8"); const line = body.split("\n", 1)[0]!;
+        const metadata = JSON.parse(Buffer.from(line.slice("<!-- kiln-scout-v1:".length, -4), "base64url").toString("utf8"));
+        metadata.state = "failure"; metadata.failure = { class: "deadline", message: "changed after precheck" };
+        const encoded = Buffer.from(JSON.stringify(metadata), "utf8").toString("base64url");
+        writeFileSync(path, body.replace(line, `<!-- kiln-scout-v1:${encoded} -->`));
+        return runDiscover(d);
+      },
+    })).toBe(0);
+    expect(model.calls).toHaveLength(0);
+    expect(readStatus(run)).toMatchObject({ phase: "discover", state: "stopped", outcome: { stopKind: "deadline" } });
+
+    const restoreReady = () => {
+      for (const [index, question] of parsed.questions.entries()) {
+        const metadata = { fingerprint: hashInput({ brief, question }), state: "ok", policyVersion: SCOUT_CHECKPOINT_POLICY_VERSION };
+        const encoded = Buffer.from(JSON.stringify(metadata), "utf8").toString("base64url");
+        writeFileSync(join(run.discoveryDir, `${index + 1}-q${index + 1}.md`), `<!-- kiln-scout-v1:${encoded} -->\n# Question\n${question}\n\n# Findings\n- cached\n`);
+      }
+      writeStatus(run, { phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "deadline", wallTargetSeconds: 1500 } });
+    };
+    let phaseCalls = 0;
+    restoreReady();
+    expect(await main(["run", "resume", run.id, "--home", home, "--through", "discover", "--json"], io().io, {
+      models: { brain: model as never }, apiKeyFor: async () => "key",
+      onRun: () => writeStatus(run, { phase: "reflect", state: "done", outcome: { kind: "success" } }),
+      runDiscover: async () => { phaseCalls += 1; return { outcome: "ok" }; },
+    })).toBe(2);
+    expect(readStatus(run)).toMatchObject({ phase: "reflect", state: "done", outcome: { kind: "success" } });
+
+    restoreReady();
+    expect(await main(["run", "resume", run.id, "--home", home, "--through", "discover", "--json"], io().io, {
+      models: { brain: model as never }, apiKeyFor: async () => "key",
+      onRun: () => writeStatus(run, { phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "budget", budgetTargetUsd: 25 } }),
+      runDiscover: async () => { phaseCalls += 1; return { outcome: "ok" }; },
+    })).toBe(0);
+    expect(readStatus(run)).toMatchObject({ phase: "discover", state: "stopped", outcome: { stopKind: "budget" } });
+
+    restoreReady();
+    expect(await main(["run", "resume", run.id, "--home", home, "--through", "discover", "--json"], io().io, {
+      models: { brain: model as never }, apiKeyFor: async () => "key",
+      onRun: () => writeStatus(run, { phase: "discover", state: "failed", outcome: { kind: "failure", failureClass: "refusal", message: "refused elsewhere" } }),
+      runDiscover: async () => { phaseCalls += 1; return { outcome: "ok" }; },
+    })).toBe(2);
+    expect(readStatus(run)).toMatchObject({ phase: "discover", state: "failed", outcome: { failureClass: "refusal" } });
+    expect(phaseCalls).toBe(0); expect(model.calls).toHaveLength(0);
+  });
+
   test("explicit resume wakes transient discovery without rerunning frame", async () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-")); initHome(home);
     const run = createRun(home, "seed");

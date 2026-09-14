@@ -284,7 +284,11 @@ export async function runIsland(deps: PhaseDeps, plan: IslandPlan, inputs: Islan
   let stopped: IslandRun["stopped"];
   for (let n = 0; n < 2; n += 1) {
     // The VS rule is asked of the first turn only; the second is asked for ideas unlike the first.
-    const opts: BatchCheckOptions = { count, minUnder: n === 0 ? VS_MIN_UNDER : 0, axes: inputs.axes };
+    const opts: BatchCheckOptions = {
+      count,
+      minUnder: n === 0 ? Math.min(VS_MIN_UNDER, Math.max(0, count - 1)) : 0,
+      axes: inputs.axes,
+    };
     let text = "";
     let check: BatchCheck | undefined;
     for (let attempt = 0; attempt < 2; attempt += 1) {

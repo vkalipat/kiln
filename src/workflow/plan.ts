@@ -28,6 +28,8 @@ export interface WorkflowPlan {
   rationale: string[];
   /** Absent on historical/evaluator plans, which retain their original full phase chain. */
   strategy?: WorkflowStrategy;
+  /** New adaptive direct/no-research runs may frame deterministically; old frozen plans omit it. */
+  directFrame?: "deterministic-v1";
 }
 
 export interface WorkflowControls {
@@ -45,6 +47,9 @@ export interface WorkflowExecution {
 
 const OPEN_ENDED = [
   /\b(?:find|discover|generate|suggest|brainstorm|identify|explore|give|come up with|develop|create|propose|design)\b[^.!?\n]{0,100}\bideas?\b/i,
+  // Quantified plural alternatives allow short descriptive modifiers, without treating
+  // arbitrary quantified objects (bugs, files) or a single implementation path as ideation.
+  /\b(?:find|discover|generate|suggest|brainstorm|identify|explore|give|propose)\s+(?:me\s+)?(?:\d+|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|several|multiple|some|many|a few)\s+(?:[\w-]+,?\s+){0,6}(?:ways|approaches|ideas)\b/i,
   /\b(?:find|discover|identify|explore)\s+(?:me\s+)?(?:a|the|some)\s+(?:way|opportunity|business|startup|product)\b/i,
   /\bwhat\s+(?:business|company|product|project|thing)?\s*should\s+i\s+(?:build|start|pursue|make)\b/i,
   /\bmake\s+me\s+(?:a\s+)?(?:billionaire|millionaire)\b/i,
@@ -69,7 +74,18 @@ function matchesAny(seed: string, patterns: readonly RegExp[]): boolean {
 }
 
 export function classifyWorkflowIntent(seed: string): WorkflowIntent {
-  if (matchesAny(seed, EXISTING_ARTIFACT)) return "existing_artifact";
+  // A creation request may name an output location without supplying an existing artifact.
+  // Mask only that location in output/execution instructions; keep explicit repository references
+  // and source-reading clauses authoritative, and never rewrite the persisted seed or plan.
+  const artifactText = /^\s*(?:please\s+)?(?:create|build|write|make|implement)\b/i.test(seed)
+    ? seed.replace(/\b(?:put|place|save|create|build|write|make|implement)\b[^.!?\n]{0,160}\b(?:at|in|under|into)\s+the\s+project\s+(?:root|directory|folder)\b/gi,
+      (instruction) => /\b(?:from|read|inspect|review|existing)\b/i.test(instruction)
+        ? instruction : instruction.replace(/\bthe\s+project\s+(?:root|directory|folder)\b/gi, "the output location"))
+      .replace(/\b(?:run|execute|invoke|passing\s+with)\b[^.!?\n]{0,160}\b(?:from|in|at)\s+the\s+project\s+(?:root|directory|folder)\b/gi,
+        (instruction) => /\b(?:read|reading|inspect|review|existing)\b/i.test(instruction)
+          ? instruction : instruction.replace(/\bthe\s+project\s+(?:root|directory|folder)\b/gi, "the execution location"))
+    : seed;
+  if (matchesAny(artifactText, EXISTING_ARTIFACT)) return "existing_artifact";
   if (matchesAny(seed, OPEN_ENDED)) return "open_ended_ideation";
   return "supplied_concept";
 }
@@ -95,9 +111,11 @@ export function planWorkflow(seed: string, options: { adaptive?: boolean } = {})
       ? "Artifact delivery cannot start without an explicit readable source, so the default route stops at a human checkpoint."
       : "The seed asks for exploration, so the default route ends at the idea checkpoint.");
 
+  // Test-runner subcommands describe verification, not a request for idea discovery.
+  const strategyText = seed.replace(/\bunittest\s+discover\b/gi, "test discovery");
   const directTask = intent === "supplied_concept" && goal === "deliver"
     && /\b(cli|script|utility|function|parser|converter|calculator|command.line|unit tests?|csv|json|markdown|directory|files?)\b/i.test(seed)
-    && !/\b(ideas?|brainstorm|alternatives?|explore|discover|novel)\b/i.test(seed);
+    && !/\b(ideas?|brainstorm|alternatives?|explore|discover|novel)\b/i.test(strategyText);
   const researchText = seed.replace(/\b(?:no|without|do not|don['’]t)\s+(?:external\s+|web\s+|online\s+)?research\b/gi, "");
   const researchDeclined = /\b(?:no|without|do not|don['’]t)\s+(?:external\s+|web\s+|online\s+)?(?:research|browsing|web search)\b/i.test(seed);
   const needsExternalFacts = !researchDeclined && /\b(research|market|customers?|biology|medicine|medical|clinical|protein|scientific|api|integration|online|web service|pricing)\b|\b(?:latest|current)\s+(?:papers?|prices?|versions?|releases?|news|guidelines|regulations|trends)\b/i.test(researchText);
@@ -120,6 +138,8 @@ export function planWorkflow(seed: string, options: { adaptive?: boolean } = {})
     seedSha256: seedHash(seed),
     rationale,
     ...(options.adaptive !== false ? { strategy } : {}),
+    ...(options.adaptive !== false && strategy.mode === "direct" && strategy.research === "none"
+      ? { directFrame: "deterministic-v1" as const } : {}),
   };
 }
 
@@ -175,6 +195,8 @@ function validateWorkflowPlan(value: unknown): WorkflowPlan {
   if (plan.strategy !== undefined && (!plan.strategy || !["exploratory", "focused", "direct"].includes(plan.strategy.mode)
     || !["broad", "targeted", "none"].includes(plan.strategy.research)
     || (plan.strategy.mode !== "direct" && plan.strategy.research === "none"))) throw new Error("workflow plan has invalid strategy");
+  if (plan.directFrame !== undefined && (plan.directFrame !== "deterministic-v1"
+    || plan.intent !== "supplied_concept" || plan.strategy?.mode !== "direct" || plan.strategy.research !== "none")) throw new Error("workflow plan has invalid directFrame");
   return plan as WorkflowPlan;
 }
 

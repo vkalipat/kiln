@@ -4,6 +4,8 @@ Final verification: **1,629 tests passed, zero failures**, 10,113 assertions acr
 
 ## Entry contract
 
+Follow-up correction: the earlier animation check exercised the prompt activity indicator, not the welcome artwork. The welcome artwork was static; it now receives the shared ticker frame, with a regression asserting the artwork itself changes. Bare greetings/help previously entered task orchestration; they now reply locally before authentication, without creating a run. A real `kiln` → `HI` terminal check confirmed the reply and idle $0.00 state. Substantive tasks prefixed with a greeting and active-run steering still follow their normal paths. Follow-up verification: 1,635 tests passed, zero failures, plus type checking.
+
 Open `kiln`, type a task, press Enter. A missing provider connection is requested only after submission, with the draft retained. Fresh CLI/TUI homes enable adaptive routing and autonomous selection. Existing settings are preserved; `kiln model routing adaptive` enables routing for an older home. Explicit interactive controls remain available.
 
 A one-sentence interpretation precedes execution. It currently describes the inferred task category, not a semantic restatement of every requirement. Simple implementation requests (including “write a script” and “make a command-line calculator”) take the direct formation/build/verification route. Open-ended ideas retain research and comparison. Missing existing-artifact context is a real blocker, not permission to invent a repository.

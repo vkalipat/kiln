@@ -78,10 +78,10 @@ describe("bundled prompts", () => {
   test("de-prescription preserves parser-facing output contracts", () => {
     const generator = bundled("generator");
     for (const clause of [
-      "Exactly five ideas per batch.",
+      "batch size in the pinned contract",
       "# Idea <n>",
       "Title,\n  Mechanism, Draws on, Axes, Testable claim, Cheapest test, Strongest failure reason, Probability.",
-      "at least three under 10 percent",
+      "low-probability count in the pinned contract",
     ]) expect(generator).toContain(clause);
 
     const judge = bundled("judge");

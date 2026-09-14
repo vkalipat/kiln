@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { createMockModel } from "@oh-my-pi/pi-ai";
 import { defaultConfig } from "../../src/core/config";
 import type { StoredEvent } from "../../src/core/events";
-import { projectedRoundCost, remainingIdeateUsd } from "../../src/ideation/budget";
+import { ADAPTIVE_LATENCY_SECONDS, projectedAdaptiveRound, projectedRoundCost, remainingIdeateUsd } from "../../src/ideation/budget";
 
 const stored = (seq: number, event: object): StoredEvent => ({ seq, ts: "2026-09-04T00:00:00.000Z", ...event }) as StoredEvent;
 
@@ -37,6 +37,26 @@ describe("ideation budgets", () => {
       islandPlans: [{ model: low as never }, { model: high as never }, { model: low as never }],
     });
     expect(actual.rows[0]!.costUsd).toBeGreaterThan(proxy.rows[0]!.costUsd * 10);
+  });
+
+  test("adaptive projection includes bounded worker turns, retries, and sequential pair latency", () => {
+    const cfg = defaultConfig();
+    cfg.ideation.islands = 2;
+    cfg.ideation.ideasPerBatch = 2;
+    cfg.ideation.entrantsCap = 8;
+    cfg.ideation.pairCap = 12;
+    cfg.ideation.arbiterCaps = { novelty: 8, collision: 8 };
+    const model = createMockModel({ id: "priced", cost: { input: 5, output: 25, cacheRead: 0, cacheWrite: 0 } } as never);
+    const p = projectedAdaptiveRound(cfg, () => ({ model: model as never, ref: "mock/priced" }));
+    expect(p.rows.find((row) => row.name === "prior-art scout turn reserve")?.calls).toBe(8 * cfg.ideation.scoutTurnCap);
+    expect(p.rows.find((row) => row.name === "tournament orderings with correction reserve")?.calls).toBe(12 * 2 * 2);
+    expect(p.calls).toBe(157);
+    expect(p.estimatedWallSeconds).toBe(p.baseWallSeconds * ADAPTIVE_LATENCY_SECONDS.stageSlackMultiplier);
+    expect(p.estimatedWallSeconds).toBe(560);
+
+    cfg.ideation.concurrency = 1;
+    const serial = projectedAdaptiveRound(cfg, () => ({ model: model as never, ref: "mock/priced" }));
+    expect(serial.estimatedWallSeconds).toBeGreaterThan(p.estimatedWallSeconds);
   });
 
   test("remaining spend uses the ideate share and only calls after ideate first started", () => {

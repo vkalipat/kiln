@@ -1,12 +1,12 @@
 import { describe, expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, writeFileSync, existsSync, symlinkSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync, existsSync, symlinkSync, realpathSync, readdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { createRun } from "../../src/core/run";
 import { RunRecord } from "../../src/core/record";
 import { BUILDER_TOOL_NAMES, PHASE_TOOLS, SCOUT_TOOL_NAMES, brainTools, builderTools, scoutTools, type ToolContext } from "../../src/brain/tools";
 import type { Phase } from "../../src/core/config";
-import { clampTimeoutMs } from "../../src/brain/tools/bash";
+import { bashTool, clampTimeoutMs } from "../../src/brain/tools/bash";
 import { Limiter } from "../../src/core/limiter";
 import { RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
 
@@ -25,6 +25,35 @@ function ctx(extra: Partial<ToolContext> = {}) {
 }
 
 describe("tools", () => {
+  test("shell scratch is lazy, run-local, retained and unique per tool instance", async () => {
+    const { c, call, run } = ctx();
+    const parent = join(realpathSync(run.dir), ".shell-tmp");
+    expect(existsSync(parent)).toBe(false);
+    const first = await call("bash", { command: 'test "$TMPDIR" = "$TMP" && test "$TMPDIR" = "$TEMP" && printf retained > "$TMPDIR/marker" && mktemp -d "$TMPDIR/probe.XXXXXX"' });
+    expect(first.isError).toBe(false);
+    const probe = first.text.split("\n")[1]!;
+    expect(probe.startsWith(`${parent}/session-`)).toBe(true);
+    expect(existsSync(probe)).toBe(true);
+    expect((await call("bash", { command: 'cat "$TMPDIR/marker"' })).text).toBe("exit 0\nretained");
+    const other = bashTool(c);
+    const otherResult = await other.execute("other", { command: 'test ! -e "$TMPDIR/marker"' }, undefined as never);
+    expect((otherResult.content[0] as { text: string }).text).toBe("exit 0\n");
+    expect(readdirSync(parent).length).toBe(2);
+    const separate = ctx();
+    const next = await separate.call("bash", { command: 'printf "%s" "$TMPDIR"' });
+    expect(next.text).not.toContain(parent);
+    expect(existsSync(probe)).toBe(true);
+  });
+
+  test("shell refuses a redirected scratch parent before dispatch", async () => {
+    const { call, run, cwd } = ctx();
+    symlinkSync(cwd, join(run.dir, ".shell-tmp"));
+    const result = await call("bash", { command: 'touch "$TMPDIR/unexpected"' });
+    expect(result.isError).toBe(true);
+    expect(result.text).toContain("must not redirect");
+    expect(readdirSync(cwd)).toEqual([]);
+  });
+
   test("a pre-cancelled run never dispatches a recorded side-effecting tool", async () => {
     const { call, cwd, record } = ctx();
     const path = join(cwd, "must-not-exist.txt");
@@ -81,17 +110,34 @@ describe("tools", () => {
     // pipe-drain under full-suite CPU contention — 300ms was tight enough
     // that a loaded machine could blow past it before the process even
     // finished, killing it and turning `exit 2` into a spurious deadline.
-    const { call } = ctx({ bashTimeoutMs: 10_000 });
+    const { call, record } = ctx({ bashTimeoutMs: 10_000 });
     expect((await call("bash", { command: "echo hi; exit 2" })).text).toMatch(/^exit 2\nhi/);
+    expect(record.read().find((event) => event.t === "tool.call")).toMatchObject({
+      ok: true, resultChars: 10, excerptTruncated: false,
+      process: { exitCode: 2, signal: null, timedOut: false, cancelled: false, outputTruncated: false },
+    });
+  });
+  test("execution provenance explicitly distinguishes a clipped result excerpt from complete output", async () => {
+    const { call, record } = ctx();
+    await call("bash", { command: "printf '%0500d' 1" });
+    const event = record.read().find((entry) => entry.t === "tool.call");
+    expect(event).toMatchObject({ resultChars: 507, excerptTruncated: true, process: { exitCode: 0, outputTruncated: false } });
+    expect(event?.t === "tool.call" && event.excerpt.length).toBe(400);
+  });
+  test("execution provenance marks shaped or spilled output as incomplete", async () => {
+    const { call, record } = ctx();
+    await call("bash", { command: "printf '%05000d' 1" });
+    expect(record.read().find((entry) => entry.t === "tool.call")).toMatchObject({ process: { exitCode: 0, outputTruncated: true } });
   });
   test("bash kills a command that overruns its deadline and reports it", async () => {
     // Short budget on purpose: sleep 5 always exceeds 300ms, load or no load,
     // so this is the assertion a tight deadline is meant to prove.
-    const { call } = ctx({ bashTimeoutMs: 300 });
+    const { call, record } = ctx({ bashTimeoutMs: 300 });
     expect((await call("bash", { command: "sleep 5" })).text).toMatch(/deadline/);
+    expect(record.read().find((entry) => entry.t === "tool.call")).toMatchObject({ process: { timedOut: true, cancelled: false } });
   });
   test("bash forwards caller cancellation to the child process", async () => {
-    const { call } = ctx({ bashTimeoutMs: 10_000 });
+    const { call, record } = ctx({ bashTimeoutMs: 10_000 });
     const controller = new AbortController();
     const t0 = Date.now();
     const pending = call("bash", { command: "trap '' TERM; while :; do sleep 1; done" }, controller.signal);
@@ -100,6 +146,7 @@ describe("tools", () => {
     expect(result.isError).toBe(false);
     expect(result.text).toMatch(/^cancelled: command stopped/);
     expect(result.text).not.toMatch(/deadline/);
+    expect(record.read().find((entry) => entry.t === "tool.call")).toMatchObject({ process: { timedOut: false, cancelled: true } });
     expect(Date.now() - t0).toBeLessThan(2500);
   });
   test("search finds lines and skips node_modules", async () => {
@@ -227,6 +274,19 @@ describe("tools", () => {
       const e = record.read().find((x) => x.t === "tool.call" && x.name === "read");
       expect(e && e.t === "tool.call" ? e.excerpt : "").not.toContain("super-secret-value");
       expect(e && e.t === "tool.call" ? e.excerpt : "").toContain("[REDACTED]");
+    } finally {
+      delete process.env.FAKE_API_KEY;
+    }
+  });
+  test("redaction precedes the journal cap even when a credential crosses the boundary", async () => {
+    process.env.FAKE_API_KEY = "super-secret-value";
+    try {
+      const { call, cwd, record } = ctx();
+      writeFileSync(join(cwd, "boundary.txt"), "x".repeat(390) + "super-secret-value");
+      await call("read", { path: join(cwd, "boundary.txt") });
+      const event = record.read().find((entry) => entry.t === "tool.call");
+      expect(event?.t === "tool.call" && event.excerpt.includes("super-")).toBe(false);
+      expect(event).toMatchObject({ excerptTruncated: true });
     } finally {
       delete process.env.FAKE_API_KEY;
     }

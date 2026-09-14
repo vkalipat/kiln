@@ -6,6 +6,7 @@ import { repairAttemptProgress, repairAttemptStates, repairPassedAttempts } from
 import { appendProgress, parseProgress } from "../../src/build/progress";
 import { appendRecordedState, appendState, foldState, reconcileState } from "../../src/build/state";
 import type { AttemptDisposition } from "../../src/core/events";
+import { hashInput } from "../../src/core/record";
 import { setupLoop, type LoopFixture } from "./loop-fixture";
 
 const HEAD = "a".repeat(40);
@@ -26,8 +27,9 @@ function attempt(s: LoopFixture, attempt: number, disposition: AttemptDispositio
 function checked(s: LoopFixture, attempt: number, checkId: string) {
   s.record.append({ t: "check", checkId, featureId: "f01", attempt, kind: "file", phase: "acceptance", ok: true, exitCode: 0, durationMs: 1, overrunMs: 0, timedOut: false, outputPath: `${s.project.checksDir}/${checkId}.txt`, outputTruncated: false });
   const sourceEventSeq = s.record.append({ t: "audit", featureId: "f01", attempt, checkId, shape: "full", verdict: "agree", verifiedCount: 1, claimedUnverifiedCount: 0, regressions: [], checkQualityAdequate: true, truncated: false, usdCapHit: false, crossProvider: true, costUsd: 0.1 });
-  appendAudit(s.deps.run, { featureId: "f01", attempt, checkId, sourceEventSeq, createdAt: "2026-09-04T00:00:00.000Z", shape: "full", raw: { verified: ["ok"], claimedUnverified: [], regressions: [], nextSessionNotes: "", checkQuality: { adequate: true, reason: "good" }, verdict: "agree" }, model: { provider: "other", model: "audit", ref: "other/audit" } });
-  s.record.append({ t: "audit.disposition", featureId: "f01", attempt, checkId, rawVerdict: "agree", effectiveVerdict: "agree", emptyDisagree: false, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: false });
+  const raw = { verified: ["ok"], claimedUnverified: [], regressions: [], nextSessionNotes: "", checkQuality: { adequate: true, reason: "good" }, verdict: "agree" as const };
+  appendAudit(s.deps.run, { featureId: "f01", attempt, checkId, sourceEventSeq, createdAt: "2026-09-04T00:00:00.000Z", shape: "full", raw, evidence: { version: 2, complete: true, payloadHash: hashInput(raw), scopeHash: "fixture-scope" }, model: { provider: "other", model: "audit", ref: "other/audit" } });
+  s.record.append({ t: "audit.disposition", featureId: "f01", attempt, checkId, rawVerdict: "agree", effectiveVerdict: "agree", emptyDisagree: false, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: false, evidenceVersion: 2 });
 }
 
 async function committed(s: LoopFixture, attempt: number, checkId: string) {

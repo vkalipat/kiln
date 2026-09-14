@@ -194,7 +194,7 @@ function mockedHarness() {
     ? { content: [{ type: "toolCall", name: "axis_map", arguments: { value: "solo", reason: "closest" } }] }
     : allText(ctx).includes('"name":"novelty"')
       ? { content: [{ type: "toolCall", name: "novelty", arguments: { restatement: false, reason: "different mechanism" } }] }
-      : { content: [{ type: "toolCall", name: "collision", arguments: { same: false, reason: "different" } }] } } as never);
+      : { content: [{ type: "toolCall", name: "collision", arguments: { coverageAdequate: true, same: false, reason: "different" } }] } } as never);
   const judge = createMockModel({ id: "judge", handler: () => ({ content: [{
     type: "toolCall", name: "verdict", arguments: { valueWinner: "A", feasibilityWinner: "B", reason: "tradeoff" },
   }] }) } as never);

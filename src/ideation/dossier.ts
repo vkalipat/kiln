@@ -14,7 +14,7 @@ import { bullets, sections } from "../phases/contracts";
  * `tournament.jsonl` (`aRenderHash`/`bRenderHash`) and the version is part of the calibration hash,
  * so an unversioned change silently invalidates every stored comparison.
  */
-export const RENDER_VERSION = 1;
+export const RENDER_VERSION = 2;
 
 export interface Dossier {
   id: string;
@@ -196,7 +196,7 @@ function cap(value: string, limit: number, field: string, truncated: string[]): 
 function priorArtLines(e: Evidence | undefined): string[] {
   const p = e?.priorArt;
   if (p === undefined) return ["Prior art: not checked"];
-  if (p.status === "search_failed") return ["Prior art: search failed (novelty unknown)"];
+  if (p.status === "search_failed") return ["Prior art: search failed (novelty unknown)", ...(p.distance ? [`Coverage limit: ${p.distance}`] : [])];
   if (p.status === "not_falsified") return ["Prior art: searched, no matching artifact found"];
   const a = p.artifact;
   const head = a === undefined ? "Prior art: collided with an unnamed artifact" : `Prior art: collided with "${a.title}" (${a.url})`;

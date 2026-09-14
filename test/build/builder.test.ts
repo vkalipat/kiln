@@ -6,17 +6,29 @@ import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
 import { defaultConfig } from "../../src/core/config";
 import { initHome } from "../../src/core/home";
 import { Limiter } from "../../src/core/limiter";
-import { RunRecord } from "../../src/core/record";
+import { hashInput, RunRecord } from "../../src/core/record";
 import { createRun } from "../../src/core/run";
 import type { Feature } from "../../src/formation/features";
 import { projectPaths } from "../../src/formation/paths";
+import { writeAcceptanceLock } from "../../src/formation/lock";
+import { runCheck } from "../../src/build/verify";
 import type { PhaseDeps } from "../../src/phases/frame";
-import { buildContract, buildContractDetailed, BUILDER_CONTRACT_CHARS, BUILDER_PINNED_CHARS, createBuilderDriver, runBuilderSession } from "../../src/build/builder";
-import type { Audit } from "../../src/build/audit-contract";
+import { buildContract, buildContractDetailed, BUILDER_AUDIT_CHARS, BUILDER_CONTRACT_CHARS, BUILDER_PINNED_CHARS, createBuilderDriver, runBuilderSession } from "../../src/build/builder";
+import { appendAudit, type Audit } from "../../src/build/audit-contract";
 import { parseProgress, renderProgressEntry, type ProgressEntry } from "../../src/build/progress";
 import { FakeGitRunner } from "./fake-git";
+import { planWorkflow } from "../../src/workflow/plan";
 
 const shellFeature = (id = "f01", command = "printf ok"): Feature => ({ id, title: `Feature ${id}`, description: "Deliver one visible result.", acceptance: { type: "shell", command } });
+
+const oracleItems = Array.from({ length: 60 }, (_, id) => ({ id, label: `case ${id}: café $value`, enabled: id % 2 === 0 }));
+const longCommand = `bun -e 'const assert = require("node:assert/strict");\nconst actual = await Bun.file("result.json").json();\n${oracleItems.map((item, i) => `assert.deepEqual(actual.items[${i}], ${JSON.stringify(item)});`).join("\n")}\nassert.equal(actual.items.length, ${oracleItems.length});\nconsole.log("verified")'`;
+
+function freezeAcceptance(s: ReturnType<typeof setup>, feature: Feature) {
+  const file = { version: 1 as const, init: { needs: [] }, features: [feature] };
+  writeFileSync(s.run.features, JSON.stringify(file));
+  writeFileSync(s.run.acceptanceLock, JSON.stringify(writeAcceptanceLock(file, "spec-hash")));
+}
 
 function setup(model: unknown) {
   const home = mkdtempSync(join(tmpdir(), "kiln-builder-"));
@@ -52,6 +64,23 @@ function progress(featureId: string, attempt: number, checkId: string): Progress
 }
 
 describe("builder contract", () => {
+  test("clipped audit feedback names its full authoritative source and original payload hash", async () => {
+    const model = createMockModel({ responses: [{ content: ["done"] }] as never });
+    const s = setup(model); let full = audit();
+    full.evidence = { version: 2, complete: true, payloadHash: hashInput(full.raw), scopeHash: "scope" };
+    full = appendAudit(s.run, full);
+    await runBuilderSession(s.deps, shellFeature(), { project: s.project, git: s.git, attempt: 2, audit: full });
+    const contract = s.model.calls[0].context.messages.find((message: { role: string }) => message.role === "developer").content;
+    const chunk = contract.slice(contract.indexOf("## Latest audit"), contract.indexOf("## Progress"));
+    expect(chunk).toContain(s.run.audits);
+    expect(chunk).toContain(full.checkId);
+    expect(chunk).toContain(`"sourceEventSeq":${full.sourceEventSeq}`);
+    expect(chunk).toContain(hashInput(full.raw));
+    expect(hashInput(JSON.parse(readFileSync(s.run.audits, "utf8").trim()).raw)).toBe(hashInput(full.raw));
+    expect(chunk).not.toContain(s.project.audit);
+    expect(chunk.length).toBeLessThanOrEqual(BUILDER_AUDIT_CHARS);
+    expect(contract.length).toBeLessThanOrEqual(BUILDER_PINNED_CHARS);
+  });
   test("honors the 8000-character allocations and drops oldest progress first", () => {
     const model = createMockModel({ id: "unused", responses: [{ content: ["unused"] }] as never });
     const { project } = setup(model);
@@ -88,7 +117,7 @@ describe("builder contract", () => {
     expect(built.text).toContain("cannot_be_satisfied");
   });
 
-  test("an oracle too large for the contract is refused instead of truncated", () => {
+  test("an oracle too large for the pin uses an exact artifact reference without displacing other allocations", () => {
     const project = projectPaths("/tmp/project");
     const fittingOracle = "k".repeat(1_700);
     const fitting = shellFeature("f01", fittingOracle);
@@ -106,7 +135,13 @@ describe("builder contract", () => {
     const predicate = shellFeature("f01", "printf ok");
     predicate.acceptance = { type: "shell", command: "printf ok", expect: { type: "regex", value: "p".repeat(3_000) } };
     for (const feature of [command, nearLimit, predicate]) {
-      expect(() => buildContractDetailed(project, feature, { attempt: 1, remainingUsd: 1, remainingTurns: 40 })).toThrow("acceptance contract exceeds 2500");
+      const context = { attempt: 1, remainingUsd: 1, remainingTurns: 40, audit: audit(), progress: [progress("f01", 1, "recent")] };
+      const referenced = buildContractDetailed(project, feature, context);
+      expect(referenced.acceptanceReference).toEqual({ path: project.featuresMirror, featureId: feature.id, hash: hashInput(feature.acceptance) });
+      expect(referenced.text.indexOf("## Latest audit")).toBeLessThanOrEqual(BUILDER_CONTRACT_CHARS);
+      expect(referenced.text.length).toBeLessThanOrEqual(BUILDER_PINNED_CHARS);
+      const inline = buildContractDetailed(project, shellFeature(), context);
+      expect(referenced.text.slice(referenced.text.indexOf("## Latest audit"))).toBe(inline.text.slice(inline.text.indexOf("## Latest audit")));
     }
   });
 
@@ -125,6 +160,92 @@ describe("builder contract", () => {
 });
 
 describe("runBuilderSession", () => {
+  test("a new direct builder receives the exact original request once in its stable context", async () => {
+    const model = createMockModel({ responses: [{ content: ["done"] }] as never });
+    const s = setup(model);
+    const seed = "Build a JSON formatter CLI.\n\n## Exact tail constraint\nPreserve SENTINEL-TAIL-42.\n";
+    writeFileSync(s.run.seed, seed);
+    s.deps.workflow = planWorkflow(seed);
+    const feature = shellFeature(); freezeAcceptance(s, feature);
+    await runBuilderSession(s.deps, feature, { project: s.project, git: s.git, attempt: 1 });
+    const system = (s.model.calls[0]!.context.systemPrompt as string[]).join("\n");
+    expect(system.match(/## Original user request \(quoted data\)/g)).toHaveLength(1);
+    expect(system).toContain(seed);
+    expect(system).toContain("current frozen feature remains the only unit of work");
+    expect(JSON.stringify(s.model.calls[0]!.context.messages)).not.toContain("SENTINEL-TAIL-42");
+
+    const historical = setup(createMockModel({ responses: [{ content: ["done"] }] as never }));
+    writeFileSync(historical.run.seed, seed);
+    freezeAcceptance(historical, feature);
+    await runBuilderSession(historical.deps, feature, { project: historical.project, git: historical.git, attempt: 1 });
+    expect(JSON.stringify(historical.model.calls[0]!.context.systemPrompt)).not.toContain("SENTINEL-TAIL-42");
+
+    const changed = setup(createMockModel({ responses: [{ content: ["must not dispatch"] }] as never }));
+    writeFileSync(changed.run.seed, seed);
+    changed.deps.workflow = planWorkflow(seed);
+    writeFileSync(changed.run.seed, `${seed}changed after workflow freeze\n`);
+    freezeAcceptance(changed, feature);
+    await expect(runBuilderSession(changed.deps, feature, { project: changed.project, git: changed.git, attempt: 1 })).rejects.toThrow("frozen workflow seed");
+    expect(changed.model.calls).toHaveLength(0);
+  });
+
+  test("missing or tampered frozen acceptance prevents dispatch and is revalidated on reused drivers", async () => {
+    const feature = shellFeature("f01", longCommand);
+    for (const defect of ["missing features", "missing lock", "changed artifact", "changed lock", "changed argument", "missing feature"] as const) {
+      const model = createMockModel({ responses: [{ content: ["done"] }] as never });
+      const s = setup(model);
+      const driver = createBuilderDriver(s.deps, { project: s.project, git: s.git, turnCap: 10, usdCap: 10 });
+      if (defect === "missing features") {
+        writeFileSync(s.run.acceptanceLock, "{}");
+      } else if (defect === "missing lock") {
+        writeFileSync(s.run.features, JSON.stringify({ version: 1, init: { needs: [] }, features: [feature] }));
+      } else {
+        freezeAcceptance(s, feature);
+        // A prior successful feature must not cache authorization for the next attempt.
+        expect((await driver.runFeature(feature, { attempt: 1 })).stopped).toBe("done");
+        if (defect === "changed artifact") writeFileSync(s.run.features, readFileSync(s.run.features, "utf8").replace("case 0", "forged"));
+        if (defect === "changed lock") writeFileSync(s.run.acceptanceLock, "{}");
+        if (defect === "missing feature") freezeAcceptance(s, { ...feature, id: "f02" });
+      }
+      const calls = s.model.calls.length;
+      const supplied = defect === "changed argument" ? shellFeature("f01", longCommand + "\n# changed") : feature;
+      await expect(driver.runFeature(supplied, { attempt: 2 })).rejects.toThrow("integrity: cannot hand off frozen builder acceptance");
+      expect(s.model.calls).toHaveLength(calls);
+    }
+  });
+  test("a long frozen oracle reaches the first native model context intact and still executes", async () => {
+    const feature = shellFeature("f01", longCommand);
+    const model = createMockModel({ responses: [
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "result.json", content: JSON.stringify({ items: oracleItems }) } }] },
+      { content: ["implemented"] },
+    ] as never });
+    const s = setup(model); freezeAcceptance(s, feature);
+    const before = readFileSync(s.run.acceptanceLock, "utf8");
+    expect(await runBuilderSession(s.deps, feature, { project: s.project, git: s.git, attempt: 1 })).toMatchObject({ stopped: "done" });
+    const messages = s.model.calls[0].context.messages;
+    const contract = messages.find((m: { role: string }) => m.role === "developer").content;
+    expect(contract.length).toBeLessThanOrEqual(BUILDER_PINNED_CHARS);
+    expect(contract).toContain(hashInput(feature.acceptance));
+    expect(contract).toContain(s.run.features);
+    expect(contract).not.toContain(longCommand);
+    const supplied = messages.find((m: { role: string }) => m.role === "user").content[0].text;
+    expect(supplied).toContain(JSON.stringify(feature.acceptance));
+    const checkOptions = { cwd: s.project.repo, checksDir: s.project.checksDir, timeoutMs: 5_000, maxOutputBytes: 10_000, needs: [], record: s.record, featureId: feature.id, attempt: 1, phase: "acceptance" as const };
+    const check = await runCheck(feature.acceptance, checkOptions);
+    expect(check.ok).toBe(true);
+    writeFileSync(join(s.project.repo, "result.json"), JSON.stringify({ items: oracleItems.slice(0, -1) }));
+    expect((await runCheck(feature.acceptance, { ...checkOptions, attempt: 2 })).ok).toBe(false);
+    expect(readFileSync(s.run.acceptanceLock, "utf8")).toBe(before);
+  });
+  test("a referenced oracle preserves observed context pressure and native input failures", async () => {
+    const feature = shellFeature("f01", longCommand);
+    const pressured = setup(createMockModel({ contextWindow: 100, responses: [{ content: ["done"], usage: { input: 80, output: 1 } }] as never }));
+    freezeAcceptance(pressured, feature);
+    expect(await runBuilderSession(pressured.deps, feature, { project: pressured.project, git: pressured.git, attempt: 1 })).toMatchObject({ stopped: "done", contextPressure: true });
+    const limited = setup(createMockModel({ responses: [{ throw: "input exceeds provider context window", responseStatus: 400, responseHeaders: { "x-test": "input-limit" }, responseRequestId: "req-limit" }] as never }));
+    freezeAcceptance(limited, feature);
+    expect(await runBuilderSession(limited.deps, feature, { project: limited.project, git: limited.git, attempt: 1 })).toMatchObject({ stopped: "error", error: "input exceeds provider context window", errorStatus: 400 });
+  });
   test("uses six tools, observes the real bash args locally, and writes only inside the repo", async () => {
     const model = Object.assign(createMockModel({ id: "builder", responses: [
       { content: [{ type: "toolCall", name: "bash", arguments: { command: "printf    ok" } }] },
@@ -306,7 +427,7 @@ describe("persistent builder driver", () => {
     expect(JSON.stringify(s.model.calls[0]!.context.messages)).toContain("Feature: f01");
     expect((await driver.runFeature(shellFeature("f03"), { attempt: 1 })).stopped).toBe("done");
 
-    await expect(driver.runFeature(shellFeature("f04", "x".repeat(3_000)), { attempt: 1 })).rejects.toThrow("acceptance contract exceeds");
+    await expect(driver.runFeature(shellFeature("f04", "x".repeat(3_000)), { attempt: 1 })).rejects.toThrow("integrity: cannot hand off frozen builder acceptance");
     expect((await driver.runFeature(shellFeature("f05"), { attempt: 1 })).stopped).toBe("done");
   });
 });

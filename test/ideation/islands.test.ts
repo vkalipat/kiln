@@ -247,6 +247,17 @@ describe("validateBatch", () => {
 });
 
 describe("runIsland", () => {
+  test("a dynamically-sized two-idea batch uses an attainable verbalized distribution", async () => {
+    const { deps, record, model } = setup([batch(1, 2, 1), batch(3, 2, 2)]);
+    deps.cfg.ideation.ideasPerBatch = 2;
+    const r = await runIsland(deps, plan(model), INPUTS);
+    expect(r.error).toBeUndefined();
+    expect(r.reasked).toBe(0);
+    expect(r.batches.map((items) => items.length)).toEqual([2, 2]);
+    expect(r.bounded).toEqual([true, true]);
+    expect(modelCalls(record)).toBe(2);
+  });
+
   test("two batches, no re-ask: one call each, the second asked for ideas unlike the first", async () => {
     const { deps, record, model } = setup([batch(1, 5, 2), batch(6, 5, 5)]);
     const r = await runIsland(deps, plan(model), INPUTS);

@@ -7,7 +7,7 @@ import type { RunPaths } from "../core/run";
 import { parseFeatures, type Feature, type FeaturesFile } from "../formation/features";
 import { projectPaths } from "../formation/paths";
 import type { FeatureCommitTrailer } from "./git";
-import { readAudits } from "./audit-contract";
+import { auditEvidenceComplete, readAudits } from "./audit-contract";
 
 export type FeatureTransition = Extract<RecordEvent, { t: "feature.state" }>;
 export type FeatureLifecycle = "pending" | "passed" | "failed" | "blocked" | "regressed";
@@ -273,9 +273,12 @@ function authenticated(paths: RunPaths, trailer: FeatureCommitTrailer, runId: st
   const stored = readAudits(paths).filter((audit) => audit.checkId === trailer.checkId);
   const dispositions = events.filter((event) => event.t === "audit.disposition" && event.checkId === trailer.checkId);
   return one(picks) && one(sessions) && one(checks) && check?.t === "check" && check.ok && check.phase === "acceptance" && named(check)
-    && consistent(audits, (audit) => audit.verdict) && consistent(stored, (audit) => audit.raw.verdict)
+    && consistent(audits, (audit) => audit.verdict) && audits[0]?.verdict === "agree"
+    && consistent(stored, (audit) => audit.raw.verdict) && stored[0]?.raw.verdict === "agree" && stored.every(auditEvidenceComplete)
     && one(dispositions) && dispositions[0]?.t === "audit.disposition" && named(dispositions[0])
-    && !dispositions[0].checkVoided && dispositions[0].effectiveVerdict === "agree";
+    && dispositions[0].evidenceVersion === 2 && dispositions[0].evidenceUsable
+    && !dispositions[0].truncated && !dispositions[0].malformed && !dispositions[0].emptyDisagree && !dispositions[0].checkVoided
+    && dispositions[0].rawVerdict === "agree" && dispositions[0].effectiveVerdict === "agree";
 }
 
 export function reconcileState(paths: RunPaths, input: readonly FeatureCommitTrailer[], options: ReconcileStateOptions = {}): BuildState {

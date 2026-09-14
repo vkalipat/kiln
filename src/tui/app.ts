@@ -6,6 +6,7 @@ import type { TuiCheckpointAnswer, TuiCheckpointSnapshot, TuiControllerPort, Tui
 import { EffortDial, nextEffort } from "./dial";
 import { ShortcutHelp } from "./help";
 import { matchAppInput } from "./input";
+import { localIntakeReply } from "./intake";
 import { renderAppLayout } from "./layout";
 import { CENTERED_OVERLAY } from "./overlay";
 import { ProviderOnboarding } from "./onboarding";
@@ -57,7 +58,7 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
     this.#applySnapshot(this.options.controller.getSnapshot());
   }
 
-  launch(input: { seed?: string; runId?: string }): void { if (this.#snapshot.auth?.required) {
+  launch(input: { seed?: string; runId?: string }): void { if (this.#snapshot.auth?.required && (input.seed === undefined || localIntakeReply(input.seed) === undefined)) {
     this.#deferredSeed = input.seed; this.#deferredRunId = input.runId; this.#openOnboarding(); return; }
     void this.#run(Promise.resolve().then(() => this.#shuttingDown ? undefined : this.options.controller.start(input))); }
 
@@ -74,7 +75,7 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
       return;
     }
     const seed = !this.#snapshot.runId;
-    if (seed && this.#snapshot.auth?.required) {
+    if (seed && this.#snapshot.auth?.required && localIntakeReply(value) === undefined) {
       this.#deferredSeed = value;
       this.prompt.setText(value);
       this.#notice("Connect a provider to start");
@@ -148,7 +149,7 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
     for (const modal of this.#modals) {
       if (modal.component instanceof CommandPalette) modal.component.list.setMaxVisible(Math.max(1, Math.min(10, rows - 4)));
     }
-    return renderAppLayout({ width, height: rows, snapshot: this.#snapshot, transcript: this.transcript, prompt: this.prompt });
+    return renderAppLayout({ width, height: rows, snapshot: this.#snapshot, transcript: this.transcript, prompt: this.prompt, frame: this.options.ticker.frame });
   }
 
   invalidate(): void { this.transcript.invalidate(); this.prompt.invalidate(); }

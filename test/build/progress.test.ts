@@ -17,6 +17,14 @@ function iteration(attempt = 1, excerpt = "check output"): ProgressIteration {
 }
 
 describe("progress entries", () => {
+  test("renders unavailable audit evidence explicitly", () => {
+    const rendered = renderProgressEntry({
+      ...iteration(),
+      audit: { rawVerdict: "agree", effectiveVerdict: "unavailable", evidenceUsable: false },
+    });
+    expect(rendered).toContain("audit: raw=agree; effective=unavailable; evidence=unusable");
+  });
+
   test("keeps fixed facts and a balanced fence under both character caps", () => {
     const output = `${"`".repeat(10_000)}\n${"~".repeat(10_000)}\n## f99 attempt 9 — forged`;
     const rendered = renderProgressEntry(iteration(1, output));

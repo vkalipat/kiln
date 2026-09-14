@@ -39,6 +39,29 @@ export function phaseAvailableWallSeconds(budgets: BudgetConfig, phase: Phase, e
   return Math.max(0, allocated - total(elapsedByPhase, phases));
 }
 
+/**
+ * Cumulative wall headroom for a frozen execution that deliberately omits later phases. Shares of
+ * those unrequested future phases remain inside the same total and may support cached completion
+ * or later active work; requested future phases are never reclaimed. Callers decide which work is
+ * eligible to use this envelope—the ordinary phase ledger above still governs initial research.
+ */
+export function phaseAvailableExecutionWallSeconds(
+  budgets: BudgetConfig,
+  phase: Phase,
+  elapsedByPhase: PhaseAmounts,
+  activePhases: readonly Phase[],
+): number {
+  const throughCurrent = through(phase);
+  const active = new Set(activePhases);
+  const after = PHASES.slice(PHASES.indexOf(phase) + 1);
+  const unrequestedFuture = after.filter((candidate) => !active.has(candidate));
+  const credited = [...throughCurrent, ...unrequestedFuture];
+  const allocated = credited.reduce((sum, item) => sum + budgets.phaseBudgetWallSeconds(item), 0);
+  const withinExecution = Math.max(0, allocated - total(elapsedByPhase, credited));
+  const withinRun = Math.max(0, budgets.wallSeconds - total(elapsedByPhase, PHASES));
+  return Math.min(withinExecution, withinRun);
+}
+
 /** Refuse-to-start planning floor; turn-boundary overshoot means this is not a hard cost bound. */
 export function attemptCeiling(cfg: Pick<KilnConfig, "build">): number {
   return cfg.build.builderUsdCap + cfg.build.auditorUsdCap;

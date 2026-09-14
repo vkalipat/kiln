@@ -56,9 +56,9 @@ function ensureRealDirectory(path: string, label: string): void {
 }
 
 /**
- * Durable proof that the exact spec and feature plan passed the second critique. The receipt lives
- * outside the form brain's writable project root, so a merely present features.json cannot pose as
- * an interrupted freeze after a crash.
+ * Durable proof that the exact spec and feature plan passed the required independent critique.
+ * The receipt lives outside the form brain's writable project root, so a merely present
+ * features.json cannot pose as an interrupted freeze after a crash.
  */
 export function formationApprovalPath(deps: Pick<PhaseDeps, "run">): string {
   return join(deps.run.dir, "formation.approval.json");

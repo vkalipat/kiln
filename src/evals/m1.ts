@@ -20,11 +20,14 @@ import { stageHome, type StagedHome } from "../evolution/stage";
 import { runtimeFor } from "../evolution/stage";
 import { effortsSwept, readEffortFile, resolveEffort } from "./effort";
 import { projectedRoundCost, type ModelResolver } from "../ideation/budget";
+import { currentRunControl } from "../core/run-control";
 
 export type M1Arm = "A0" | "B0" | "A1" | "A2";
 
 export interface RunM1Options {
   budgetUsd: number;
+  /** Explicit diagnostic prefix; never modifies the canonical seed corpus or claims full coverage. */
+  maxSeedCells?: number;
   rounds?: number;
   evalId?: string;
   fableLow?: boolean;
@@ -105,7 +108,7 @@ export interface M1Report {
   kind: "m1";
   evalId: string;
   status: "complete" | "incomplete";
-  stoppedReason?: "budget" | "deadline";
+  stoppedReason?: "budget" | "deadline" | "sample_limit";
   startedAt: string;
   updatedAt: string;
   budgetUsd: number;
@@ -141,7 +144,7 @@ function effort(cfg: KilnConfig, arm: M1Arm): Partial<Record<Role, ResolvedEffor
   })) as Partial<Record<Role, ResolvedEffort>>;
 }
 
-function frozenConfig(cfg: KilnConfig, arms: readonly M1Arm[], rounds: number, values: Record<M1Arm, Partial<Record<Role, ResolvedEffort>>>) {
+function frozenConfig(cfg: KilnConfig, arms: readonly M1Arm[], rounds: number, values: Record<M1Arm, Partial<Record<Role, ResolvedEffort>>>, maxSeedCells?: number) {
   const { phaseBudgetUsd: _usd, phaseBudgetWallSeconds: _wall, ...budgets } = cfg.budgets;
   const seating = Object.fromEntries(arms.map((arm) => [arm, arm === "A1" ? "fable-low" : arm === "A2" ? "frontier" : "default"])) as Record<M1Arm, string>;
   return {
@@ -149,6 +152,7 @@ function frozenConfig(cfg: KilnConfig, arms: readonly M1Arm[], rounds: number, v
     rounds, minPairs: cfg.evals.minPairs, minUncensoredSeeds: cfg.evals.minUncensoredSeeds,
     noninferiorityMargin: cfg.evals.noninferiorityMargin, seating,
     effort: Object.fromEntries(arms.map((arm) => [arm, values[arm]])), roles: cfg.roles, budgets,
+    ...(maxSeedCells === undefined ? {} : { maxSeedCells }),
   };
 }
 
@@ -314,10 +318,11 @@ export async function runM1(home: string, cfg: KilnConfig, options: RunM1Options
   const manifest = verifyEvalsManifest(home); if (!manifest.ok) throw new Error(`eval manifest mismatch: ${[...manifest.changed, ...manifest.missing, ...manifest.extra].join(", ")}`);
   const rounds = options.rounds ?? cfg.evals.rounds ?? cfg.ideation.rounds;
   if (!Number.isSafeInteger(rounds) || rounds < 1) throw new Error("rounds must be a positive safe integer");
+  if (options.maxSeedCells !== undefined && (!Number.isSafeInteger(options.maxSeedCells) || options.maxSeedCells < 1)) throw new Error("maxSeedCells must be a positive safe integer");
   const evalId = options.evalId ?? `m1-r${rounds}`; const arms = enabled(options); const now = options.now ?? deps.now ?? (() => new Date());
   const seeds = loadSeeds(home, "heldout");
   const stages = stageArms(home, evalId, cfg, arms, deps.stage ?? stageHome);
-  const resolved = await resolvedEfforts(home, cfg, arms, stages, rounds, deps); const frozen = frozenConfig(cfg, arms, rounds, resolved.values);
+  const resolved = await resolvedEfforts(home, cfg, arms, stages, rounds, deps); const frozen = frozenConfig(cfg, arms, rounds, resolved.values, options.maxSeedCells);
   const project = deps.projection ?? ((liveCfg: KilnConfig, arm: M1Arm, liveRounds: number) => resolved.projected[arm] ?? defaultArmProjection(liveCfg, arm, liveRounds));
   const projection = projections(cfg, arms, rounds, project, seeds.length, deps.projection ? undefined : resolved.judgeExpected);
   const evalDir = join(home, "evolution", "reports", evalId); ensureDir(evalDir); const path = join(evalDir, "eval.json");
@@ -336,7 +341,11 @@ export async function runM1(home: string, cfg: KilnConfig, options: RunM1Options
   if (!judge) { const value = await defaultJudge(home, cfg, evalId, stages, deps.cli); judge = value.judge; report.judgeCalibration = value.calibration; writeReport(path, report, now); }
   const deadline = now().getTime() + (options.wallSeconds ?? cfg.evals.wallSeconds) * 1_000;
 
-  for (const seed of seeds) {
+  for (const [seedIndex, seed] of seeds.entries()) {
+    if (options.maxSeedCells !== undefined && seedIndex >= options.maxSeedCells) {
+      report.status = "incomplete"; report.stoppedReason = "sample_limit"; writeReport(path, report, now); return report;
+    }
+    let interrupted = false;
     const missingArms = arms.filter((arm) => !report.runs.some((run) => run.seedId === seed.id && run.arm === arm));
     const missingTables = report.comparisons.filter((comparison) => !comparison.rows.some((row) => row.seed === seed.id)).length;
     const ceiling = missingArms.reduce((sum, arm) => sum + report.projection.perArm[arm]!.ceilingUsd, 0) + missingTables * projection.judgeCeiling;
@@ -346,19 +355,29 @@ export async function runM1(home: string, cfg: KilnConfig, options: RunM1Options
     }
     if (now().getTime() >= deadline) { report.status = "incomplete"; report.stoppedReason = "deadline"; writeReport(path, report, now); return report; }
     for (const arm of arms) {
+      if (currentRunControl()?.signal.aborted) break;
       if (report.runs.some((run) => run.seedId === seed.id && run.arm === arm)) continue;
       const spec: RunExecutorSpec = { home: stages[arm].home, seedText: seed.text, seedIdentity: { id: seed.id, split: seed.split, sha256: seed.sha256 }, arm, ...(arm === "B0" ? { mode: "bare" as const } : {}), through: "ideate", cloneAfter: "none", rounds, runId: `${evalId}-${seed.id}-${arm}`, effort: report.frozen.effort[arm] };
-      report.runs.push(await executor(spec)); writeReport(path, report, now);
+      const summary = await executor(spec);
+      report.runs.push(summary); writeReport(path, report, now);
+      if (summary.status.state === "paused" && summary.status.pausedReason === "user_cancelled") { interrupted = true; break; }
     }
     for (const comparison of report.comparisons) {
       if (comparison.rows.some((row) => row.seed === seed.id)) continue;
       const a = report.runs.find((run) => run.seedId === seed.id && run.arm === comparison.a)!;
       const b = report.runs.find((run) => run.seedId === seed.id && run.arm === comparison.b)!;
+      if (!a || !b) continue;
       const censored = pairCensoredBy([a, b]); const why = note(a, b, censored);
       let judged: M1JudgeResult = { pairs: [], costUsd: 0 };
-      if (censored.length === 0 && !why) judged = await judge({ evalDir, seed, a: { name: comparison.a, summary: a, home: stages[comparison.a].home }, b: { name: comparison.b, summary: b, home: stages[comparison.b].home }, pairsPerSeed: cfg.evals.pairsPerSeed });
+      if (censored.length === 0 && !why) {
+        if (interrupted || currentRunControl()?.signal.aborted) continue;
+        judged = await judge({ evalDir, seed, a: { name: comparison.a, summary: a, home: stages[comparison.a].home }, b: { name: comparison.b, summary: b, home: stages[comparison.b].home }, pairsPerSeed: cfg.evals.pairsPerSeed });
+      }
       comparison.rows.push({ seed: seed.id, shape: seed.shape, pairCensored: censored.length > 0, pairCensoredBy: censored, ...(why ? { note: why } : {}), pairs: judged.pairs, judgeCostUsd: judged.costUsd, aMetrics: armMetrics(a), bMetrics: armMetrics(b) });
       updateSummary(comparison, cfg, report.runs); writeReport(path, report, now);
+    }
+    if (currentRunControl()?.signal.aborted || interrupted) {
+      report.status = "incomplete"; report.stoppedReason = "deadline"; writeReport(path, report, now); return report;
     }
   }
   report.status = "complete"; delete report.stoppedReason; writeReport(path, report, now); return report;

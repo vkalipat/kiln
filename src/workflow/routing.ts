@@ -17,6 +17,7 @@ export interface FrozenRouting {
   strictDecisionTools: boolean;
   effectiveEffort?: Partial<Record<keyof KilnConfig["roles"], string | null>>;
   ideationProfile?: KilnConfig["ideation"];
+  buildPlanning?: Pick<KilnConfig["build"], "minFeatures">;
   report: unknown;
 }
 
@@ -45,6 +46,8 @@ function validate(value: unknown, run: RunPaths): FrozenRouting {
       if (!Number.isInteger(plan.ideationProfile[key]) || plan.ideationProfile[key] < 1) throw new Error(`invalid frozen ideation ${key}`);
     }
   }
+  if (plan.buildPlanning !== undefined && (!plan.buildPlanning || typeof plan.buildPlanning !== "object" || Array.isArray(plan.buildPlanning)
+    || !Number.isSafeInteger(plan.buildPlanning.minFeatures) || plan.buildPlanning.minFeatures < 1)) throw new Error("invalid frozen build minimum");
   if (PHASES.some((phase) => !Number.isFinite(plan.share?.[phase]) || plan.share[phase] < 0)
     || Math.abs(PHASES.reduce((sum, phase) => sum + plan.share[phase], 0) - 1) > 1e-9) throw new Error("invalid frozen routing budget shares");
   return plan;
@@ -54,6 +57,34 @@ export function loadFrozenRouting(run: RunPaths): FrozenRouting | undefined {
   return existsSync(routingPath(run)) ? validate(JSON.parse(readFileSync(routingPath(run), "utf8")), run) : undefined;
 }
 
+/**
+ * Budget-bearing phases from the execution target frozen with adaptive routing. Checkpoint has no
+ * independent share and is omitted. Missing or historical report metadata grants no headroom.
+ */
+export function frozenExecutionBudgetPhases(run: RunPaths): Array<(typeof PHASES)[number]> | undefined {
+  const report = loadFrozenRouting(run)?.report;
+  if (!report || typeof report !== "object" || Array.isArray(report)) return undefined;
+  const workflow = (report as { workflow?: unknown }).workflow;
+  if (!workflow || typeof workflow !== "object" || Array.isArray(workflow)) return undefined;
+  const phases = (workflow as { phases?: unknown }).phases;
+  const allowed = new Set<string>([...PHASES, "checkpoint"]);
+  if (!Array.isArray(phases) || phases.length === 0 || phases.some((phase) => typeof phase !== "string" || !allowed.has(phase))) return undefined;
+  const budgetPhases = phases.filter((phase): phase is (typeof PHASES)[number] => PHASES.includes(phase as (typeof PHASES)[number]));
+  if (new Set(phases).size !== phases.length || new Set(budgetPhases).size !== budgetPhases.length) return undefined;
+  return budgetPhases;
+}
+
+/** Expansion protects newly requested phases; narrowing never releases phases frozen originally. */
+export function executionBudgetPhases(
+  run: RunPaths,
+  current: readonly (typeof PHASES)[number][] = [],
+): Array<(typeof PHASES)[number]> | undefined {
+  const frozen = frozenExecutionBudgetPhases(run);
+  if (!frozen) return undefined;
+  const requested = new Set([...frozen, ...current]);
+  return PHASES.filter((phase) => requested.has(phase));
+}
+
 /** Only called under the run lock. A resume never replans silently. */
 export function freezeRouting(run: RunPaths, cfg: KilnConfig, report: unknown): FrozenRouting {
   const plan: FrozenRouting = {
@@ -61,6 +92,7 @@ export function freezeRouting(run: RunPaths, cfg: KilnConfig, report: unknown): 
     effort: cfg.effort, effortByRole: cfg.effortByRole,
     share: cfg.budgets.share, rounds: cfg.ideation.rounds, strictDecisionTools: cfg.provider.strictDecisionTools, report,
     ideationProfile: cfg.ideation,
+    buildPlanning: { minFeatures: cfg.build.minFeatures },
     ...(report && typeof report === "object" && "effectiveEffort" in report
       ? { effectiveEffort: report.effectiveEffort as FrozenRouting["effectiveEffort"] } : {}),
   };
@@ -88,5 +120,6 @@ export function applyFrozenRouting(cfg: KilnConfig, run: RunPaths): KilnConfig {
     seating: { ...cfg.seating, default: plan.roles },
     budgets: { ...cfg.budgets, share: plan.share },
     ideation: { ...cfg.ideation, ...plan.ideationProfile, rounds: plan.rounds },
+    build: { ...cfg.build, ...(plan.buildPlanning ? { minFeatures: plan.buildPlanning.minFeatures } : {}) },
   };
 }

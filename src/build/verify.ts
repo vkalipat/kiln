@@ -120,7 +120,7 @@ export async function runCheck(acceptance: Acceptance, o: RunCheckOptions): Prom
   const outputPath = checkPath(o, checkId);
   const needs = declaredNeeds(acceptance, o.needs);
   const env = checkEnv(needs, o.env ?? process.env);
-  const missing = checkNeeds(needs, { env, which: o.which });
+  const missing = checkNeeds(needs, { env, cwd: o.cwd, which: o.which });
   if (missing.length > 0) {
     const notRunReason = `missing_dependency:${missing[0]}`;
     const full = `not run: ${notRunReason}\n`;

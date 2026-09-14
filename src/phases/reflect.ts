@@ -315,7 +315,10 @@ async function reflectSession(deps: ReflectDeps): Promise<PhaseResult> {
   for (;;) {
     const result = await brain.run(prompt);
     if (persistenceFailure) return { outcome: "failed", failureClass: "verify", message: persistenceFailure };
-    const stop = stopFailure("reflect", turnCap, result);
+    // Reflection owns one bounded output-limit retry. Handle that resource signal below
+    // before the generic error path, while still honoring any dollar or turn cap.
+    const outputLimited = result.stopped === "error" && result.stopDetails?.type === "output_limit";
+    const stop = outputLimited ? undefined : stopFailure("reflect", turnCap, result);
     if (stop) {
       if (stop.outcome !== "failed" || stop.failureClass !== "transient") return stop;
       priorCost += result.costUsd;
@@ -325,7 +328,7 @@ async function reflectSession(deps: ReflectDeps): Promise<PhaseResult> {
       prompt = "Retry the same reflection after the transient provider failure. Do not broaden or duplicate the requested lesson.";
     } else {
       const lastCall = record.read().findLast((event) => event.t === "model.call" && event.role === "reflector");
-      if (lastCall?.t !== "model.call" || lastCall.stopReason !== "length") return { outcome: "ok" };
+      if (!outputLimited && (lastCall?.t !== "model.call" || lastCall.stopReason !== "length")) return { outcome: "ok" };
       priorCost += result.costUsd;
       lengthStops += 1;
       transientAttempts = 0;

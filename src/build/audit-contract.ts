@@ -1,6 +1,8 @@
 import { existsSync, lstatSync, readFileSync } from "node:fs";
 import type { AuditVerdict } from "../core/events";
 import { appendLine, writeAtomic } from "../core/paths";
+import { hashInput } from "../core/record";
+import { redactValue } from "../core/secrets";
 import type { RunPaths } from "../core/run";
 import { projectPaths } from "../formation/paths";
 
@@ -21,6 +23,8 @@ export interface Audit {
   createdAt: string;
   shape: "full" | "short";
   raw: AuditPayload;
+  /** Absent on legacy capped records. A shortened display projection is not complete evidence. */
+  evidence?: { version: 2; complete: boolean; payloadHash: string; scopeHash?: string };
   model: { provider: string; model: string; ref: string; effort?: string };
 }
 
@@ -33,6 +37,10 @@ export interface AuditCaps {
 
 export const AUDIT_CAPS_STORED: Readonly<AuditCaps> = { items: 8, itemChars: 200, notesChars: 1_200, reasonChars: 200 };
 export const AUDIT_CAPS_PINNED: Readonly<AuditCaps> = { items: 4, itemChars: 120, notesChars: 900, reasonChars: 150 };
+
+export function auditEvidenceComplete(audit: Audit): boolean {
+  return audit.evidence?.version === 2 && audit.evidence.complete && audit.evidence.payloadHash === hashInput(audit.raw);
+}
 
 function prefix(text: string, cap: number): string {
   return text.length <= cap ? text : text.slice(0, cap);
@@ -51,7 +59,9 @@ function capPayload(payload: AuditPayload, caps: Readonly<AuditCaps>): AuditPayl
 }
 
 function capped(audit: Audit, caps: Readonly<AuditCaps>): Audit {
-  return { ...audit, raw: capPayload(audit.raw, caps), model: { ...audit.model } };
+  const raw = capPayload(audit.raw, caps);
+  const shortened = hashInput(raw) !== hashInput(audit.raw);
+  return { ...audit, raw, model: { ...audit.model }, ...(audit.evidence ? { evidence: { ...audit.evidence, complete: audit.evidence.complete && !shortened, payloadHash: hashInput(raw) } } : {}) };
 }
 
 /** Pure, idempotent field-wise projection for a later builder's pinned context. */
@@ -66,6 +76,7 @@ function bullets(values: readonly string[]): string {
 /** Render the stored-cap form; audit.md is always the latest audit only. */
 export function renderAudit(input: Audit): string {
   const audit = capped(input, AUDIT_CAPS_STORED);
+  const summary = hashInput(audit.raw) !== hashInput(input.raw);
   return [
     `# Audit ${audit.featureId} attempt ${audit.attempt}`,
     `check: ${audit.checkId}`,
@@ -73,6 +84,8 @@ export function renderAudit(input: Audit): string {
     `model: ${audit.model.ref} (${audit.model.provider}/${audit.model.model})`,
     `shape: ${audit.shape}`,
     `verdict: ${audit.raw.verdict}`,
+    ...(summary ? ["presentation: shortened summary; consult audits.jsonl at the source event for retained evidence"] : []),
+    ...(input.evidence?.complete ? [`complete payload hash: ${input.evidence.payloadHash}`] : [input.evidence ? "evidence provenance: incomplete or projected; consult retained source" : "evidence provenance: legacy (completeness unknown)"]),
     "", "## Verified", bullets(audit.raw.verified),
     "", "## Claimed but unverified", bullets(audit.raw.claimedUnverified),
     "", "## Regressions", bullets(audit.raw.regressions),
@@ -135,6 +148,7 @@ export function readAudits(paths: RunPaths): Audit[] {
     try {
       const audit: unknown = JSON.parse(line);
       if (!validAudit(audit)) throw new Error("invalid audit shape");
+      if (audit.evidence !== undefined && (audit.evidence.version !== 2 || typeof audit.evidence.complete !== "boolean" || audit.evidence.payloadHash !== hashInput(audit.raw))) throw new Error("audit evidence hash or provenance mismatch");
       audits.push(audit);
     } catch (error) {
       // appendLine always terminates durable entries. Only a malformed unterminated tail is a
@@ -147,7 +161,8 @@ export function readAudits(paths: RunPaths): Audit[] {
 }
 
 export function appendAudit(paths: RunPaths, input: Audit): Audit {
-  const audit = capped(input, AUDIT_CAPS_STORED);
+  const audit = redactValue(input);
+  if (audit.evidence) audit.evidence = { ...audit.evidence, payloadHash: hashInput(audit.raw) };
   requireRegularFile(paths.audits);
   repairTornTail(paths.audits);
   const held = readAudits(paths);

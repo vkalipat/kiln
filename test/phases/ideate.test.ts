@@ -157,7 +157,7 @@ function setup(options: SetupOptions = {}) {
     const all = text(context);
     if (all.includes('"name":"novelty"')) return { content: [{ type: "toolCall", name: "novelty", arguments: { restatement: options.repeatAfterFirst === true && all.includes("r2-i"), reason: "mechanisms compared" } }] };
     if (all.includes('"name":"axis_map"')) return { content: [{ type: "toolCall", name: "axis_map", arguments: { value: "solo", reason: "closest" } }] };
-    return { content: [{ type: "toolCall", name: "collision", arguments: { same: false, reason: "different" } }] };
+    return { content: [{ type: "toolCall", name: "collision", arguments: { coverageAdequate: true, same: false, reason: "different" } }] };
   } } as never);
   const brain = createMockModel({ id: "brain", cost: COST, handler: (context: MockContext) => {
     if (options.stallBrain) {

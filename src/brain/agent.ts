@@ -231,7 +231,9 @@ export function createBrain(o: BrainOptions) {
   // terminal-tool-result symbol: any other reason lets the loop open one more turn and record a
   // phantom aborted model call.
   agent.afterToolCall = (c) => {
-    const abortAfterResult = o.afterTool?.({ name: c.toolCall.name, args: c.args, ok: !c.isError, excerpt: toolExcerpt(c.result) }) === true;
+    const abortAfterResult = agent.peekSteeringQueue().length === 0
+      && o.afterTool?.({ name: c.toolCall.name, args: c.args, ok: !c.isError, excerpt: toolExcerpt(c.result) }) === true
+      && agent.peekSteeringQueue().length === 0;
     if (abortAfterResult) {
       agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
       // pi-agent-core only honors its terminal-result abort after an error tool when the post-hook
@@ -294,6 +296,10 @@ export function createBrain(o: BrainOptions) {
       if (text.trim()) lastText = text;
       if (m.errorMessage) error = m.errorMessage;
       if (details) stopDetails = details;
+      if (m.stopReason === "length") {
+        error = "model reached its output-token limit before completing the response";
+        stopDetails = { type: "output_limit" };
+      }
       if (m.stopReason === "error" && (details?.type === "refusal" || details?.type === "sensitive")) refused = true;
       if (messageErrorStatus !== undefined) errorStatus = messageErrorStatus;
       // The journal wants the provider request id. When a transport supplied none, retain a
@@ -350,6 +356,8 @@ export function createBrain(o: BrainOptions) {
 
   return {
     agent,
+    /** Usage owned by this brain's current run, never inferred from a concurrent journal. */
+    get costUsd(): number { return runCost; },
     pushContract(contract: string) {
       if (running) throw new Error("cannot push a contract while the brain is running");
       if (pendingContract !== undefined) throw new Error("a contract is already pending");

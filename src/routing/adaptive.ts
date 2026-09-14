@@ -2,10 +2,11 @@ import { readFileSync } from "node:fs";
 import { getBundledModel, type GeneratedProvider, type Model } from "@oh-my-pi/pi-catalog";
 import { PHASES, ROLES, type KilnConfig, type Role } from "../core/config";
 import { derivedCaps } from "../formation/features";
-import { projectedRoundCost } from "../ideation/budget";
+import { ADAPTIVE_LATENCY_SECONDS, projectedAdaptiveRound, type AdaptiveRoundProjection } from "../ideation/budget";
 import { effortFor, parseModelRef } from "../providers/models";
 import type { WorkflowPhase } from "../workflow/plan";
-import bundled from "./evidence-2026-09-08.json";
+import { adaptivePortfolioCandidates } from "../workflow/profile";
+import bundled from "./evidence-2026-09-09.json";
 
 export const CATEGORIES = ["general_reasoning", "expert_knowledge", "business", "scientific_coding", "tool_execution", "knowledge_calibration"] as const;
 type Category = typeof CATEGORIES[number];
@@ -13,7 +14,7 @@ export interface EvidenceSnapshot {
   version: 1; id: string; asOf: string; maxAgeDays: number;
   verification: { status: "verified"; verifiedAt: string; method: "manual-primary-source-check" };
   sources: Array<{ id: string; url: string; observedAt: string }>;
-  rankings: Array<{ category: Category; sourceId: string; metric: string; higherIsBetter: boolean; entries: Array<{ modelRef: string; score: number }> }>;
+  rankings: Array<{ category: Category; sourceId: string; metric: string; higherIsBetter: boolean; entries: Array<{ modelRef: string; score: number; effort?: string; conditions?: string; sourceId?: string }> }>;
 }
 export class AdaptiveRoutingError extends Error {}
 const fail = (message: string): never => { throw new AdaptiveRoutingError(message); };
@@ -67,7 +68,12 @@ export function validateEvidenceSnapshot(value: unknown, now = new Date()): Evid
       const entry = object(rawEntry); const modelRef = text(entry.modelRef, "modelRef");
       parseModelRef(modelRef);
       if (refs.has(modelRef) || !Number.isFinite(entry.score)) return fail("duplicate model or non-finite benchmark score");
-      refs.add(modelRef); return { modelRef, score: entry.score as number };
+      const effort = entry.effort === undefined ? undefined : text(entry.effort, "effort");
+      if (effort !== undefined && !["low", "medium", "high", "xhigh", "max", "unspecified"].includes(effort)) return fail("invalid benchmark effort");
+      const conditions = entry.conditions === undefined ? undefined : text(entry.conditions, "conditions");
+      if (entry.sourceId !== undefined && !sourceIds.has(entry.sourceId)) return fail("entry lacks a valid source");
+      refs.add(modelRef); return { modelRef, score: entry.score as number,
+        ...(effort ? { effort } : {}), ...(conditions ? { conditions } : {}), ...(entry.sourceId ? { sourceId: entry.sourceId as string } : {}) };
     });
     return { category: r.category as Category, sourceId: r.sourceId as string, metric, higherIsBetter: r.higherIsBetter as boolean, entries };
   });
@@ -101,9 +107,11 @@ function domainFor(seed: string): "science" | "business" | "general" {
 
 export interface AdaptiveRoutingReport {
   version: 1; domain: "science" | "business" | "general"; status: "ready";
+  selectionPolicy: "quality_first";
   evidence: { id: string; asOf: string; sources: EvidenceSnapshot["sources"] };
   selectedRoleRefs: Record<Role, string>;
   roleRefs: Record<Role, string[]>;
+  unavailableRankedModels: Array<{ modelRef: string; reason: string }>;
   effectiveEffort: Record<Role, string | null>;
   /** Decision provenance, not model-generated hidden reasoning or a quality guarantee. */
   roleReasons: Record<Role, {
@@ -113,10 +121,23 @@ export interface AdaptiveRoutingReport {
     score: number | null;
     selection: "ranked" | "configured_fallback";
     reviewAgainst: string | null;
+    benchmarkEffort: string | null;
+    benchmarkConditions: string | null;
     reason: string;
   }>;
   workflow: { phases: WorkflowPhase[]; ideationPlanned: boolean; buildPlanned: boolean };
-  budget: { totalUsd: number; projectedRoundUsd: number; ideateUsd: number; buildUsd: number; requestedRounds: number; affordableRounds: number; maxBuildFeatures: number };
+  portfolio: {
+    originalCandidates: number;
+    candidates: number;
+    islands: number;
+    ideasPerBatch: number;
+    entrants: number;
+    pairs: number;
+    planningCallsWithRetryReserve: number;
+    estimatedRoundWallSeconds: number;
+    assumptions: typeof ADAPTIVE_LATENCY_SECONDS;
+  };
+  budget: { totalUsd: number; projectedRoundUsd: number; projectedRoundWallSeconds: number; ideateUsd: number; buildUsd: number; requestedRounds: number; affordableRounds: number; maxBuildFeatures: number };
   warnings: string[];
 }
 
@@ -165,9 +186,19 @@ export function planAdaptiveRouting(
     let candidates = pool(category, role).filter((candidate) => (!producer || candidate.model.id !== producer.model.id)
       && (!requiredVendor || vendor(String(candidate.model.provider)) === requiredVendor));
     if (producer) {
-      const cross = candidates.filter((candidate) => vendor(String(candidate.model.provider)) !== vendor(String(producer.model.provider)));
+      const ranking = snapshot.rankings.find((entry) => entry.category === category)!;
+      const score = (candidate: Seat) => ranking.entries.find((entry) => aliases(entry.modelRef).includes(candidate.ref))?.score;
+      // Quality precedes vendor diversity: only equal-scoring ranked candidates are tie-breaks.
+      // Unscored configured seats cannot outrank a scored independent reviewer merely by vendor.
+      const ranked = candidates.filter((candidate) => score(candidate) !== undefined);
+      if (ranked.length) candidates = ranked;
+      const bestScore = candidates[0] ? score(candidates[0]) : undefined;
+      const cross = candidates.filter((candidate) => (bestScore === undefined || score(candidate) === bestScore)
+        && vendor(String(candidate.model.provider)) !== vendor(String(producer.model.provider)));
       if (cross.length) candidates = cross;
-      else warnings.push(`${role}: only same-vendor review is available; distinct model identities are a weaker independence boundary.`);
+      else if (candidates[0] && vendor(String(candidates[0].model.provider)) === vendor(String(producer.model.provider))) {
+        warnings.push(`${role}: the strongest eligible independent candidate is same-vendor; quality takes priority over vendor diversity, but correlated errors remain possible.`);
+      }
     }
     const result = candidates[0];
     if (!result) return fail(`no supported available model for ${role} satisfying reviewer independence; connect another provider or use manual routing`);
@@ -212,31 +243,75 @@ export function planAdaptiveRouting(
     budgets: { ...cfg.budgets, share: { ...cfg.budgets.share } },
     ideation: { ...cfg.ideation },
   };
-  const positiveInts = [cfg.ideation.rounds, cfg.ideation.islands, cfg.ideation.ideasPerBatch, cfg.ideation.pairCap];
+  const positiveInts = [cfg.ideation.rounds, cfg.ideation.islands, cfg.ideation.ideasPerBatch, cfg.ideation.entrantsCap,
+    cfg.ideation.pairCap, cfg.ideation.minComparisons, cfg.ideation.scoutTurnCap, cfg.ideation.concurrency];
   if (!Number.isFinite(cfg.budgets.usd) || cfg.budgets.usd <= 0
+    || (ideationPlanned && (!Number.isFinite(cfg.budgets.wallSeconds) || cfg.budgets.wallSeconds <= 0))
     || (ideationPlanned && positiveInts.some((n) => !Number.isInteger(n) || n < 1))) {
-    return fail("adaptive routing requires a positive budget and positive ideation dimensions when ideation is planned");
+    return fail("adaptive routing requires positive dollar/wall budgets and positive ideation dimensions when ideation is planned");
   }
   if (PHASES.some((phase) => !Number.isFinite(cfg.budgets.share[phase]) || cfg.budgets.share[phase] < 0)
     || Math.abs(PHASES.reduce((sum, phase) => sum + cfg.budgets.share[phase], 0) - 1) > 1e-9) return fail("invalid budget shares");
-  const projection = ideationPlanned ? projectedRoundCost(config, (role) => chosen[role]) : { costUsd: 0 };
-  if (!Number.isFinite(projection.costUsd) || projection.costUsd < 0) return fail("invalid projected round cost");
   const total = cfg.budgets.usd;
   const initialIdeate = cfg.budgets.phaseBudgetUsd("ideate");
   const initialBuild = cfg.budgets.phaseBudgetUsd("build");
+  const initialIdeateWall = cfg.budgets.phaseBudgetWallSeconds("ideate");
   const featureFloor = buildPlanned ? cfg.build.minFeatures * cfg.build.expectedAttempts * cfg.build.expectedAttemptUsd : 0;
   if (!Number.isFinite(featureFloor) || featureFloor < 0) return fail("invalid build planning assumptions");
   const buildReserve = buildPlanned ? Math.min(initialBuild, Math.max(total * 0.2, featureFloor)) : 0;
   const maxIdeate = initialIdeate + initialBuild - buildReserve;
-  if (ideationPlanned && projection.costUsd > maxIdeate + 1e-9) {
-    const suffix = buildPlanned ? " while preserving build reserve" : " across the available ideation/build allocation";
-    return fail(`one ideation round projects to $${projection.costUsd.toFixed(2)}, above the $${maxIdeate.toFixed(2)} available${suffix}; increase the planning target explicitly or use manual routing`);
+  const maxIdeateWall = cfg.budgets.wallSeconds * maxIdeate / total;
+  const originalCandidates = ideationPlanned ? cfg.ideation.islands * cfg.ideation.ideasPerBatch * 2 : 0;
+  let projection: AdaptiveRoundProjection = { rows: [], calls: 0, costUsd: 0, baseWallSeconds: 0, estimatedWallSeconds: 0 };
+  let fitted = { candidates: 0, entrants: 0, pairs: 0 };
+  if (ideationPlanned) {
+    const candidates = adaptivePortfolioCandidates(config).map((candidate) => ({
+      ...candidate,
+      projection: projectedAdaptiveRound(candidate.config, (role) => chosen[role]),
+    }));
+    const fits = (candidate: typeof candidates[number], usd: number, wall: number) =>
+      candidate.projection.costUsd * ADAPTIVE_LATENCY_SECONDS.costHeadroomMultiplier <= usd + 1e-9
+      && candidate.projection.estimatedWallSeconds <= wall + 1e-9;
+    const selectedInInitial = candidates.find((candidate) => fits(candidate, initialIdeate, initialIdeateWall));
+    // If even the minimum cannot fit the initial phase share, use only the share the existing
+    // planner is already allowed to transfer from build, after preserving any required build floor.
+    const selected = selectedInInitial ?? candidates.find((candidate) =>
+      candidate.projection.costUsd * ADAPTIVE_LATENCY_SECONDS.costHeadroomMultiplier <= maxIdeate + 1e-9
+      && candidate.projection.estimatedWallSeconds <= maxIdeateWall + 1e-9);
+    if (!selected) {
+      const smallest = candidates.at(-1);
+      const detail = smallest
+        ? `the smallest valid ${smallest.candidates}-candidate portfolio projects $${(smallest.projection.costUsd * ADAPTIVE_LATENCY_SECONDS.costHeadroomMultiplier).toFixed(2)} with cost headroom and ${smallest.projection.estimatedWallSeconds.toFixed(0)}s`
+        : `no portfolio can retain at least ${cfg.ideation.minComparisons + 1} entrants and ${cfg.ideation.minComparisons} comparisons per entrant`;
+      return fail(`one ideation round does not fit the available $${maxIdeate.toFixed(2)}/${maxIdeateWall.toFixed(0)}s allocation after protected reserves: ${detail}; increase the planning target explicitly or use manual routing`);
+    }
+    config.ideation = { ...selected.config.ideation };
+    projection = selected.projection;
+    fitted = { candidates: selected.candidates, entrants: selected.entrants, pairs: selected.pairs };
+    if (selected.candidates < originalCandidates) warnings.push(
+      `Adaptive sizing reduced the portfolio from ${originalCandidates} to ${selected.candidates} candidates so a complete evidence-and-comparison round fits the planning estimates; evidence requirements and ${cfg.ideation.minComparisons} comparisons per entrant are unchanged.`,
+    );
+    if (!selectedInInitial) warnings.push("The minimum viable portfolio requires part of the build share already available to this workflow; protected build capacity remains reserved when build is planned.");
+    warnings.push(`Round wall sizing uses explicit latency assumptions and ${Math.round((ADAPTIVE_LATENCY_SECONDS.stageSlackMultiplier - 1) * 100)}% stage slack; it is not a completion guarantee. Runtime dollar and deadline guards remain authoritative.`);
   }
-  const affordable = !ideationPlanned ? 0
-    : projection.costUsd === 0 ? cfg.ideation.rounds
-    : Math.max(1, Math.min(cfg.ideation.rounds, Math.floor((maxIdeate + 1e-9) / (projection.costUsd * 1.1))));
+  if (!Number.isFinite(projection.costUsd) || projection.costUsd < 0 || !Number.isFinite(projection.estimatedWallSeconds) || projection.estimatedWallSeconds < 0) {
+    return fail("invalid projected round cost or wall time");
+  }
+  if (ideationPlanned && projection.costUsd * ADAPTIVE_LATENCY_SECONDS.costHeadroomMultiplier > maxIdeate + 1e-9) {
+    const suffix = buildPlanned ? " while preserving build reserve" : " across the available ideation/build allocation";
+    return fail(`one ideation round projects to $${projection.costUsd.toFixed(2)} before cost headroom, above the $${maxIdeate.toFixed(2)} available${suffix}; increase the planning target explicitly or use manual routing`);
+  }
+  const affordableByUsd = !ideationPlanned || projection.costUsd === 0 ? cfg.ideation.rounds
+    : Math.floor((maxIdeate + 1e-9) / (projection.costUsd * ADAPTIVE_LATENCY_SECONDS.costHeadroomMultiplier));
+  const affordableByWall = !ideationPlanned || projection.estimatedWallSeconds === 0 ? cfg.ideation.rounds
+    : Math.floor((maxIdeateWall + 1e-9) / projection.estimatedWallSeconds);
+  const affordable = !ideationPlanned ? 0 : Math.min(cfg.ideation.rounds, affordableByUsd, affordableByWall);
+  if (ideationPlanned && affordable < 1) return fail("one adaptively-sized ideation round does not fit the available dollar and wall allocations");
+  const wallEquivalentUsd = !ideationPlanned ? 0
+    : total * (projection.estimatedWallSeconds * affordable / cfg.budgets.wallSeconds);
   const allocation = !ideationPlanned ? 0
-    : Math.max(initialIdeate, Math.min(maxIdeate, projection.costUsd * affordable * 1.1));
+    : Math.max(initialIdeate, Math.min(maxIdeate,
+      Math.max(projection.costUsd * affordable * ADAPTIVE_LATENCY_SECONDS.costHeadroomMultiplier, wallEquivalentUsd)));
   if (ideationPlanned || buildPlanned) {
     config.budgets.share.ideate = allocation / total;
     config.budgets.share.build = (initialIdeate + initialBuild - allocation) / total;
@@ -244,13 +319,24 @@ export function planAdaptiveRouting(
   if (ideationPlanned) config.ideation.rounds = affordable;
   const buildCaps = derivedCaps(config);
   if (buildPlanned && buildCaps.maxFeatures < cfg.build.minFeatures) return fail(`remaining build allocation funds ${buildCaps.maxFeatures} feature(s), below the configured minimum ${cfg.build.minFeatures}; increase the planning target explicitly or use manual routing`);
-  if (ideationPlanned && affordable < cfg.ideation.rounds) warnings.push(`Budget funds ${affordable} projected round(s), not the requested ${cfg.ideation.rounds}. Projections are assumptions, not measurements or hard ceilings.`);
+  if (ideationPlanned && affordable < cfg.ideation.rounds) warnings.push(`Dollar and wall-time planning funds ${affordable} projected round(s), not the requested ${cfg.ideation.rounds}. Projections are assumptions, not measurements or hard ceilings.`);
   if (Math.abs(allocation - initialIdeate) > 1e-9) warnings.push(buildPlanned && ideationPlanned
     ? "Reallocated ideation/build shares within the unchanged total; phase wall-time allocations change too, and build capacity may decrease."
     : ideationPlanned
       ? "Reallocated part of the unplanned build share to ideation within the unchanged total."
       : "Reallocated the unplanned ideation share to build within the unchanged total.");
   if (ideationPlanned && chosen.generator.model.id === chosen.prober.model.id) warnings.push("Idea islands use different lenses but the same model; the configured cheap island is not cheaper.");
+  const unavailableRankedModels = [...new Set(snapshot.rankings.flatMap((ranking) => ranking.entries.map((entry) => entry.modelRef)))].flatMap((ref) => {
+    if (aliases(ref).some((alias) => seat(alias, available))) return [];
+    const connected = aliases(ref).filter((alias) => available.has(parseModelRef(alias).provider));
+    const models = connected.flatMap((alias) => { const parsed = parseModelRef(alias); const model = getBundledModel(parsed.provider as GeneratedProvider, parsed.modelId); return model ? [model] : []; });
+    const reason = connected.length === 0 ? "provider not connected"
+      : models.length === 0 ? "model absent from installed provider catalog"
+      : models.some((model) => model.toolMode === "code_mode_only") ? "requires Code Mode; Kiln has no Code Mode execution adapter"
+      : "model does not satisfy Kiln tool, transport, or pricing requirements";
+    warnings.push(`${ref} excluded: ${reason}.`);
+    return [{ modelRef: ref, reason }];
+  });
   const reviewTargets: Partial<Record<Role, Role>> = {
     judge: "generator", prober: "judge", auditor: "builder", critic: "brain", scout: "brain", arbiter: "generator",
   };
@@ -261,21 +347,36 @@ export function planAdaptiveRouting(
     const reason = [
       evidenceEntry ? `Highest-ranked eligible candidate for ${categories[role]} after provider, tool-support, and role constraints.`
         : `Configured catalog fallback: no eligible ranked candidate satisfied ${categories[role]} role constraints.`,
-      against ? `Distinct model from ${against}; cross-vendor review preferred where available.` : "No producer/reviewer separation required for this seat.",
+      against ? `Distinct model from ${against}; benchmark quality takes priority, with vendor diversity breaking score ties.` : "No producer/reviewer separation required for this seat.",
       role === "prober" ? "Prober remains on the generator's vendor." : "",
       "Effort follows the configured role setting and supported model levels; benchmark scores do not establish quality at that effort.",
     ].filter(Boolean).join(" ");
-    return [role, { category: categories[role], metric: ranking.metric, sourceId: ranking.sourceId,
+    const effective = effortFor(cfg, role, chosen[role].model);
+    if (evidenceEntry?.effort && effective !== evidenceEntry.effort) warnings.push(`${role}: benchmark effort ${evidenceEntry.effort} differs from effective effort ${effective ?? "none"}; the score is not a measured result at this run's effort.`);
+    return [role, { category: categories[role], metric: ranking.metric, sourceId: evidenceEntry?.sourceId ?? ranking.sourceId,
+      benchmarkEffort: evidenceEntry?.effort ?? null, benchmarkConditions: evidenceEntry?.conditions ?? null,
       score: evidenceEntry?.score ?? null, selection: evidenceEntry ? "ranked" : "configured_fallback", reviewAgainst: against, reason }];
   })) as AdaptiveRoutingReport["roleReasons"];
   return {
     config,
-    report: { version: 1, domain, status: "ready", evidence: { id: snapshot.id, asOf: snapshot.asOf, sources: snapshot.sources },
+    report: { version: 1, domain, status: "ready", selectionPolicy: "quality_first", evidence: { id: snapshot.id, asOf: snapshot.asOf, sources: snapshot.sources },
       selectedRoleRefs: Object.fromEntries(ROLES.map((role) => [role, chosen[role].ref])) as Record<Role, string>,
       roleRefs: Object.fromEntries(ROLES.map((role) => [role, [...roles[role]]])) as Record<Role, string[]>,
+      unavailableRankedModels,
       effectiveEffort: Object.fromEntries(ROLES.map((role) => [role, effortFor(cfg, role, chosen[role].model) ?? null])) as Record<Role, string | null>,
       roleReasons,
       workflow: { phases, ideationPlanned, buildPlanned },
-      budget: { totalUsd: total, projectedRoundUsd: projection.costUsd, ideateUsd: config.budgets.phaseBudgetUsd("ideate"), buildUsd: config.budgets.phaseBudgetUsd("build"), requestedRounds: cfg.ideation.rounds, affordableRounds: affordable, maxBuildFeatures: buildPlanned ? buildCaps.maxFeatures : 0 }, warnings },
+      portfolio: {
+        originalCandidates,
+        candidates: fitted.candidates,
+        islands: ideationPlanned ? config.ideation.islands : 0,
+        ideasPerBatch: ideationPlanned ? config.ideation.ideasPerBatch : 0,
+        entrants: fitted.entrants,
+        pairs: fitted.pairs,
+        planningCallsWithRetryReserve: projection.calls,
+        estimatedRoundWallSeconds: projection.estimatedWallSeconds,
+        assumptions: ADAPTIVE_LATENCY_SECONDS,
+      },
+      budget: { totalUsd: total, projectedRoundUsd: projection.costUsd, projectedRoundWallSeconds: projection.estimatedWallSeconds, ideateUsd: config.budgets.phaseBudgetUsd("ideate"), buildUsd: config.budgets.phaseBudgetUsd("build"), requestedRounds: cfg.ideation.rounds, affordableRounds: affordable, maxBuildFeatures: buildPlanned ? buildCaps.maxFeatures : 0 }, warnings },
   };
 }

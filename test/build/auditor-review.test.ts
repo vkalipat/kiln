@@ -12,6 +12,7 @@ import { Limiter } from "../../src/core/limiter";
 import { RunRecord } from "../../src/core/record";
 import { createRun } from "../../src/core/run";
 import type { Feature } from "../../src/formation/features";
+import { writeAcceptanceLock } from "../../src/formation/lock";
 import { projectPaths } from "../../src/formation/paths";
 import type { PhaseDeps } from "../../src/phases/frame";
 import { FakeGitRunner } from "./fake-git";
@@ -44,6 +45,9 @@ function setup(responses: unknown[]) {
   const run = createRun(home, "seed"); const record = new RunRecord(run.record); const project = projectPaths(run.project);
   mkdirSync(project.repo, { recursive: true }); mkdirSync(project.checksDir, { recursive: true });
   writeFileSync(project.spec, "# Spec\n\n## First milestone\nOne result.\n");
+  const features = { version: 1 as const, init: { needs: [] }, features: [FEATURE] };
+  writeFileSync(run.features, JSON.stringify(features));
+  writeFileSync(run.acceptanceLock, JSON.stringify(writeAcceptanceLock(features, "spec")));
   const model = createMockModel({
     id: "auditor", provider: "other", responses: responses as never,
     cost: { input: 100_000, output: 0, cacheRead: 0, cacheWrite: 0 },
@@ -106,7 +110,7 @@ describe("auditor review boundaries", () => {
   test("three scripted audit calls can consume at most two and retain invalid tool outcomes", async () => {
     const s = setup([invalidAudit, invalidAudit, audit()]);
     const result = await runAuditorSession(s.deps, FEATURE, s.check, s.context);
-    expect(result).toMatchObject({ rawVerdict: "disagree", effectiveVerdict: "agree", malformed: true, retried: true, evidenceUsable: false, costUsd: 0.2 });
+    expect(result).toMatchObject({ rawVerdict: "disagree", effectiveVerdict: "unavailable", malformed: true, retried: true, evidenceUsable: false, costUsd: 0.2 });
     expect(s.model.calls).toHaveLength(2);
     expect(s.record.read().filter((event) => event.t === "tool.call" && event.name === "audit").map((event) => event.t === "tool.call" && event.ok)).toEqual([false, false]);
   });

@@ -4,8 +4,10 @@ import { defaultConfig, ROLES } from "../../src/core/config";
 import { resolveRoleOn, otherProvider } from "../../src/providers/models";
 import { registerRuntimeEffort } from "../../src/providers/effort-runtime";
 import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../src/routing/adaptive";
+import { applyWorkflowProfile } from "../../src/workflow/profile";
+import { compileWorkflow, planWorkflow } from "../../src/workflow/plan";
 
-const now = new Date("2026-09-08T12:00:00Z");
+const now = new Date("2026-09-09T12:00:00Z");
 const providers = new Set(["anthropic", "openai-codex"]);
 const snapshot = () => structuredClone(DEFAULT_EVIDENCE_SNAPSHOT) as any;
 
@@ -29,7 +31,7 @@ describe("adaptive routing planner", () => {
     expect(report.domain).toBe("business");
     expect(config.roles.generator[0]).toBe("anthropic/claude-fable-5-1");
     expect(config.roles.builder[0]).toBe("anthropic/claude-fable-5-1");
-    expect(config.roles.judge[0]).toBe("openai-codex/gpt-5.4");
+    expect(config.roles.judge[0]).toBe("anthropic/claude-opus-5");
     expect(report.budget.affordableRounds).toBeGreaterThanOrEqual(1);
     expect(report.budget.affordableRounds).toBeLessThanOrEqual(report.budget.requestedRounds);
     expect(config.ideation.rounds).toBe(report.budget.affordableRounds);
@@ -48,6 +50,55 @@ describe("adaptive routing planner", () => {
       expect(model?.supportsTools).not.toBe(false);
       expect(model?.toolMode).not.toBe("code_mode_only");
     }
+  });
+
+  test("fits a complete small portfolio to the native 25-minute plan without reducing verification", () => {
+    const seed = "Find a new business idea and ship it";
+    const workflow = planWorkflow(seed);
+    const cfg = applyWorkflowProfile(defaultConfig(), workflow);
+    cfg.budgets.usd = 25;
+    cfg.budgets.wallSeconds = 1500;
+    cfg.effort = "xhigh";
+    cfg.effortByRole = Object.fromEntries(ROLES.map((role) => [role, "xhigh"]));
+    const phases = compileWorkflow(workflow, {}).phases;
+    const { config, report } = planAdaptiveRouting(cfg, new Set(["anthropic"]), seed, now, snapshot(), { phases });
+    expect(report.selectedRoleRefs).toMatchObject({
+      generator: "anthropic/claude-fable-5-1",
+      prober: "anthropic/claude-fable-5-1",
+      scout: "anthropic/claude-opus-5",
+      judge: "anthropic/claude-opus-5",
+    });
+    expect(report.portfolio).toMatchObject({
+      originalCandidates: 30,
+      candidates: 8,
+      islands: 2,
+      ideasPerBatch: 2,
+      entrants: 8,
+      pairs: 12,
+      planningCallsWithRetryReserve: 157,
+      estimatedRoundWallSeconds: 560,
+    });
+    expect(config.ideation).toMatchObject({ minComparisons: 3, pairCap: 12, checkpointMin: 5, checkpointMax: 8 });
+    expect(config.ideation.rounds).toBe(1);
+    expect(report.budget.projectedRoundUsd).toBeCloseTo(7.8275, 8);
+    expect(report.budget.projectedRoundWallSeconds).toBe(560);
+    expect(report.budget.ideateUsd).toBe(10);
+    expect(report.budget.buildUsd).toBe(7.5);
+    expect(report.warnings.some((warning) => warning.includes("not a completion guarantee"))).toBe(true);
+  });
+
+  test("a checkpoint-only ten-dollar plan uses its unplanned build share for the minimum portfolio", () => {
+    const cfg = applyWorkflowProfile(defaultConfig(), planWorkflow("Find a business idea"));
+    cfg.budgets.usd = 10;
+    cfg.budgets.wallSeconds = 1500;
+    const { config, report } = planAdaptiveRouting(cfg, providers, "Find a business idea", now, snapshot(), {
+      phases: ["frame", "discover", "ideate", "checkpoint"],
+    });
+    expect(report.portfolio.candidates).toBe(cfg.ideation.minComparisons + 1);
+    expect(report.portfolio.islands).toBe(2);
+    expect(config.ideation.rounds).toBe(1);
+    expect(report.budget.ideateUsd).toBeGreaterThan(4);
+    expect(report.budget.buildUsd).toBeLessThan(3);
   });
 
   test.each([["anthropic"], ["openai-codex"], ["openai"], ["openai", "openai-codex"]])("single-vendor transport combination %j preserves distinct model identities", (...items) => {
@@ -80,6 +131,26 @@ describe("adaptive routing planner", () => {
     const evidence = snapshot();
     evidence.rankings.find((r: any) => r.category === "business").entries.unshift({ modelRef: "anthropic/not-a-real-model", score: 9999 });
     expect(planAdaptiveRouting(defaultConfig(), providers, "A business", now, evidence).config.roles.generator[0]).toBe("anthropic/claude-fable-5-1");
+  });
+
+  test("quality outranks vendor diversity and blocked leaders are explicitly disclosed", () => {
+    const { report } = planAdaptiveRouting(defaultConfig(), providers, "A business idea", now);
+    expect(report.selectedRoleRefs.judge).toBe("anthropic/claude-opus-5");
+    expect(report.selectedRoleRefs.critic).toBe("anthropic/claude-opus-5");
+    expect(report.selectedRoleRefs.auditor).toBe("anthropic/claude-opus-5");
+    expect(report.roleReasons.judge.benchmarkEffort).toBe("xhigh");
+    expect(report.roleReasons.builder.benchmarkConditions).toContain("Claude Code");
+    expect(report.unavailableRankedModels).toContainEqual({ modelRef: "openai-codex/gpt-6-astra", reason: "requires Code Mode; Kiln has no Code Mode execution adapter" });
+    expect(report.warnings.some((warning) => warning.includes("quality takes priority"))).toBe(true);
+    expect(report.warnings.some((warning) => warning.includes("benchmark effort"))).toBe(true);
+  });
+
+  test("cross-vendor candidates win score ties but not over higher quality", () => {
+    const evidence = snapshot();
+    const entries = evidence.rankings.find((ranking: any) => ranking.category === "knowledge_calibration").entries;
+    const opus = entries.find((entry: any) => entry.modelRef === "anthropic/claude-opus-5");
+    entries.find((entry: any) => entry.modelRef === "openai-codex/gpt-5.5").score = opus.score;
+    expect(planAdaptiveRouting(defaultConfig(), providers, "business", now, evidence).report.selectedRoleRefs.judge).toBe("openai-codex/gpt-5.5");
   });
 
   test("fails before execution when budget or provider constraints cannot be met", () => {
@@ -156,6 +227,7 @@ describe("adaptive routing planner", () => {
 describe("benchmark evidence validation", () => {
   test("accepts reviewed source-linked evidence", () => {
     expect(validateEvidenceSnapshot(snapshot(), now).rankings).toHaveLength(6);
+    expect(validateEvidenceSnapshot(snapshot(), now).rankings[0]!.entries[0]!.conditions).toContain("fallback");
   });
   test("rejects stale, future, unverified, nonfinite, and unsupported-category data", () => {
     expect(() => validateEvidenceSnapshot(snapshot(), new Date("2027-01-01"))).toThrow("stale");

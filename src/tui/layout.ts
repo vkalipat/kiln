@@ -16,14 +16,15 @@ function centered(line: string, width: number): string {
 }
 
 /** Empty-run takeover shown until the first seed is submitted. */
-export function renderWelcome(width: number, height: number, snapshot: Readonly<TuiSnapshot>): readonly string[] {
+export function renderWelcome(width: number, height: number, snapshot: Readonly<TuiSnapshot>, frame = 0): readonly string[] {
   width = Math.max(0, Math.trunc(width));
   height = Math.max(0, Math.trunc(height));
   if (width === 0 || height === 0) return [];
 
   const accent = EFFORT_STYLE[snapshot.effort];
+  const embers = ["· : • ● • : ·", ": • ● • : · ·", "• ● • : · · :", "● • : · · : •", "• : · · : • ●", ": · · : • ● •", "· · : • ● • :"];
   const content = [
-    accent("· : • ● • : ·"),
+    accent(embers[Math.abs(Math.trunc(frame)) % embers.length]!),
     ansi.bold("Welcome to Kiln"),
     "Shape an idea into a durable build.",
     "",
@@ -46,6 +47,7 @@ export interface AppLayoutInput {
   readonly snapshot: Readonly<TuiSnapshot>;
   readonly transcript: TranscriptView;
   readonly prompt: PromptBox;
+  readonly frame?: number;
 }
 
 /** Pin the prompt to the bottom and give every remaining row to the transcript. */
@@ -59,7 +61,7 @@ export function renderAppLayout(input: AppLayoutInput): readonly string[] {
   const transcriptHeight = Math.max(0, height - visiblePrompt.length);
   let upper: readonly string[];
   if (!input.snapshot.runId && input.snapshot.transcript.length === 0) {
-    upper = renderWelcome(width, transcriptHeight, input.snapshot);
+    upper = renderWelcome(width, transcriptHeight, input.snapshot, input.frame);
   } else if (transcriptHeight > 0) {
     input.transcript.setViewportHeight(transcriptHeight);
     const rendered = input.transcript.render(width);

@@ -24,6 +24,16 @@ Without a global link, run `bun run kiln` in the repository.
 
 Bare `kiln` opens an editable prompt. Type a task and press Enter; if unauthenticated, the provider chooser opens then and retains the task for submission after connection. No model request is made before submission. Fresh homes enable adaptive routing and autonomous selection; existing configuration choices are preserved.
 
+### Automatic workflows and context
+
+- A newly planned, explicit local implementation task requiring no research preserves the original request in deterministic intake. It does not spend a model call paraphrasing that request or run competitive ideation.
+- Formation mechanically validates the plan and obtains independent review. A coherent approval freezes the exact reviewed artifacts; corrections trigger bounded repair and re-review. Builds still require executable checks and usable independent auditing.
+- Open-ended tasks use research and idea comparison. Research workers are sized to affordable complete work, with room to summarize their findings. The probe selector receives relevant canonical dossiers directly; oversized material remains explicitly referenced for retrieval.
+
+The original request, frozen checks and full evidence are authoritative. Compact handoffs do not silently replace them. Historical workflows and existing framed work are not rewritten into the new direct-intake mode on resume. Prior-art reviewers assess relevance and coverage explicitly; a parsed search response alone cannot clear the check, and one scout cannot authenticate a collision using another scout's sources. Unassessed or inadequate coverage stays unknown with its reason attached.
+
+Keep the checkout and dependencies downloaded locally. Cloud-optimized folders can evict files and delay startup or testing; Kiln does not move the checkout or change cloud-sync settings automatically.
+
 ## Provider access
 
 Connect a subscription with OAuth:
@@ -64,7 +74,7 @@ kiln project build RUN_ID --yes
 kiln run resume RUN_ID --through reflect
 ```
 
-The phases are `frame`, `discover`, `ideate`, `checkpoint`, `form`, `build`, and `reflect`. New runs stop at the checkpoint unless another phase is supplied with `--through`.
+The phases are `frame`, `discover`, `ideate`, `checkpoint`, `form`, `build`, and `reflect`. Adaptive runs choose their route from the request: exploration normally ends at the idea checkpoint, while an explicit delivery request proceeds through verified build and reflection. Direct tasks omit competitive ideation, and direct tasks requiring no research omit discovery. `--through` is an explicit invocation control; the frozen interpretation and planned route remain inspectable.
 
 Useful inspection and control commands:
 
@@ -100,7 +110,11 @@ Set `NO_ANIMATION=1` to disable animation. The display label `ultra` maps to the
 
 Build checks run in Kiln, followed by an independent auditor over a detached copy of the exact repository bytes. State, check output, audits, and Git commit evidence support restart after interruption.
 
-A usage pause resumes after its recorded wake time. An operator pause resumes on request. Budget and deadline stops require the corresponding configured target to increase. An integrity failure requires inspection and an explicit relock:
+A usage pause resumes after its recorded wake time. An operator pause resumes on request. Resume preserves prior spending and elapsed active time; the CLI reports when a budget or deadline requires the corresponding target to increase. It rechecks the latest status under the run lock, so a competing completion or new stop cannot be overwritten by a stale resume decision.
+
+Adaptive discovery has a narrow completion allowance: after every current scout report is complete, research closes and landscape writing may use wall time reserved for phases excluded by the frozen execution. This works automatically and on explicit resume with intact cached reports; it does not repeat scouts, increase dollars, reset turns or extend the total run time. Both originally requested and newly requested phases keep their reserves. Missing, stale or failed reports cannot unlock this allowance.
+
+An integrity failure requires inspection and an explicit relock:
 
 ```sh
 kiln project relock RUN_ID --confirm

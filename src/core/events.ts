@@ -27,12 +27,23 @@ export interface CritiqueItem {
   text: string;
 }
 
+/** Harness-observed process facts, never inferred from model prose or tool-wrapper success. */
+export interface ToolProcessEvidence {
+  exitCode: number | null;
+  signal: string | null;
+  timedOut: boolean;
+  cancelled: boolean;
+  /** Process collection or model-facing output shaping omitted output. */
+  outputTruncated: boolean;
+}
+
 export type BuildArm = "fresh" | "single_session";
 export type BuildStop = "done" | "turn_cap" | "usd_cap" | "exit" | "error" | "refused";
 export type AttemptDisposition =
   | "passed"
   | "verify_failed"
   | "audit_disagreed"
+  | "audit_unavailable"
   | "stalled"
   | "transient"
   | "budget"
@@ -43,6 +54,7 @@ export type AttemptDisposition =
 export type CheckPhase = "acceptance" | "regression" | "init";
 export type FeatureStateName = "pending" | "passed" | "failed" | "blocked" | "regressed";
 export type AuditVerdict = "agree" | "disagree";
+export type EffectiveAuditVerdict = AuditVerdict | "unavailable";
 
 export type RecordEvent =
   | { t: "run.created"; seed: string }
@@ -76,7 +88,12 @@ export type RecordEvent =
       reasoningTokens?: number;
       ttftMs?: number;
     }
-  | { t: "tool.call"; name: string; args: unknown; ok: boolean; durationMs: number; excerpt: string }
+  | { t: "tool.call"; name: string; args: unknown; ok: boolean; durationMs: number; excerpt: string;
+      /** Size of redacted model-facing text before the journal's excerpt cap; absent on legacy records. */
+      resultChars?: number;
+      excerptTruncated?: boolean;
+      process?: ToolProcessEvidence;
+    }
   | { t: "honest_exit"; kind: string; reasons: string[]; source?: "declared" | "mechanical" }
   | { t: "failure"; class: FailureClass; message: string; category?: string }
   | { t: "note"; text: string }
@@ -183,6 +200,7 @@ export type RecordEvent =
       usdCapHit: boolean;
       crossProvider: boolean;
       costUsd: number;
+      presentationTruncated?: boolean;
     }
   | {
       t: "audit.disposition";
@@ -190,13 +208,15 @@ export type RecordEvent =
       attempt: number;
       checkId: string;
       rawVerdict: AuditVerdict;
-      effectiveVerdict: AuditVerdict;
+      effectiveVerdict: EffectiveAuditVerdict;
       emptyDisagree: boolean;
       malformed: boolean;
       truncated: boolean;
       retried: boolean;
       evidenceUsable: boolean;
       checkVoided: boolean;
+      presentationTruncated?: boolean;
+      evidenceVersion?: 2;
     }
   | { t: "commit"; featureId: string; attempt?: number; sha: string; empty: boolean }
   | { t: "stall"; featureId: string; attempt: number; tool: string; fingerprint: string }

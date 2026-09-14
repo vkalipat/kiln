@@ -97,6 +97,25 @@ class MockController implements TuiControllerPort {
 }
 
 describe("kiln TUI app", () => {
+  test("HI responds locally before authentication and leaves the next task editable", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-local-hi-"));
+    const calls: string[][] = [];
+    const controller = new RunController({ home, cli: async (argv) => { calls.push(argv); return 0; } });
+    const terminal = new FakeTerminal(72, 18);
+    const lifecycle = startTui(controller, { terminal, animations: false });
+    try {
+      terminal.emitInput("HI"); terminal.emitInput("\r");
+      await settle();
+      expect(lifecycle.app.modalKind).toBeUndefined();
+      await eventually(() => controller.getSnapshot().transcript.length >= 2);
+      expect(calls).toEqual([]);
+      expect(controller.getSnapshot().runId).toBeUndefined();
+      expect(controller.getSnapshot().costUsd).toBe(0);
+      terminal.emitInput("Build a timer"); terminal.emitInput("\r");
+      expect(lifecycle.app.modalKind).toBe("onboarding");
+      expect(lifecycle.app.prompt.getText()).toBe("Build a timer");
+    } finally { await lifecycle.stop(); }
+  });
   test("animation paints new terminal frames after resize and stops on shutdown", async () => {
     const controller = new MockController();
     const terminal = new FakeTerminal(72, 18);
@@ -110,6 +129,9 @@ describe("kiln TUI app", () => {
       },
     });
     try {
+      const welcome = lifecycle.app.render(72).map(plain).find((line) => line.includes("●"));
+      advance!();
+      expect(lifecycle.app.render(72).map(plain).find((line) => line.includes("●"))).not.toBe(welcome);
       controller.setSnapshot({ state: "running", activity: "Thinking" });
       await eventually(() => terminal.writes.join("").includes("Thinking"));
       const first = terminal.writes.length;

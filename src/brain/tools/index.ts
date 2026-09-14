@@ -1,6 +1,6 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import type { Phase } from "../../core/config";
-import type { SearchStatus } from "../../core/events";
+import type { SearchStatus, ToolProcessEvidence } from "../../core/events";
 import type { Limiter } from "../../core/limiter";
 import type { RunRecord } from "../../core/record";
 import type { RunPaths } from "../../core/run";
@@ -81,13 +81,20 @@ export function recorded(ctx: ToolContext, tool: AgentTool<any>): AgentTool<any>
       throwIfRunCancelled();
       const text = r.content.map((b) => ("text" in b ? b.text : "")).join("\n");
       const values = secretValues();
+      // Redact before clipping: a secret crossing the excerpt boundary must not leak a prefix.
+      const redacted = redactText(text, values);
+      const execution = tool.name === "bash"
+        ? (r.details as { process?: ToolProcessEvidence } | undefined)?.process : undefined;
       ctx.record.append({
         t: "tool.call",
         name: tool.name,
         args: redactValue(params, values),
         ok: r.isError !== true,
         durationMs: Date.now() - t0,
-        excerpt: redactText(text.slice(0, 400), values),
+        excerpt: redacted.slice(0, 400),
+        resultChars: redacted.length,
+        excerptTruncated: redacted.length > 400,
+        ...(execution ? { process: execution } : {}),
       });
       return r;
     },

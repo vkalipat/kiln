@@ -70,6 +70,15 @@ describe("build loop failures and resume", () => {
     expect(s.builderCalls).toHaveLength(1);
   });
 
+  test("unavailable audits cannot pass a successful check or masquerade as disagreement", async () => {
+    const s = setupLoop(); const base = s.deps.runAuditor!;
+    s.deps.runAuditor = async (...args) => ({ ...await base(...args), evidenceUsable: false, effectiveVerdict: "unavailable" });
+    expect(await runBuild(s.deps)).toMatchObject({ outcome: "stopped", stopKind: "blocked" });
+    expect(s.git.commits).toHaveLength(0);
+    expect(s.record.read().filter((event) => event.t === "attempt").map((event) => event.t === "attempt" && event.disposition)).toEqual(["audit_unavailable", "audit_unavailable", "audit_unavailable"]);
+    expect(s.auditCalls).toHaveLength(s.deps.cfg.build.maxAttempts);
+  });
+
   test("genuine audit disagreement and final active-check void spend attempts and never commit", async () => {
     const disagree = setupLoop(); disagree.auditVerdicts.push("disagree", "disagree", "disagree");
     expect(await runBuild(disagree.deps)).toMatchObject({ outcome: "stopped", stopKind: "blocked" });

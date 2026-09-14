@@ -1,4 +1,5 @@
 import { existsSync, readFileSync } from "node:fs";
+import { resolve } from "node:path";
 import type { StreamFn } from "@oh-my-pi/pi-agent-core";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { createBrain, type BrainOptions, type BrainResult } from "../brain/agent";
@@ -37,6 +38,8 @@ export interface PhaseDeps {
   onTool?: BrainOptions["onTool"];
   /** Frozen intent and research posture shared by the phase contracts. */
   workflow?: WorkflowPlan;
+  /** Current invocation phases; execution budgeting unions these with the originally frozen plan. */
+  executionPhases?: readonly Phase[];
   /** Interactive clarification seam. The ask_user tool enforces its own one-question bound. */
   askUser?: (question: string) => Promise<string | undefined>;
   /** Shared across islands, scouts, probes and judge pairs (record §3). */
@@ -169,7 +172,7 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
     getApiKey: () => d.apiKeyFor(String(model.provider)),
     tools: brainTools(ctx, "frame"),
     systemPrompt: [loadPrompt(d.home, "kernel"), loadPrompt(d.home, "brain"), `## Playbook (frame)\n${playbookSection(loadPlaybook(d.home), "frame")}`],
-    pinned: [frameContract(d.run, turnCap, d.workflow), clarificationContext(d.run)].filter(Boolean).join("\n\n"),
+    pinned: [frameContract(d.run, turnCap, d.workflow), clarificationContext(d.run), "Completion: a successful write or edit of the canonical brief that passes the brief contract ends this phase immediately. Make the complete final artifact your last tool action; no follow-up narration is needed."].filter(Boolean).join("\n\n"),
     record: d.record,
     role: "brain",
     phase: "frame",
@@ -182,6 +185,12 @@ export async function runFrame(d: PhaseDeps): Promise<PhaseResult> {
     streamFn: d.streamFn,
     onText: d.onText,
     onTool: d.onTool,
+    afterTool: ({ name, args, ok }) => {
+      const path = (args as { path?: unknown } | null)?.path;
+      if (!ok || (name !== "write" && name !== "edit") || typeof path !== "string" || resolve(d.run.dir, path) !== resolve(d.run.brief)) return false;
+      try { return validateBrief(parseBrief(readFileSync(d.run.brief, "utf8"))).length === 0; }
+      catch { return false; }
+    },
     shaping: { cfg: d.cfg, runId: d.run.id },
   });
   const brain = {

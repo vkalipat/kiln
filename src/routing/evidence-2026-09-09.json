@@ -1,0 +1,273 @@
+{
+  "version": 1,
+  "id": "quality-first-2026-09-09",
+  "asOf": "2026-09-09",
+  "maxAgeDays": 30,
+  "verification": {
+    "status": "verified",
+    "verifiedAt": "2026-09-09",
+    "method": "manual-primary-source-check"
+  },
+  "sources": [
+    {
+      "id": "aa-index-v4-3",
+      "url": "https://artificialanalysis.ai/evaluations/artificial-analysis-intelligence-index",
+      "observedAt": "2026-09-09"
+    },
+    {
+      "id": "aa-hle",
+      "url": "https://artificialanalysis.ai/evaluations/humanitys-last-exam",
+      "observedAt": "2026-09-09"
+    },
+    {
+      "id": "aa-scicode",
+      "url": "https://artificialanalysis.ai/evaluations/scicode",
+      "observedAt": "2026-09-09"
+    },
+    {
+      "id": "aa-briefcase",
+      "url": "https://artificialanalysis.ai/evaluations/aa-briefcase",
+      "observedAt": "2026-09-09"
+    },
+    {
+      "id": "terminal-bench-4",
+      "url": "https://www.tbench.ai/leaderboard/terminal-bench/4.0",
+      "observedAt": "2026-09-09"
+    },
+    {
+      "id": "aa-omniscience",
+      "url": "https://artificialanalysis.ai/evaluations/omniscience",
+      "observedAt": "2026-09-09"
+    },
+    {
+      "id": "aa-gpt55",
+      "url": "https://artificialanalysis.ai/models/gpt-5-5",
+      "observedAt": "2026-09-09"
+    }
+  ],
+  "rankings": [
+    {
+      "category": "general_reasoning",
+      "sourceId": "aa-index-v4-3",
+      "metric": "AA Intelligence Index v4.3 (rounded; top scores tied)",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 53,
+          "effort": "xhigh",
+          "conditions": "AA v4.3; provider fallback enabled; rounded tie with Astra"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 53,
+          "effort": "xhigh",
+          "conditions": "AA v4.3; rounded tie with Fable; mixed model and agentic tasks"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 44,
+          "effort": "xhigh",
+          "conditions": "AA v4.3"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 41,
+          "effort": "high",
+          "conditions": "AA v4.3"
+        }
+      ]
+    },
+    {
+      "category": "expert_knowledge",
+      "sourceId": "aa-hle",
+      "metric": "AA HLE text-only percent; not comparable with Scale full HLE",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 58.7117701575533,
+          "effort": "xhigh",
+          "conditions": "AA 2158 text-only questions; fallback enabled; pass@1"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 54.5875810936052,
+          "effort": "xhigh",
+          "conditions": "AA 2158 text-only questions; pass@1"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 54.4022242817424,
+          "effort": "xhigh",
+          "conditions": "AA 2158 text-only questions; pass@1"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 49.4902687673772,
+          "effort": "max",
+          "conditions": "AA 2158 text-only questions; pass@1"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 47.8220574606117,
+          "effort": "high",
+          "conditions": "AA 2158 text-only questions; pass@1"
+        }
+      ]
+    },
+    {
+      "category": "business",
+      "sourceId": "aa-briefcase",
+      "metric": "AA-Briefcase Elo",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 1650,
+          "effort": "xhigh",
+          "conditions": "91 tasks across four scenarios; fallback enabled"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 1625,
+          "effort": "xhigh",
+          "conditions": "91 tasks across four scenarios"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 1534,
+          "effort": "xhigh",
+          "conditions": "91 tasks across four scenarios"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 1435,
+          "effort": "xhigh",
+          "conditions": "91 tasks across four scenarios"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 1202,
+          "effort": "high",
+          "conditions": "91 tasks across four scenarios"
+        }
+      ]
+    },
+    {
+      "category": "scientific_coding",
+      "sourceId": "aa-scicode",
+      "metric": "SciCode subproblem percent",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 60.8796296296296,
+          "effort": "xhigh",
+          "conditions": "Scientist-annotated background; code execution; provider fallback enabled"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 57.0601851851852,
+          "effort": "max",
+          "conditions": "Scientist-annotated background; code execution"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 56.4814814814815,
+          "effort": "max",
+          "conditions": "Scientist-annotated background; code execution"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 56.3657407407407,
+          "effort": "max",
+          "conditions": "Scientist-annotated background; code execution"
+        }
+      ]
+    },
+    {
+      "category": "tool_execution",
+      "sourceId": "terminal-bench-4",
+      "metric": "TB4.0 resolution percent; model-plus-harness, not isolated models",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 58.2,
+          "effort": "max",
+          "conditions": "Codex; 95% CI +/-2.8 percentage points; overlaps Fable"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 57.9,
+          "effort": "max",
+          "conditions": "Claude Code; 95% CI +/-3.8 percentage points; overlaps Astra"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 51.8,
+          "effort": "max",
+          "conditions": "Claude Code; 95% CI +/-3.4 percentage points"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 37.3,
+          "effort": "max",
+          "conditions": "Codex; 95% CI +/-3.8 percentage points"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 19.1,
+          "effort": "high",
+          "conditions": "mini-SWE-agent; 95% CI +/-3.4 percentage points"
+        }
+      ]
+    },
+    {
+      "category": "knowledge_calibration",
+      "sourceId": "aa-omniscience",
+      "metric": "AA-Omniscience Index; calibration proxy, not judge validation",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 43.7333333333333,
+          "effort": "high",
+          "conditions": "6000 questions; abstention-aware index; small lead over Fable not statistically established"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 42.3833333333333,
+          "effort": "xhigh",
+          "conditions": "6000 questions; provider fallback enabled; use index not raw accuracy"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 35.3833333333333,
+          "effort": "xhigh",
+          "conditions": "6000 questions; same-vendor review has correlated-error risk"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 29.55,
+          "effort": "high",
+          "conditions": "6000 questions"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 21.9666666666667,
+          "effort": "max",
+          "conditions": "6000 questions"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.5",
+          "sourceId": "aa-gpt55",
+          "score": 20.5166666666667,
+          "effort": "xhigh",
+          "conditions": "AA model page /models/gpt-5-5; historical quality score, model marked deprecated"
+        }
+      ]
+    }
+  ]
+}

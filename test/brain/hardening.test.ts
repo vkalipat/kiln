@@ -22,6 +22,7 @@ function fixture(
     signal?: AbortSignal;
     finalizeWithoutTools?: () => boolean;
     turnCap?: number;
+    afterTool?: Parameters<typeof createBrain>[0]["afterTool"];
   } = {},
 ) {
   const home = mkdtempSync(join(tmpdir(), "kiln-brain-hardening-"));
@@ -43,6 +44,7 @@ function fixture(
     usdCap: options.usdCap,
     signal: options.signal,
     finalizeWithoutTools: options.finalizeWithoutTools,
+    afterTool: options.afterTool,
     effort: options.effort,
     getApiKey: options.getApiKey,
     streamFn: options.streamFn ?? streamMock as never,
@@ -54,6 +56,29 @@ function fixture(
 const calls = (record: RunRecord) => record.read().filter((event) => event.t === "model.call");
 
 describe("brain execution hardening", () => {
+  test("artifact completion cannot strand steering queued at the tool boundary", async () => {
+    let active: ReturnType<typeof createBrain>;
+    const { brain, model } = fixture([
+      { content: [{ type: "toolCall", name: "note", arguments: { text: "artifact ready" } }] },
+      { content: ["I handled the changed requirement."] },
+    ], { afterTool: () => {
+      active.agent.steer({ role: "user", content: "Changed requirement: retain the audit trail.", timestamp: Date.now() });
+      return true;
+    } });
+    active = brain;
+    const result = await brain.run("go");
+    expect(model.calls).toHaveLength(2);
+    expect(JSON.stringify(model.calls[1]?.context.messages)).toContain("Changed requirement");
+    expect(result.text).toContain("changed requirement");
+  });
+  test("native output exhaustion is an explicit resource failure, not successful completion", async () => {
+    const { brain, record } = fixture([{ content: ["unfinished reasoning"], stopReason: "length" }]);
+    const result = await brain.run("Return the required decision");
+    expect(result.stopped).toBe("error");
+    expect(result.stopDetails?.type).toBe("output_limit");
+    expect(result.error).toContain("output-token limit");
+    expect(calls(record)).toHaveLength(1);
+  });
   test("cancellation interrupts a credential resolver that never settles", async () => {
     let resolverStarted = false;
     let releaseResolver!: () => void;

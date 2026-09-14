@@ -8,12 +8,17 @@ export type ResumeRoute =
   | { kind: "stop"; message: string }
   | { kind: "refuse"; message: string };
 
+export interface ResumeRouteOptions {
+  /** Read-only precheck only; discovery revalidates checkpoints and headroom under the run lock. */
+  cachedDiscoverySynthesis?: boolean;
+}
+
 function increased(current: number, target: number | undefined): boolean {
   return target !== undefined && current > target;
 }
 
 /** Pure implementation of record §12's phase-specific resume table. */
-export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnConfig, nowMs = Date.now()): ResumeRoute {
+export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnConfig, nowMs = Date.now(), options: ResumeRouteOptions = {}): ResumeRoute {
   if (status.state === "running") return { kind: "phase", phase: status.phase };
 
   if (status.state === "paused") {
@@ -30,6 +35,12 @@ export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnCo
 
   if (status.state === "failed") {
     if (status.outcome?.failureClass === "integrity") return { kind: "refuse", message: "run failed an integrity check; use `kiln project relock <run> --confirm` after reviewing the project" };
+    // Explicit recovery re-enters the normal build guards; it does not reset saved
+    // attempts, spending, phase time, or the frozen specification and acceptance lock.
+    if (status.phase === "build" && status.outcome?.kind === "failure"
+      && (status.outcome.failureClass === "verify" || status.outcome.failureClass === "transient")) {
+      return { kind: "phase", phase: "build", wake: true };
+    }
     return { kind: "refuse", message: status.outcome?.message ?? "run failed" };
   }
 
@@ -42,6 +53,7 @@ export function routeResume(status: RunStatus, hasFrontier: boolean, cfg: KilnCo
     return { kind: "stop", message: `${status.phase} budget stop remains at $${cfg.budgets.usd.toFixed(2)}; increase budgets.usd to resume` };
   }
   if ((status.phase === "frame" || status.phase === "discover") && stop === "deadline") {
+    if (status.phase === "discover" && options.cachedDiscoverySynthesis) return { kind: "phase", phase: "discover", wake: true };
     if (increased(cfg.budgets.wallSeconds, status.outcome?.wallTargetSeconds)) return { kind: "phase", phase: status.phase, wake: true };
     return { kind: "stop", message: `${status.phase} deadline remains at ${cfg.budgets.wallSeconds}s; increase budgets.wallSeconds to resume` };
   }

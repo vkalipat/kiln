@@ -21,6 +21,8 @@ import { writeMetrics } from "../build/metrics";
 import type { SeedIdentity } from "./identity";
 import type { EvalCloneAfter } from "../core/config";
 import type { EffortName } from "../providers/models";
+import { currentRunControl, RunCancelledError, throwIfRunCancelled } from "../core/run-control";
+import { pauseCancelledRun } from "../cli/controlled-command";
 
 export interface ResolvedEffort { level: EffortName; source: "profile" | "swept" | "config" | "fallback" }
 
@@ -90,6 +92,7 @@ function terminal(status: RunStatus): boolean {
 }
 
 async function wake(run: ReturnType<typeof runPaths>, deadline: number, deps: ExecutorDeps): Promise<boolean> {
+  throwIfRunCancelled();
   const status = readStatus(run);
   if (status.state !== "paused") return true;
   const wakeAt = Date.parse(status.wakeAt ?? "");
@@ -97,6 +100,7 @@ async function wake(run: ReturnType<typeof runPaths>, deadline: number, deps: Ex
   const wait = Number.isFinite(wakeAt) ? Math.max(0, wakeAt - now) : 0;
   if (now + wait > deadline) return false;
   if (wait > 0) await (deps.sleep ?? ((ms) => Bun.sleep(ms)))(wait);
+  throwIfRunCancelled();
   writeStatus(run, { state: "running", outcome: undefined, pausedReason: undefined, wakeAt: undefined });
   return true;
 }
@@ -134,55 +138,71 @@ export function createRunExecutor(realHome: string, deps: ExecutorDeps = {}): Ru
       limiter: new Limiter(cfg.ideation.concurrency),
     };
     const deadline = heldDeadline ?? (deps.now ?? Date.now)() + cfg.budgets.wallSeconds * 1_000;
-    if (status.state === "paused") {
-      if (!await wake(run, deadline, deps)) {
-        return {
-          runId: run.id, seedId: spec.seedIdentity.id, split: spec.seedIdentity.split,
-          shape: status.shape ?? "unknown", arm: spec.arm, status, outcome: status.outcome,
-          censorStops: censorStops(record.read()), costUsd: record.costUsd(), metrics: readMetrics(run), frontier: readJsonIfPresent(run.frontier),
-        };
+    try {
+      throwIfRunCancelled();
+      if (status.state === "paused") {
+        if (!await wake(run, deadline, deps)) {
+          return {
+            runId: run.id, seedId: spec.seedIdentity.id, split: spec.seedIdentity.split,
+            shape: status.shape ?? "unknown", arm: spec.arm, status, outcome: status.outcome,
+            censorStops: censorStops(record.read()), costUsd: record.costUsd(), metrics: readMetrics(run), frontier: readJsonIfPresent(run.frontier),
+          };
+        }
+        status = readStatus(run);
       }
+      let result: PhaseResult = phaseResult(status);
+      if (!terminal(status) && status.phase === "frame") result = await (deps.runFrame ?? runFrame)(base);
+      throwIfRunCancelled();
       status = readStatus(run);
-    }
-    let result: PhaseResult = phaseResult(status);
-    if (!terminal(status) && status.phase === "frame") result = await (deps.runFrame ?? runFrame)(base);
-    status = readStatus(run);
-    if (result.outcome === "ok" && status.phase === "discover" && status.state === "running") result = await (deps.runDiscover ?? runDiscover)(base);
-    status = readStatus(run);
-    if (result.outcome === "ok" && status.phase === "ideate" && status.cursor?.step !== "checkpoint") {
-      const bare = spec.mode === "bare" || spec.arm === "bare" || spec.arm === "B0";
-      if (!bare && cfg.evals.judgeGate === "removed") throw new Error("judge_removed: eval execution cannot enter judge-dependent ideation");
-      result = bare ? await (deps.runBare ?? runBare)(base) : await (deps.runIdeate ?? runIdeate)(base);
-    }
-    status = readStatus(run);
-    if (status.state === "paused" && await wake(run, deadline, deps)) {
-      if (resumes >= 100) throw new Error(`eval run ${spec.runId} exceeded 100 pause resumptions`);
-      return execute(spec, deadline, resumes + 1);
-    }
-    const checkpointReady = status.phase === "ideate" && (status.cursor?.step === "checkpoint" || (
-      existsSync(run.frontier) && status.outcome?.kind === "stopped" && ["rounds", "stagnant", "budget"].includes(status.outcome.stopKind ?? "")
-    ));
-    if (spec.through !== "ideate" && checkpointReady) {
-      result = await (deps.runCheckpoint ?? runCheckpoint)(base, { write: () => {}, ask: async () => "" }, { autonomous: true });
+      if (result.outcome === "ok" && status.phase === "discover" && status.state === "running") result = await (deps.runDiscover ?? runDiscover)(base);
+      throwIfRunCancelled();
       status = readStatus(run);
-    }
-    if (spec.through !== "ideate" && result.outcome === "ok" && status.phase === "form" && status.state === "running") {
-      result = await (deps.runForm ?? runForm)(base, status.chosenIdeaId, { io: { write: () => {}, ask: async () => "no" } });
+      if (result.outcome === "ok" && status.phase === "ideate" && status.cursor?.step !== "checkpoint") {
+        const bare = spec.mode === "bare" || spec.arm === "bare" || spec.arm === "B0";
+        if (!bare && cfg.evals.judgeGate === "removed") throw new Error("judge_removed: eval execution cannot enter judge-dependent ideation");
+        result = bare ? await (deps.runBare ?? runBare)(base) : await (deps.runIdeate ?? runIdeate)(base);
+      }
+      throwIfRunCancelled();
       status = readStatus(run);
+      if (status.state === "paused" && await wake(run, deadline, deps)) {
+        if (resumes >= 100) throw new Error(`eval run ${spec.runId} exceeded 100 pause resumptions`);
+        return execute(spec, deadline, resumes + 1);
+      }
+      const checkpointReady = status.phase === "ideate" && (status.cursor?.step === "checkpoint" || (
+        existsSync(run.frontier) && status.outcome?.kind === "stopped" && ["rounds", "stagnant", "budget"].includes(status.outcome.stopKind ?? "")
+      ));
+      if (spec.through !== "ideate" && checkpointReady) {
+        result = await (deps.runCheckpoint ?? runCheckpoint)(base, { write: () => {}, ask: async () => "" }, { autonomous: true });
+        throwIfRunCancelled();
+        status = readStatus(run);
+      }
+      if (spec.through !== "ideate" && result.outcome === "ok" && status.phase === "form" && status.state === "running") {
+        result = await (deps.runForm ?? runForm)(base, status.chosenIdeaId, { io: { write: () => {}, ask: async () => "no" } });
+        throwIfRunCancelled();
+        status = readStatus(run);
+      }
+      if (spec.through === "build" && result.outcome === "ok" && status.phase === "build" && status.state !== "paused") {
+        const buildDeps: BuildDeps = { ...base, ...(deps.buildDeps ?? {}) };
+        const single = spec.buildArm === "single_session" || spec.arm === "single_session";
+        const runner = single ? (deps.runBuildSingleSession ?? runBuildSingleSession) : (deps.runBuild ?? runBuild);
+        result = await runner(buildDeps, { ask: async () => "no" });
+        throwIfRunCancelled();
+        status = readStatus(run);
+      }
+      if (status.state === "paused" && await wake(run, deadline, deps)) {
+        if (resumes >= 100) throw new Error(`eval run ${spec.runId} exceeded 100 pause resumptions`);
+        return execute(spec, deadline, resumes + 1);
+      }
+    } catch (error) {
+      if (!(error instanceof RunCancelledError) && !currentRunControl()?.signal.aborted) throw error;
+      pauseCancelledRun(run);
+      const reason = currentRunControl()?.signal.reason ?? error;
+      const message = reason instanceof Error ? reason.message : "run cancelled";
+      new RunRecord(run.record).append({ t: "stop", stopKind: "deadline", round: 0 });
+      writeStatus(run, { outcome: { kind: "stopped", stopKind: "deadline", message } });
     }
-    if (spec.through === "build" && result.outcome === "ok" && status.phase === "build" && status.state !== "paused") {
-      const buildDeps: BuildDeps = { ...base, ...(deps.buildDeps ?? {}) };
-      const single = spec.buildArm === "single_session" || spec.arm === "single_session";
-      const runner = single ? (deps.runBuildSingleSession ?? runBuildSingleSession) : (deps.runBuild ?? runBuild);
-      result = await runner(buildDeps, { ask: async () => "no" });
-      status = readStatus(run);
-    }
-    if (status.state === "paused" && await wake(run, deadline, deps)) {
-      if (resumes >= 100) throw new Error(`eval run ${spec.runId} exceeded 100 pause resumptions`);
-      return execute(spec, deadline, resumes + 1);
-    }
-    status = readStatus(run);
     writeStatus(run, { usdSpent: record.costUsd() });
+    status = readStatus(run);
     return {
       runId: run.id, seedId: spec.seedIdentity.id, split: spec.seedIdentity.split,
       shape: status.shape ?? "unknown", arm: spec.arm, status, outcome: status.outcome,

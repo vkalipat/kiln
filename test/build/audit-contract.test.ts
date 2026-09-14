@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRun } from "../../src/core/run";
 import { projectPaths } from "../../src/formation/paths";
-import { appendAudit, AUDIT_CAPS_PINNED, AUDIT_CAPS_STORED, pinAudit, readAudits, renderAudit, type Audit } from "../../src/build/audit-contract";
+import { appendAudit, auditEvidenceComplete, AUDIT_CAPS_PINNED, AUDIT_CAPS_STORED, pinAudit, readAudits, renderAudit, type Audit } from "../../src/build/audit-contract";
 
 function audit(attempt = 1): Audit {
   const values = Array.from({ length: 10 }, (_, index) => `${index}-${"v".repeat(260)}`);
@@ -20,6 +20,24 @@ function audit(attempt = 1): Audit {
 }
 
 describe("audit contract", () => {
+  test("full evidence is redacted, hash checked, and never inferred from legacy or pinned summaries", () => {
+    const run = createRun(mkdtempSync(join(tmpdir(), "kiln-audits-full-")), "seed");
+    mkdirSync(projectPaths(run.project).dir, { recursive: true });
+    const original = audit();
+    const secret = "sk-1234567890abcdefghijklmnop";
+    original.raw.regressions = [...original.raw.regressions, `Credential accidentally reported: ${secret}`];
+    original.evidence = { version: 2, complete: true, payloadHash: "computed on persistence", scopeHash: "frozen-scope" };
+    const stored = appendAudit(run, original);
+    expect(auditEvidenceComplete(stored)).toBe(true);
+    expect(auditEvidenceComplete(readAudits(run)[0]!)).toBe(true);
+    expect(readFileSync(run.audits, "utf8")).not.toContain(secret);
+    expect(stored.raw.regressions.at(-1)).toContain("[REDACTED]");
+    expect(stored.raw.verified).toEqual(original.raw.verified);
+    expect(auditEvidenceComplete(pinAudit(stored))).toBe(false);
+    expect(auditEvidenceComplete(audit())).toBe(false);
+    writeFileSync(run.audits, readFileSync(run.audits, "utf8").replace("0-vvv", "tampered"));
+    expect(() => readAudits(run)).toThrow("evidence hash or provenance mismatch");
+  });
   test("stored and pinned caps are independent, prefix-only, pure and idempotent", () => {
     const original = audit();
     const before = structuredClone(original);
@@ -42,8 +60,7 @@ describe("audit contract", () => {
     const replay = appendAudit(run, audit(1));
     expect(readAudits(run)).toHaveLength(2);
     expect(replay.sourceEventSeq).toBe(second.sourceEventSeq);
-    expect(first.raw.verified).toHaveLength(AUDIT_CAPS_STORED.items);
-    expect(first.raw.verified.every((item) => item.length === AUDIT_CAPS_STORED.itemChars)).toBe(true);
+    expect(first.raw).toEqual(audit(1).raw);
     const latest = readFileSync(projectPaths(run.project).audit, "utf8");
     expect(latest).toBe(renderAudit(second));
     expect(latest).toContain("Audit f01 attempt 2");

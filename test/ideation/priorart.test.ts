@@ -119,9 +119,49 @@ describe("priorArtTemplate", () => {
 });
 
 describe("collisionVerdict", () => {
+  test("missing fields, invalid boolean values, and empty reasons fail closed within two turns", async () => {
+    for (const fields of [
+      { same: false, reason: "Unassessed coverage" },
+      { coverageAdequate: "unassessed", same: false, reason: "Not an adequate or inadequate decision" },
+      { coverageAdequate: true, same: false, reason: "   " },
+    ]) {
+      const invalid = collisionCall(fields); const { deps, record } = setup([invalid, invalid]);
+      expect(await collisionVerdict(deps, dossier(), "Retrieved findings.")).toMatchObject({ conclusive: false, coverageAdequate: false });
+      expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(2);
+    }
+  });
+
+  test("standard schema normalization preserves an explicit affirmative coverage field", async () => {
+    const { deps } = setup([collisionCall({ coverageAdequate: "true", same: false, reason: "The relevant retrieved paper establishes a different mechanism." })]);
+    expect(await collisionVerdict(deps, dossier(), "Relevant retrieved paper.")).toMatchObject({ coverageAdequate: true, conclusive: true, same: false });
+  });
+  test("insufficient relevance coverage is inconclusive even when a feed parsed successfully", async () => {
+    const { deps, record } = setup([collisionCall({ coverageAdequate: false, same: false, reason: "The RSS results were unrelated to the mechanism; no relevant source was retrieved." })]);
+    const verdict = await collisionVerdict(deps, dossier(), "The engine returned unrelated pages; the question remains unanswered.");
+    expect(verdict).toMatchObject({ same: false, conclusive: false });
+    expect(verdict.reason).toContain("unrelated");
+    expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(1);
+  });
+
+  test("missing coverage is rejected and a corrected decision fits the existing two-turn limit", async () => {
+    const { deps, record } = setup([
+      collisionCall({ same: false, reason: "Different mechanism." }),
+      collisionCall({ coverageAdequate: true, same: false, reason: "The relevant retrieved paper uses a different mechanism for this purpose." }),
+    ]);
+    const verdict = await collisionVerdict(deps, dossier(), "Relevant retrieved paper.");
+    expect(verdict).toMatchObject({ conclusive: true, reason: "The relevant retrieved paper uses a different mechanism for this purpose." });
+    expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(2);
+  });
+
+  test("contradictory coverage decisions never become conclusive", async () => {
+    const invalid = collisionCall({ coverageAdequate: false, same: true, artifactUrl: "https://example.test/item", reason: "No relevant source was retrieved." });
+    const { deps, record } = setup([invalid, invalid]);
+    expect(await collisionVerdict(deps, dossier(), "Unrelated results.")).toMatchObject({ conclusive: false });
+    expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(2);
+  });
   test("captures the arbiter's verdict, recorded through the arbiter role, at its own cost", async () => {
     const { deps, record } = setup([
-      collisionCall({ same: true, artifactTitle: "Foo", artifactUrl: "https://example.com/foo", reason: "Same mechanism for the same users." }),
+      collisionCall({ coverageAdequate: true, same: true, artifactTitle: "Foo", artifactUrl: "https://example.com/foo", reason: "Same mechanism for the same users." }),
     ]);
     const v = await collisionVerdict(deps, dossier(), "some findings");
     expect(v).toMatchObject({ same: true, artifactTitle: "Foo", artifactUrl: "https://example.com/foo", reason: "Same mechanism for the same users." });
@@ -140,9 +180,63 @@ describe("collisionVerdict", () => {
 });
 
 describe("runPriorArtScout", () => {
+  test("a primary fetch after a blocked search can support an explicit adequate review", async () => {
+    const url = "https://example.test/primary";
+    const { deps } = setup([
+      scholarCall("blocked"),
+      { content: [{ type: "toolCall", name: "web_fetch", arguments: { url } }] },
+      { content: ["The primary documentation was retrieved and describes a different mechanism; broad search was blocked."] },
+      collisionCall({ coverageAdequate: true, same: false, reason: "The retrieved primary source is relevant and describes a different mechanism; this is a bounded comparison, not proof of absence." }),
+    ], (async (input: string | URL | Request) => String(input) === url ? new Response("Relevant primary documentation") : new Response("blocked", { status: 403 })) as unknown as typeof fetch);
+    const result = await runPriorArtScout(deps, dossier(), { shape: "product" });
+    expect(result).toMatchObject({ status: "not_falsified", searchOk: true, observedUrls: [url] });
+  });
+  test("a successful direct source without a self-link can reach coverage review", async () => {
+    const url = "https://example.test/primary-documentation";
+    const { deps } = setup([
+      { content: [{ type: "toolCall", name: "web_fetch", arguments: { url } }] },
+      { content: ["The retrieved documentation describes the same mechanism and users."] },
+      collisionCall({ coverageAdequate: true, same: true, artifactUrl: url, reason: "The retrieved primary documentation describes this mechanism for the same purpose." }),
+    ], (async () => new Response("Primary documentation describes the mechanism. No self-link here.")) as unknown as typeof fetch);
+    const result = await runPriorArtScout(deps, dossier(), { shape: "product" });
+    expect(result).toMatchObject({ status: "collided", searchOk: true });
+    expect(result.observedUrls).toEqual([url]);
+  });
+
+  test("an unsuccessful direct fetch never supplies an observed URL or reaches review", async () => {
+    const url = "https://example.test/blocked";
+    const { deps, record } = setup([
+      { content: [{ type: "toolCall", name: "web_fetch", arguments: { url } }] },
+      { content: [`Could not retrieve ${url}.`] },
+    ], (async () => new Response("blocked", { status: 403 })) as unknown as typeof fetch);
+    const result = await runPriorArtScout(deps, dossier(), { shape: "product" });
+    expect(result).toMatchObject({ status: "search_failed", searchOk: false, observedUrls: [] });
+    expect(record.read().filter((event) => event.t === "model.call" && event.role === "arbiter")).toHaveLength(0);
+  });
+
+  test("concurrent scouts cannot borrow each other's successfully retrieved URLs", async () => {
+    let ready = 0; let release!: () => void;
+    const together = new Promise<void>((resolve) => { release = resolve; });
+    const base = setup([], (async (input: string | URL | Request) => {
+      const id = new URL(String(input)).searchParams.get("search");
+      if (++ready === 2) release(); await together;
+      return new Response(JSON.stringify({ results: [{ id: `https://openalex.org/${id}`, display_name: `Paper ${id}`, publication_year: 2020 }] }));
+    }) as unknown as typeof fetch);
+    const depsFor = (id: string): PhaseDeps => {
+      const model = createMockModel({ id, responses: [scholarCall(id), { delayMs: 10, content: [`Finding for ${id}; model-only https://example.test/invented`] }] as never });
+      return { ...base.deps, models: () => ({ model: model as never, ref: `mock/${id}` }) };
+    };
+    const [a, b] = await Promise.all([
+      runPriorArtScout(depsFor("A"), dossier({ id: "A" }), { shape: "product", arbiter: false }),
+      runPriorArtScout(depsFor("B"), dossier({ id: "B" }), { shape: "product", arbiter: false }),
+    ]);
+    expect(a.observedUrls).toEqual(["https://openalex.org/A"]);
+    expect(b.observedUrls).toEqual(["https://openalex.org/B"]);
+  });
   test("a same verdict with a URL is collided, and searchOk is true", async () => {
     const { deps, record } = setup(
       [scholarCall("dedup"), { content: ["Existing Dedup Tool: https://openalex.org/W1"] }, collisionCall({
+        coverageAdequate: true,
         same: true,
         artifactTitle: "Existing Dedup Tool",
         artifactUrl: "https://openalex.org/W1",
@@ -157,36 +251,36 @@ describe("runPriorArtScout", () => {
     expect(record.read().some((e) => e.t === "arbiter.verdict" && e.kind === "collision" && e.verdict === "collided" && e.id === "r1-i1-1")).toBe(true);
   });
 
-  test("a same verdict without a URL is not_falsified, and still records an arbiter.verdict event (record §5)", async () => {
+  test("a same verdict without a URL is invalid and leaves coverage unresolved", async () => {
     const { deps, record } = setup(
-      [scholarCall("dedup"), { content: ["Nothing clearly on point."] }, collisionCall({ same: true, reason: "Feels familiar but I can't name it." })],
+      [scholarCall("dedup"), { content: ["Nothing clearly on point."] }, collisionCall({ coverageAdequate: true, same: true, reason: "Feels familiar but I can't name it." })],
       okFetch,
     );
     const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
-    expect(r.status).toBe("not_falsified");
+    expect(r.status).toBe("search_failed");
     expect(r.artifact).toBeUndefined();
     const verdicts = record.read().filter((e) => e.t === "arbiter.verdict");
     expect(verdicts.length).toBe(1);
-    expect(verdicts[0]).toMatchObject({ verdict: "same_without_artifact" });
+    expect(verdicts[0]).toMatchObject({ verdict: "inconclusive" });
   });
 
   test("a same verdict with a non-URL string is treated the same as no URL", async () => {
     const { deps } = setup(
-      [scholarCall("dedup"), { content: ["Nothing on point."] }, collisionCall({ same: true, artifactTitle: "Something", artifactUrl: "not-a-real-url", reason: "vague" })],
+      [scholarCall("dedup"), { content: ["Nothing on point."] }, collisionCall({ coverageAdequate: true, same: true, artifactTitle: "Something", artifactUrl: "not-a-real-url", reason: "vague" })],
       okFetch,
     );
     const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
-    expect(r.status).toBe("not_falsified");
+    expect(r.status).toBe("search_failed");
   });
 
   test("a malformed or retrieval-unseen URL cannot reject an idea as collided", async () => {
     for (const artifactUrl of ["https://", "https://example.com/invented"]) {
       const { deps, record } = setup(
-        [scholarCall("dedup"), { content: ["Only https://openalex.org/W1 was found."] }, collisionCall({ same: true, artifactUrl, reason: "claimed same" })],
+        [scholarCall("dedup"), { content: ["Only https://openalex.org/W1 was found."] }, collisionCall({ coverageAdequate: true, same: true, artifactUrl, reason: "claimed same" })],
         okFetch,
       );
       const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
-      expect(r.status).toBe("not_falsified");
+      expect(r.status).toBe("search_failed");
       expect(record.read().some((e) => e.t === "arbiter.verdict" && e.verdict === "collided")).toBe(false);
     }
   });
@@ -202,17 +296,17 @@ describe("runPriorArtScout", () => {
     expect(record.read().some((e) => e.t === "arbiter.verdict" && e.verdict === "distinct")).toBe(false);
   });
 
-  test("one failed search makes a multi-search scout degraded instead of fully healthy", async () => {
+  test("partial successful retrieval can reach review but deferred coverage remains unknown", async () => {
     let calls = 0;
     const fetchImpl = (async () => ++calls === 1 ? new Response(OK_WORKS) : new Response("down", { status: 503 })) as unknown as typeof fetch;
     const { deps } = setup([scholarCall("first"), scholarCall("second"), { content: ["Partial results only."] }], fetchImpl);
     const r = await runPriorArtScout(deps, dossier(), { shape: "product", arbiter: false });
-    expect(r).toMatchObject({ status: "search_failed", searchOk: false });
+    expect(r).toMatchObject({ status: "search_failed", searchOk: true });
   });
 
   test("a distinct verdict is not_falsified and records verdict 'distinct'", async () => {
     const { deps, record } = setup(
-      [scholarCall("dedup"), { content: ["Nothing on point."] }, collisionCall({ same: false, reason: "Different mechanism entirely." })],
+      [scholarCall("dedup"), { content: ["A relevant retrieved paper uses a different mechanism."] }, collisionCall({ coverageAdequate: true, same: false, reason: "Different mechanism entirely." })],
       okFetch,
     );
     const r = await runPriorArtScout(deps, dossier(), { shape: "product" });
@@ -250,10 +344,11 @@ describe("runPriorArtScout", () => {
     expect(base.record.read().some((e) => e.t === "search.health" && e.status === "ok")).toBe(true);
   });
 
-  test("opts.arbiter: false skips the collision call and reports not_falsified", async () => {
+  test("opts.arbiter: false skips review and leaves coverage unassessed", async () => {
     const { deps, record } = setup([scholarCall("dedup"), { content: ["Found some maybe-related tools."] }], okFetch);
     const r = await runPriorArtScout(deps, dossier(), { shape: "product", arbiter: false });
-    expect(r.status).toBe("not_falsified");
+    expect(r).toMatchObject({ status: "search_failed", searchOk: true });
+    expect(r.distance).toContain("not been assessed");
     expect(record.read().filter((e) => e.t === "model.call" && e.role === "arbiter").length).toBe(0);
   });
 });

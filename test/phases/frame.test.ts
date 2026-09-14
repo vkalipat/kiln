@@ -60,6 +60,42 @@ function useModel(d: PhaseDeps, model: unknown) {
 }
 
 describe("parseBrief", () => {
+  test("an existing valid brief does not make reads, failed edits, or unrelated writes terminal", async () => {
+    const d = deps([]); writeFileSync(d.run.brief, BRIEF);
+    const model = createMockModel({ responses: [
+      { content: [{ type: "toolCall", name: "read", arguments: { path: "brief.md" } }] },
+      { content: [{ type: "toolCall", name: "edit", arguments: { path: "brief.md", old: "absent old text", new: "replacement" } }] },
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "notes.md", content: "notes" } }] },
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "brief.md", content: BRIEF } }] },
+      { throw: "unnecessary paid continuation" },
+    ] as never });
+    useModel(d, model);
+    expect(await runFrame(d)).toEqual({ outcome: "ok" });
+    expect(model.calls).toHaveLength(4);
+  });
+  test("a validated final write ends the native loop before another expensive call", async () => {
+    const d = deps([]);
+    const model = createMockModel({ responses: [
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "brief.md", content: BRIEF } }] },
+      { throw: "unnecessary paid continuation" },
+    ] as never });
+    useModel(d, model);
+    expect(await runFrame(d)).toEqual({ outcome: "ok" });
+    expect(model.calls).toHaveLength(1);
+  });
+
+  test("an invalid draft and a read continue until an edit validates the canonical brief", async () => {
+    const d = deps([]);
+    const model = createMockModel({ responses: [
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "brief.md", content: "draft" } }] },
+      { content: [{ type: "toolCall", name: "read", arguments: { path: "brief.md" } }] },
+      { content: [{ type: "toolCall", name: "edit", arguments: { path: "brief.md", old: "draft", new: BRIEF } }] },
+      { throw: "unnecessary paid continuation" },
+    ] as never });
+    useModel(d, model);
+    expect(await runFrame(d)).toEqual({ outcome: "ok" });
+    expect(model.calls).toHaveLength(3);
+  });
   test("extracts sections, shape, questions, and axes with their values", () => {
     const b = parseBrief(BRIEF);
     expect(b.missing).toEqual([]); expect(b.shape).toBe("product"); expect(b.questions.length).toBe(2);
@@ -125,7 +161,7 @@ describe("runFrame", () => {
     expect(readFileSync(d.run.brief, "utf8")).toContain("without claiming a guaranteed financial outcome");
     expect(readFileSync(join(d.home, "prompts", "kernel.md"), "utf8")).toBe(customKernel);
     expect(readFileSync(join(d.home, "prompts", "brain.md"), "utf8")).toBe(customBrain);
-    expect(model.calls).toHaveLength(2);
+    expect(model.calls).toHaveLength(1);
     expect(d.record.read().some((event) => event.t === "tool.call" && event.name === "write" && event.ok)).toBe(true);
   });
 
@@ -142,7 +178,7 @@ describe("runFrame", () => {
     const result = await runFrame(d);
 
     expect(result).toEqual({ outcome: "ok" });
-    expect(model.calls).toHaveLength(3);
+    expect(model.calls).toHaveLength(2);
     expect(d.record.read().filter((event) => event.t === "honest_exit")).toHaveLength(0);
     expect(d.record.read().find((event) => event.t === "tool.call" && event.name === "exit")).toMatchObject({ ok: false });
   });

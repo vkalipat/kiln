@@ -65,7 +65,7 @@ describe("plug-and-play budget boundaries across benign use cases", () => {
     config.budgets.usd = 5;
     saveConfig(home, config);
     await invoke(["run", "resume", id, "--through", "frame"]);
-    expect(calls).toBe(2);
+    expect(calls).toBe(1); // The validated artifact write ends frame without a narration call.
     expect(existsSync(run.brief)).toBe(true);
     expect(readStatus(run)).toMatchObject({ state: "running" });
     expect(new RunRecord(run.record).read().filter((event) => event.t === "phase.end" && event.phase === "frame" && event.outcome === "ok")).toHaveLength(1);

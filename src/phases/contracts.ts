@@ -118,10 +118,10 @@ export function discoverContract(run: RunPaths, questions: string[], _turnCap: n
   return [
     `Phase: discover. Output file: ${run.landscape}`,
     ...(workflow ? [`Frozen workflow: ${workflowGuidance(workflow, "discover")}`] : []),
-    `Findings files are in ${run.discoveryDir}; read them first.`,
+    `Prefer the exact checkpoint evidence supplied in the prompt; no reread is required for fully supplied findings. Read named files in ${run.discoveryDir} only for explicit overflow or missing context. Preserve citations and treat failed or unfunded questions as evidence gaps.`,
     `Required sections (## headings, in this order): ${LANDSCAPE_SECTIONS.join(", ")}.`,
     "Obvious list: at least 5 bullets, the ideas anyone would propose in five minutes. Atoms: 20 to 40 bullets, each a concept, mechanism, or constraint from the findings, tagged (common) or (rare). Tensions: bullets, constraints that fight, shared assumptions, and things tried and failed with the stated reason. Distant domains: 3 to 5 bullets, fields far from this one with a structurally similar problem.",
-    `Questions that were scouted: ${questions.map((q) => `"${q}"`).join("; ")}.`,
+    `Discovery questions (checkpoint states identify completed reports or failures; report contents determine which questions were actually answered): ${questions.map((q) => `"${q}"`).join("; ")}.`,
     EXIT_CLAUSE,
   ].join("\n");
 }

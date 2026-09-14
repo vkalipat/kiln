@@ -40,13 +40,13 @@ function interruptedBuilderUsage(deps: PhaseDeps, featureId: string, attempt: nu
   }, { costUsd: 0, turns: 0 });
 }
 
-function pick(deps: PhaseDeps, features: FeaturesFile, remainingUsd: number): { feature: Feature; attempt: number; ceiling: number } | undefined {
+function pick(deps: PhaseDeps, features: FeaturesFile, remainingUsd: number, cwd: string): { feature: Feature; attempt: number; ceiling: number } | undefined {
   const state = foldState(deps.run); const remaining = features.features.filter((feature) => !state[feature.id]!.passes && !state[feature.id]!.blocked);
   for (const feature of remaining) {
     const held = state[feature.id]!;
     if (held.attempts >= deps.cfg.build.maxAttempts) { block(deps, feature.id, held, "attempts_exhausted"); stateProgress(deps, feature, held.attempts, false, "attempts_exhausted"); continue; }
     const needs = [...features.init.needs, ...(feature.acceptance.type === "manual" ? [] : feature.acceptance.needs ?? [])];
-    const missing = checkNeeds(needs, { env: checkEnv(needs) });
+    const missing = checkNeeds(needs, { env: checkEnv(needs), cwd });
     if (missing.length > 0) {
       const reason = `missing_dependency:${missing[0]}`;
       block(deps, feature.id, held, reason); stateProgress(deps, feature, 0, false, reason); continue;
@@ -63,6 +63,7 @@ function pick(deps: PhaseDeps, features: FeaturesFile, remainingUsd: number): { 
 function decision(builder: BuilderSessionResult, check: CheckResult, audit: AuditorSessionResult): Decision {
   if (builder.stopped === "refused") return { disposition: "refused", counted: false, declarationOverruled: false };
   if (audit.finalCheckVoided) return { disposition: "verify_failed", counted: true, declarationOverruled: false };
+  if (check.ok && (!audit.evidenceUsable || audit.effectiveVerdict === "unavailable")) return { disposition: "audit_unavailable", counted: true, declarationOverruled: false };
   if (check.ok && audit.effectiveVerdict === "agree") return { disposition: "passed", counted: true, declarationOverruled: (builder.exitReasons?.length ?? 0) > 0 };
   if (check.ok) return { disposition: "audit_disagreed", counted: true, declarationOverruled: false };
   if ((builder.exitReasons?.length ?? 0) > 0) return { disposition: "declared_failed", counted: true, declarationOverruled: false };
@@ -114,7 +115,7 @@ async function runInternal(deps: BuildDeps, io: BuildIo, arm: "fresh" | "single_
     const usd = phaseAvailableUsd(deps.cfg.budgets, "build", spentByPhase(events));
     const wall = phaseAvailableWallSeconds(deps.cfg.budgets, "build", elapsedByPhase(events, now));
     const pending = outstanding(deps);
-    const selected = pending ? { feature: features.features.find((value) => value.id === pending.featureId)!, attempt: pending.attempt, ceiling: 0 } : pick(deps, features, usd);
+    const selected = pending ? { feature: features.features.find((value) => value.id === pending.featureId)!, attempt: pending.attempt, ceiling: 0 } : pick(deps, features, usd, project.repo);
     if (!selected) {
       const fresh = foldState(deps.run); const executed = Object.values(fresh).filter((value) => value.passes && value.passSource === "executed").length;
       const declared = Object.entries(fresh).filter(([, value]) => value.blockedReason === "declared_unsatisfiable");

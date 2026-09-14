@@ -3,8 +3,8 @@ import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync,
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
-import { pinAudit, appendAudit, AUDIT_CAPS_PINNED, AUDIT_CAPS_STORED, type Audit } from "../../src/build/audit-contract";
-import { AuditorRunError, runAuditorSession, type AuditorContext } from "../../src/build/auditor";
+import { pinAudit, appendAudit, readAudits, AUDIT_CAPS_PINNED, AUDIT_CAPS_STORED, type Audit } from "../../src/build/audit-contract";
+import { AUDITOR_SCOPE_PIN_CHARS, AuditorRunError, runAuditorSession, type AuditorContext } from "../../src/build/auditor";
 import { RealGitRunner, type AuditSnapshot, type GitRunner } from "../../src/build/git";
 import type { CheckResult, RunCheckOptions } from "../../src/build/verify";
 import { defaultConfig } from "../../src/core/config";
@@ -15,6 +15,7 @@ import { createRun } from "../../src/core/run";
 import { currentRunControl, RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
 import { runProcess } from "../../src/core/process";
 import type { Feature } from "../../src/formation/features";
+import { writeAcceptanceLock } from "../../src/formation/lock";
 import { projectPaths } from "../../src/formation/paths";
 import { NoModelError } from "../../src/providers/models";
 import type { PhaseDeps } from "../../src/phases/frame";
@@ -59,6 +60,9 @@ function setup(responses: unknown[], patch: Partial<PhaseDeps> = {}, modelPatch:
   const project = projectPaths(run.project);
   mkdirSync(project.repo, { recursive: true }); mkdirSync(project.checksDir, { recursive: true });
   writeFileSync(project.spec, SPEC); writeFileSync(project.progress, "PROGRESS-SECRET\n");
+  const features = { version: 1 as const, init: { needs: [] }, features: [FEATURE] };
+  writeFileSync(run.features, JSON.stringify(features));
+  writeFileSync(run.acceptanceLock, JSON.stringify(writeAcceptanceLock(features, "spec")));
   const model = createMockModel({ id: "audit-model", provider: "other", responses: responses as never, ...modelPatch } as never);
   const unused = createMockModel({ id: "unused", responses: [{ content: ["unused"] }] as never });
   const resolverCalls: unknown[] = [];
@@ -90,6 +94,77 @@ function priorAudit(s: ReturnType<typeof setup>): void {
 }
 
 describe("runAuditorSession", () => {
+  test("current and future feature obligations reach the first call, with complete overflow scope outside the bounded pin", async () => {
+    for (const overflow of [false, true]) {
+      const current = { ...FEATURE, title: "CLI implementation", description: "Provide the executable and its tests." };
+      const future = { ...FEATURE, id: "f02", title: "README documentation", description: "Write README examples and exit behavior." + (overflow ? " Scope detail.".repeat(500) + " LAST-OBLIGATION" : "") };
+      const s = setup([fullAudit({ nextSessionNotes: "README belongs to pending f02; optional hardening deferred." })]);
+      const file = { version: 1 as const, init: { needs: [] }, features: [current, future] };
+      writeFileSync(s.run.features, JSON.stringify(file));
+      writeFileSync(s.run.acceptanceLock, JSON.stringify(writeAcceptanceLock(file, "spec")));
+      const result = await runAuditorSession(s.deps, current, checkResult(s.project.checksDir), s.context);
+      expect(result).toMatchObject({ effectiveVerdict: "agree", evidenceUsable: true });
+      const context = s.model.calls[0]!.context;
+      const pinned = (context.systemPrompt as string[]).join("\n");
+      const scope = pinned.slice(pinned.indexOf("## Frozen feature scope"));
+      expect(scope.length).toBeLessThanOrEqual(AUDITOR_SCOPE_PIN_CHARS);
+      expect(scope).toContain("Pending or blocked sibling work is not due");
+      const all = pinned + JSON.stringify(context.messages);
+      for (const text of [current.title, current.description, future.title, "f02", "pending"]) expect(all).toContain(text);
+      if (overflow) {
+        expect(scope).not.toContain("LAST-OBLIGATION");
+        expect(JSON.stringify(context.messages)).toContain("LAST-OBLIGATION");
+      }
+    }
+  });
+
+  test("missing or tampered authoritative scope stops before a model call", async () => {
+    for (const missing of [true, false]) {
+      const s = setup([fullAudit()]);
+      if (missing) rmSync(s.run.features);
+      else writeFileSync(s.run.features, readFileSync(s.run.features, "utf8").replace("ACCEPTANCE-SENTINEL", "forged"));
+      await expect(runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context)).rejects.toThrow("integrity: cannot establish auditor feature scope");
+      expect(s.model.calls).toHaveLength(0);
+    }
+  });
+
+  test("a provider output limit remains an error even with a syntactically complete audit payload", async () => {
+    const s = setup([{ ...fullAudit({ verdict: "disagree", regressions: ["current CLI obligation is missing"] }), stopReason: "length" }]);
+    await expect(runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context)).rejects.toBeInstanceOf(AuditorRunError);
+    expect(s.record.read().some((event) => event.t === "audit.disposition")).toBe(false);
+  });
+  test("adaptive routing dispatches its independent preferred seat before another vendor", async () => {
+    const preferred = createMockModel({ id: "opus-5", provider: "anthropic", responses: [fullAudit()] as never });
+    const s = setup([fullAudit()], {
+      availableProviders: new Set(["anthropic", "openai"]),
+      models: () => ({ model: preferred as never, ref: "anthropic/opus-5" }),
+    });
+    s.deps.cfg.routing = { mode: "adaptive" };
+    s.context.builderRef = "anthropic/fable-5.1";
+    const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
+    expect(result.crossProvider).toBe(false);
+    expect(result.audit.model.ref).toBe("anthropic/opus-5");
+    expect(preferred.calls).toHaveLength(1);
+    expect(s.model.calls).toHaveLength(0);
+    expect(s.resolverCalls).toHaveLength(0);
+  });
+
+  test("adaptive preferred seat rejects producer aliases and unadmitted providers", async () => {
+    for (const ref of ["openai/shared", "unadmitted/auditor"]) {
+      const rejected = createMockModel({ id: "rejected", responses: [fullAudit()] as never });
+      const s = setup([fullAudit()], {
+        availableProviders: new Set(["openai-codex", "openai", "other"]),
+        models: () => ({ model: rejected as never, ref }),
+      });
+      s.deps.cfg.routing = { mode: "adaptive" };
+      s.context.builderRef = "openai-codex/shared";
+      const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
+      expect(result.audit.model.ref).toBe("other/auditor");
+      expect(rejected.calls).toHaveLength(0);
+      expect(s.model.calls).toHaveLength(1);
+    }
+  });
+
   test("a resumed attempt charges recorded auditor calls before another dispatch", async () => {
     const s = setup([fullAudit()]);
     s.deps.cfg.build.auditorUsdCap = 0.2;
@@ -252,7 +327,7 @@ describe("runAuditorSession", () => {
   test("keeps malformed, truncated, empty-disagree, and genuine-disagree dispositions distinct", async () => {
     const malformed = setup([{ content: ["none"] }, { content: ["still none"] }]);
     expect(await runAuditorSession(malformed.deps, FEATURE, checkResult(malformed.project.checksDir), malformed.context)).toMatchObject({
-      rawVerdict: "agree", effectiveVerdict: "agree", malformed: true, truncated: false, retried: true, evidenceUsable: false,
+      rawVerdict: "agree", effectiveVerdict: "unavailable", malformed: true, truncated: false, retried: true, evidenceUsable: false,
     });
 
     const truncated = setup([
@@ -261,7 +336,7 @@ describe("runAuditorSession", () => {
     ], {}, { cost: { input: 100_000, output: 0, cacheRead: 0, cacheWrite: 0 } });
     truncated.deps.cfg.build.auditorUsdCap = 0.05;
     expect(await runAuditorSession(truncated.deps, FEATURE, checkResult(truncated.project.checksDir), truncated.context)).toMatchObject({
-      effectiveVerdict: "agree", malformed: false, truncated: true, retried: false, evidenceUsable: false, costUsd: 0.1,
+      effectiveVerdict: "unavailable", malformed: false, truncated: true, retried: false, evidenceUsable: false, costUsd: 0.1,
     });
     expect(truncated.model.calls).toHaveLength(1);
     expect(truncated.record.read().find((event) => event.t === "audit")).toMatchObject({ costUsd: 0.1, usdCapHit: true, truncated: true });
@@ -269,7 +344,7 @@ describe("runAuditorSession", () => {
 
     const empty = setup([fullAudit({ verdict: "disagree", claimedUnverified: [], regressions: [] })]);
     expect(await runAuditorSession(empty.deps, FEATURE, checkResult(empty.project.checksDir), empty.context)).toMatchObject({
-      rawVerdict: "disagree", effectiveVerdict: "agree", evidenceUsable: true,
+      rawVerdict: "disagree", effectiveVerdict: "unavailable", evidenceUsable: false,
     });
     expect(empty.record.read().find((value) => value.t === "audit.disposition")).toMatchObject({ emptyDisagree: true, malformed: false });
 
@@ -279,15 +354,15 @@ describe("runAuditorSession", () => {
     });
   });
 
-  test("treats a refusal as malformed agree evidence with a category-named note and no retry", async () => {
+  test("treats a refusal as unavailable evidence with a category-named note and no retry", async () => {
     const s = setup([{ stopReason: "error", errorMessage: "Refusal (safety)", stopDetails: { type: "refusal", category: "safety" } }]);
     const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
-    expect(result).toMatchObject({ rawVerdict: "agree", effectiveVerdict: "agree", malformed: true, retried: false, evidenceUsable: false });
+    expect(result).toMatchObject({ rawVerdict: "agree", effectiveVerdict: "unavailable", malformed: true, retried: false, evidenceUsable: false });
     expect(result.audit.raw.nextSessionNotes).toBe("Auditor evidence unusable: auditor refused: safety");
     expect(result.audit.raw.checkQuality).toEqual({ adequate: false, reason: "auditor refused: safety" });
     expect(s.model.calls).toHaveLength(1);
     expect(s.record.read().find((event) => event.t === "audit.disposition")).toMatchObject({
-      rawVerdict: "agree", effectiveVerdict: "agree", malformed: true, retried: false, evidenceUsable: false,
+      rawVerdict: "agree", effectiveVerdict: "unavailable", malformed: true, retried: false, evidenceUsable: false,
     });
   });
 
@@ -308,17 +383,21 @@ describe("runAuditorSession", () => {
     } });
   });
 
-  test("stores large audits at stored caps, pins purely at pinned caps, and marks lost evidence", async () => {
+  test("preserves complete large audit evidence independently of presentation caps", async () => {
     const item = "x".repeat(300); const notes = "n".repeat(1_500); const reason = "q".repeat(300);
     const s = setup([fullAudit({
       verified: Array(10).fill(item), claimedUnverified: Array(10).fill(item), regressions: Array(10).fill(item),
       nextSessionNotes: notes, checkQuality: { adequate: false, reason }, verdict: "disagree",
     })]);
     const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
-    expect(result).toMatchObject({ rawVerdict: "disagree", effectiveVerdict: "agree", truncated: true, evidenceUsable: false });
-    expect(result.audit.raw.verified).toHaveLength(AUDIT_CAPS_STORED.items);
-    expect(result.audit.raw.verified[0]).toHaveLength(AUDIT_CAPS_STORED.itemChars);
-    expect(result.audit.raw.nextSessionNotes).toHaveLength(AUDIT_CAPS_STORED.notesChars);
+    expect(result).toMatchObject({ rawVerdict: "disagree", effectiveVerdict: "disagree", truncated: false, evidenceUsable: true });
+    expect(result.audit.raw.verified).toHaveLength(10);
+    expect(result.audit.raw.verified[0]).toBe(item);
+    expect(result.audit.raw.nextSessionNotes).toBe(notes);
+    expect(readAudits(s.run).at(-1)?.raw).toEqual(result.audit.raw);
+    const event = s.record.read().find((event) => event.t === "audit");
+    expect(event).toMatchObject({ truncated: false, presentationTruncated: true, verifiedCount: 10 });
+    if (event?.t === "audit") expect(event.regressions.every((item) => item.length <= AUDIT_CAPS_STORED.itemChars)).toBe(true);
     const pinned = pinAudit(result.audit);
     expect(pinned.raw.verified).toHaveLength(AUDIT_CAPS_PINNED.items);
     expect(pinned.raw.verified[0]).toHaveLength(AUDIT_CAPS_PINNED.itemChars);
@@ -369,7 +448,7 @@ describe("runAuditorSession", () => {
     s.git.statuses = [" M first", " M second"];
     s.context.check = async () => checkResult(s.project.checksDir, true, "check-rebuilt-twice");
     const result = await runAuditorSession(s.deps, FEATURE, checkResult(s.project.checksDir), s.context);
-    expect(result).toMatchObject({ rawVerdict: "disagree", effectiveVerdict: "agree", evidenceUsable: false, recoveredFromVoid: true, finalCheckVoided: true, checkVoided: true, costUsd: 0.2 });
+    expect(result).toMatchObject({ rawVerdict: "disagree", effectiveVerdict: "unavailable", evidenceUsable: false, recoveredFromVoid: true, finalCheckVoided: true, checkVoided: true, costUsd: 0.2 });
     expect(s.record.read().filter((event) => event.t === "audit.disposition").map((event) => event.t === "audit.disposition" && event.checkVoided)).toEqual([true, true]);
     expect(s.record.read().filter((event) => event.t === "failure" && event.class === "policy")).toHaveLength(2);
     expect(s.git.calls.filter((call) => call.method === "rebuildAuditSnapshot")).toHaveLength(1);

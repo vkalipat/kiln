@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, rmdirSync, unlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, relative } from "node:path";
+import { checkNeeds } from "../../src/ideation/probe";
 import { defaultConfig } from "../../src/core/config";
 import {
   assignIds,
@@ -106,6 +110,68 @@ describe("isTrivialCommand", () => {
 });
 
 describe("validateFeatures", () => {
+  test("rejects lexical parent paths and actual NUL commands before locking the oracle", () => {
+    const draft = file(3);
+    draft.features[0]!.acceptance = { type: "file", path: "nested/../result.txt" };
+    draft.features[1]!.acceptance = { type: "shell", command: "python3 -c pass\0ignored" };
+    draft.features[2]!.acceptance = { type: "shell", command: "python3 -c 'print(\"\\0\")'" };
+    const problems = validateFeatures(draft, SPEC, defaultConfig());
+    expect(problems).toContain("features[0].acceptance.path must be relative and stay inside the repo without any .. path segment");
+    expect(problems).toContain("features[1].acceptance.command must not contain a NUL byte; encode it as an escape in the command instead");
+    expect(problems).toHaveLength(2);
+  });
+
+  test("rejects dependency prose and command expressions before freezing without rewriting them", () => {
+    const invalidNeeds = [
+      "python3 (CPython 3.8 or newer) on PATH; standard library only, no pip, no network",
+      "python3 >= 3.8", "python3>=3.8", "python3 --version", "python3;node", "$(which python3)",
+      "python3\nnode", " python3", "python3 ", "python3\0", "'python3'", "node|python3",
+      "/tools/check\0", "./tools/check\nnext", "../tools/check\rnext", "/tools/", "./tools/.", "../tools/..",
+    ];
+    for (const need of invalidNeeds) {
+      const draft = file(3);
+      draft.init.needs = [need];
+      draft.features[0]!.acceptance = { type: "shell", command: "python3 check.py", needs: [need] };
+      draft.features[1]!.acceptance = { type: "file", path: "result.txt", needs: [need] };
+      const before = JSON.stringify(draft);
+      const problems = validateFeatures(assignIds(parseFeatures(before)), SPEC, defaultConfig());
+      for (const prefix of ["init.needs[0]", "features[0].acceptance.needs[0]", "features[1].acceptance.needs[0]"]) {
+        expect(problems.some((problem) => problem.startsWith(prefix) && problem.includes("executable") && problem.includes("init.sh")), need).toBe(true);
+      }
+      expect(JSON.stringify(draft)).toBe(before);
+    }
+  });
+
+  test("preserves literal executable names and paths plus declared environment variables", () => {
+    const draft = file(3);
+    const needs = ["python3", "python3.11", "g++", "clang-18", "x86_64-linux-gnu-gcc", "_tool", "/usr/bin/python3", "./bin/check", "../tools/check", "node_modules/.bin/tsc", "DATABASE_URL", "GOOGLE_APPLICATION_CREDENTIALS"];
+    draft.init.needs = needs;
+    draft.features[0]!.acceptance = { type: "shell", command: "python3 check.py", needs };
+    draft.features[1]!.acceptance = { type: "file", path: "result.txt", needs };
+    expect(validateFeatures(draft, SPEC, defaultConfig())).toEqual([]);
+  });
+
+  test("accepts executable paths with spaces and Unicode exactly as the dependency checker does", () => {
+    const directory = mkdtempSync(join(tmpdir(), "kiln-literal-need-"));
+    const executable = join(directory, "prüf werkzeug");
+    writeFileSync(executable, "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    try {
+      const relativePath = relative(process.cwd(), executable);
+      const needs = [executable, relativePath, `./${relativePath}`];
+      for (const need of needs) expect(Bun.which(need)).not.toBeNull();
+      expect(checkNeeds(needs, { env: {} })).toEqual([]);
+      const draft = file(3);
+      draft.init.needs = needs;
+      draft.features[0]!.acceptance = { type: "shell", command: "python3 check.py", needs };
+      draft.features[1]!.acceptance = { type: "file", path: "result.txt", needs };
+      expect(validateFeatures(draft, SPEC, defaultConfig())).toEqual([]);
+      expect(draft.init.needs).toEqual(needs);
+    } finally {
+      unlinkSync(executable);
+      rmdirSync(directory);
+    }
+  });
+
   test("accepts seven and rejects two or eight features at defaults", () => {
     const cfg = defaultConfig();
     expect(validateFeatures(file(7), SPEC, cfg)).toEqual([]);

@@ -1,4 +1,4 @@
-import { isAbsolute, normalize } from "node:path";
+import { isAbsolute } from "node:path";
 import type { KilnConfig } from "../core/config";
 import type { Predicate } from "../core/predicate";
 import { attemptCeiling } from "../core/budget";
@@ -127,7 +127,16 @@ function validateNeeds(value: unknown, prefix: string, problems: string[]): void
   if (value === undefined) return;
   if (!Array.isArray(value)) { problems.push(`${prefix} must be a list`); return; }
   value.forEach((need, index) => {
-    if (typeof need !== "string" || need.trim() === "") problems.push(`${prefix}[${index}] must be a non-empty string`);
+    if (typeof need !== "string" || need.trim() === "") {
+      problems.push(`${prefix}[${index}] must be a non-empty string`);
+    } else if (/[\x00-\x1f\x7f]/.test(need)
+      || /(?:^|\/)\.{0,2}$/.test(need)
+      || (!/^(?:\/|\.\.?\/)/.test(need) && !/^[A-Za-z0-9_./+\-]+$/.test(need))) {
+      // checkNeeds performs a literal executable/env-name lookup, not shell parsing or
+      // package/version resolution. Explicit /, ./, or ../ paths may contain spaces and
+      // Unicode: the entire string is the filename, never a command plus arguments.
+      problems.push(`${prefix}[${index}] must be one literal executable name/path or environment-variable name (for example, "python3"); no prose or version constraints. Explicit /, ./, or ../ paths may contain spaces and Unicode, but not control characters or a directory-only ending. Put arguments and version checks in init.sh and descriptive requirements in spec.md`);
+    }
   });
 }
 
@@ -151,6 +160,7 @@ function validateAcceptance(value: unknown, index: number, problems: string[]): 
   if (allowed) for (const key of Object.keys(acceptance)) if (!allowed.has(key)) problems.push(`${prefix}.${key} is not allowed`);
   if (acceptance.type === "shell") {
     if (typeof acceptance.command !== "string" || acceptance.command.trim() === "") problems.push(`${prefix}.command must be non-empty`);
+    else if (acceptance.command.includes("\0")) problems.push(`${prefix}.command must not contain a NUL byte; encode it as an escape in the command instead`);
     else if (acceptance.expect === undefined && isTrivialCommand(acceptance.command)) problems.push(`${prefix}.command is trivial and cannot verify the feature`);
     validatePredicate(acceptance.expect, `${prefix}.expect`, problems);
     validateNeeds(acceptance.needs, `${prefix}.needs`, problems);
@@ -162,7 +172,7 @@ function validateAcceptance(value: unknown, index: number, problems: string[]): 
   if (acceptance.type === "file") {
     if (typeof acceptance.path !== "string" || acceptance.path.trim() === "") problems.push(`${prefix}.path must be non-empty`);
     else if (acceptance.path.includes("\0")) problems.push(`${prefix}.path must not contain a NUL byte`);
-    else if (isAbsolute(acceptance.path) || normalize(acceptance.path).split(/[\\/]/).includes("..")) problems.push(`${prefix}.path must be relative and stay inside the repo`);
+    else if (isAbsolute(acceptance.path) || acceptance.path.split(/[\\/]/).includes("..")) problems.push(`${prefix}.path must be relative and stay inside the repo without any .. path segment`);
     if (acceptance.contains !== undefined && typeof acceptance.contains !== "string") problems.push(`${prefix}.contains must be a string`);
     validateNeeds(acceptance.needs, `${prefix}.needs`, problems);
     return true;

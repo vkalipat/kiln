@@ -109,6 +109,11 @@ describe("validateSpec", () => {
 });
 
 describe("checkNeeds", () => {
+  test("cwd does not change literal names passed to an injected executable lookup", () => {
+    const seen: string[] = [];
+    expect(checkNeeds(["./tool"], { cwd: "/not-used-by-injected-lookup", env: {}, which: (name) => { seen.push(name); return "/resolved/tool"; } })).toEqual([]);
+    expect(seen).toEqual(["./tool"]);
+  });
   test("an executable on PATH and a present environment variable are both satisfied", () => {
     expect(checkNeeds(["sh"])).toEqual([]);
     expect(checkNeeds(["KILN_PROBE_NEED"], { env: { KILN_PROBE_NEED: "1" }, which: () => null })).toEqual([]);
@@ -127,6 +132,15 @@ describe("checkNeeds", () => {
 });
 
 describe("runProbe", () => {
+  test("resolves a preexisting relative executable inside the probe directory", async () => {
+    const { run, record } = setup();
+    const dir = probeDir(run, "r1-i1-1");
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, "local-runtime"), "#!/bin/sh\nprintf READY\n", { mode: 0o755 });
+    const result = await runProbe(run, spec({ command: "./local-runtime", needs: ["./local-runtime"] }), { timeoutSeconds: 120 }, record);
+    expect(result).toMatchObject({ status: "pass", exitCode: 0 });
+  });
+
   test("exit 0 with the predicate in the output is a pass, recorded in the sidecar and the journal", async () => {
     const { run, record } = setup();
     const r = await runProbe(run, spec(), { timeoutSeconds: 120 }, record);

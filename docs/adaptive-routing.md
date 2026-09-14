@@ -13,7 +13,7 @@ The TUI uses the same run path. In its command palette (`Ctrl+O`), choose `model
 ## What adapts
 
 - Role choices follow task-relevant categories in dated benchmark evidence, constrained by the installed model catalog and available providers. Science, business, and general work need not use the same ranking. Rankings inform choices; they do not prove that a model is a good Kiln judge or that an idea is correct.
-- Generator/judge and builder/auditor separation is preserved. When only one provider is usable, different model identities provide a weaker alternative to cross-provider review. Unavailable catalog entries are not invented.
+- Generator/judge and builder/auditor model separation is preserved. Quality ranks before vendor diversity: an independently scored stronger model is preferred even from the same vendor, with correlated-error risk disclosed. Different vendors break score ties. Unavailable catalog entries are not invented.
 - The planner estimates one complete ideation round, reallocates only the ideation/build shares when needed, and makes the affordable round count explicit. It preserves the total dollar/time targets and per-unit caps. If a complete round cannot fit the allowed allocation, it stops before the first model phase instead of silently increasing spending.
 - Allocation aims for 10% headroom over projected ideation cost, retaining a build reserve and checking the configured minimum feature count. These are explicit planning assumptions, not measured costs or a guarantee that a run will finish within its target.
 - Adaptive sessions receive runtime evidence guidance even when the home contains an older customized kernel. Guidance distinguishes facts, inferences, and hypotheses and respects which tools each role actually has. It does not grant tools, remove safety restrictions, or replace external checks.
@@ -26,7 +26,7 @@ Resuming, forming, building, or judging that run uses the frozen routing instead
 
 ## Refreshing benchmark evidence
 
-Ordinary runs use cached structured evidence. The bundled snapshot records the sources inspected for the [September 8 routing review](model-routing-2026-09-08.md). A fresh rank is not inferred from a model name or release date.
+Ordinary runs use cached structured evidence. The bundled snapshot records the sources inspected for the [September 9 quality-first review](model-routing-2026-09-09.md). Entries preserve benchmark effort and conditions, and plans explicitly disclose excluded models (including unsupported Astra Code Mode) and effort mismatches. A fresh rank is not inferred from a model name or release date.
 
 ```sh
 kiln model benchmarks show --json

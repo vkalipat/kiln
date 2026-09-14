@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { writeAtomic } from "../core/paths";
-import type { AuditVerdict } from "../core/events";
+import type { AuditVerdict, EffectiveAuditVerdict } from "../core/events";
 import type { RunPaths } from "../core/run";
 import { projectPaths } from "../formation/paths";
 
@@ -22,7 +22,7 @@ export interface ProgressIteration {
     notRunReason?: string;
     excerpt: string;
   };
-  audit?: { rawVerdict: AuditVerdict; effectiveVerdict: AuditVerdict; evidenceUsable: boolean };
+  audit?: { rawVerdict: AuditVerdict; effectiveVerdict: EffectiveAuditVerdict; evidenceUsable: boolean };
   commit?: { sha?: string; empty?: boolean; error?: string };
   discardStat?: string;
 }

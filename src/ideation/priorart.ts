@@ -2,6 +2,7 @@ import type { AgentTool } from "@oh-my-pi/pi-agent-core";
 import { createBrain } from "../brain/agent";
 import { loadPrompt } from "../brain/prompts";
 import { scoutTools, type ToolContext } from "../brain/tools";
+import { fail } from "../brain/tools/shape";
 import type { IdeaShape } from "../core/config";
 import type { SearchStatus } from "../core/events";
 import type { Limiter } from "../core/limiter";
@@ -24,6 +25,7 @@ export interface PriorArtFinding {
   artifact?: { title: string; url: string };
   distance?: string;
   findings: string;
+  /** Completed scout with some successful retrieval; this alone does not establish coverage. */
   searchOk: boolean;
   costUsd: number;
   contextPressure: boolean;
@@ -63,7 +65,8 @@ export function facetQuery(d: Dossier, shape: IdeaShape, template = DEFAULT_TEMP
 
 export interface CollisionVerdict {
   same: boolean;
-  /** False means the arbiter never produced a decision; it must not be persisted as distinct. */
+  coverageAdequate: boolean;
+  /** False includes inadequate coverage and invalid/missing decisions; never persist as distinct. */
   conclusive: boolean;
   artifactTitle?: string;
   artifactUrl?: string;
@@ -74,20 +77,29 @@ export interface CollisionVerdict {
 /** One arbiter call: is a named artifact with a URL already this idea? A `same` without a URL is not a collision. */
 export async function collisionVerdict(deps: PhaseDeps, d: Dossier, findings: string): Promise<CollisionVerdict> {
   const { model } = deps.models("arbiter");
-  let captured: { same: boolean; artifactTitle?: string; artifactUrl?: string; reason: string } | undefined;
+  let captured: { coverageAdequate: boolean; same: boolean; artifactTitle?: string; artifactUrl?: string; reason: string } | undefined;
+  let invalidReason: string | undefined;
   const tool: AgentTool<any> = {
     name: "collision",
     label: "Collision",
     intent: "omit",
-    description: "Say whether a specific existing artifact (with a URL) already is this idea: same mechanism for the same purpose.",
+    description: "Assess whether the retrieved findings provide adequate relevant coverage, then whether a specific artifact already implements this mechanism for this purpose. Parsed results alone do not establish coverage.",
     parameters: {
       type: "object",
-      properties: { same: { type: "boolean" }, artifactTitle: { type: "string" }, artifactUrl: { type: "string" }, reason: { type: "string" } },
-      required: ["same", "reason"],
+      properties: { coverageAdequate: { type: "boolean" }, same: { type: "boolean" }, artifactTitle: { type: "string" }, artifactUrl: { type: "string" }, reason: { type: "string" } },
+      required: ["coverageAdequate", "same", "reason"],
     },
-    examples: [{ caption: "A collision", call: { same: true, artifactTitle: "Foo", artifactUrl: "https://example.com/foo", reason: "Foo does exactly this for the same users." } }],
-    async execute(_id, p: { same?: boolean; artifactTitle?: string; artifactUrl?: string; reason?: string }) {
-      captured = { same: p.same === true, artifactTitle: p.artifactTitle?.trim() || undefined, artifactUrl: p.artifactUrl?.trim() || undefined, reason: String(p.reason ?? "").trim() };
+    examples: [{ caption: "A collision", call: { coverageAdequate: true, same: true, artifactTitle: "Foo", artifactUrl: "https://example.com/foo", reason: "The retrieved Foo documentation establishes this mechanism for the same users." } }],
+    async execute(_id, p: { coverageAdequate?: boolean; same?: boolean; artifactTitle?: string; artifactUrl?: string; reason?: string }) {
+      const reject = (reason: string) => { invalidReason = reason; return fail(reason); };
+      if (!p || typeof p.coverageAdequate !== "boolean" || typeof p.same !== "boolean" || typeof p.reason !== "string" || !p.reason.trim()) {
+        return reject("Provide explicit boolean coverageAdequate and same, plus a nonempty reason naming relevant evidence or concrete retrieval gaps.");
+      }
+      if (!p.coverageAdequate && p.same) return reject("Inadequate coverage cannot support same=true; report coverageAdequate=false and same=false with the evidence gap.");
+      if ((p.artifactTitle !== undefined && typeof p.artifactTitle !== "string") || (p.artifactUrl !== undefined && typeof p.artifactUrl !== "string")) return reject("Artifact title and URL must be strings when supplied.");
+      const artifactUrl = p.artifactUrl?.trim() || undefined;
+      if (p.same && !verifiedArtifactUrl(artifactUrl, artifactUrl ? [artifactUrl] : [])) return reject("same=true requires a specific valid HTTP(S) artifact URL from the retrieved evidence.");
+      captured = { coverageAdequate: p.coverageAdequate, same: p.same, artifactTitle: p.artifactTitle?.trim() || undefined, artifactUrl, reason: p.reason.trim() };
       return { content: [{ type: "text" as const, text: "collision verdict recorded" }] };
     },
   };
@@ -96,7 +108,7 @@ export async function collisionVerdict(deps: PhaseDeps, d: Dossier, findings: st
     getApiKey: () => deps.apiKeyFor(String(model.provider)),
     tools: [tool],
     systemPrompt: [loadPrompt(deps.home, "kernel"), loadPrompt(deps.home, "arbiter")],
-    pinned: `Collision question for idea ${d.id}.`,
+    pinned: `Collision question for idea ${d.id}. First assess coverage of this mechanism and purpose from the retrieved findings. Irrelevant RSS hits, blocked retrieval, or unanswered questions mean coverageAdequate=false and same=false. Relevant evidence can support coverageAdequate=true even when no exact collision is found; explain the evidence and limits. No-results responses do not prove absence.`,
     record: deps.record,
     role: "arbiter",
     phase: "ideate",
@@ -112,10 +124,10 @@ export async function collisionVerdict(deps: PhaseDeps, d: Dossier, findings: st
     const category = result.stopDetails?.category?.trim();
     const reason = result.stopped === "refused" ? `arbiter refused${category ? `:${category}` : ""}`
       : result.stopped === "error" ? `arbiter failed: ${result.error ?? "provider error"}`
-      : "arbiter gave no verdict";
-    return { same: false, conclusive: false, reason, costUsd: result.costUsd };
+      : invalidReason ? `arbiter gave no valid verdict: ${invalidReason}` : "arbiter gave no verdict";
+    return { same: false, coverageAdequate: false, conclusive: false, reason, costUsd: result.costUsd };
   }
-  return { ...captured, conclusive: true, costUsd: result.costUsd };
+  return { ...captured, conclusive: captured.coverageAdequate, costUsd: result.costUsd };
 }
 
 /** A collision may cite only a valid web URL that is present in the scout's retrieved findings. */
@@ -134,7 +146,7 @@ export function verifiedArtifactUrl(candidate: string | undefined, observed: str
 export interface PriorArtOptions {
   shape: IdeaShape;
   fetchImpl?: typeof fetch;
-  /** Set false to skip the arbiter (e.g. the collision cap is spent); the status is then `not_falsified` with the findings attached. */
+  /** Set false to defer coverage/collision review; status stays search_failed until reviewed. */
   arbiter?: boolean;
   /** Separate from the shared model-work limiter; acquired inside web/scholar tools. */
   searchLimiter?: Limiter;
@@ -158,7 +170,6 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
     onSearchHealth: (status) => searchHealth.push(status),
   };
   const question = facetQuery(d, opts.shape, priorArtTemplate(deps.home));
-  const marker = deps.record.read().at(-1)?.seq ?? 0;
   const scout = await runScout({
     question,
     brief: `Prior-art check for one idea. Shape: ${opts.shape}.`,
@@ -175,22 +186,19 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
     streamFn: deps.streamFn,
     searchHealth,
   });
-  const observedUrls = [...new Set(deps.record.read().flatMap((event) => {
-    if (event.seq <= marker || event.t !== "tool.call" || !event.ok || !["scholar_search", "web_search", "web_fetch"].includes(event.name)) return [];
-    return event.excerpt.match(/https?:\/\/[^\s<>"'\])}]+/gi) ?? [];
-  }))];
+  const observedUrls = scout.observedUrls;
   // This is deliberately scout-local. A sequence-window scan of the journal attributes another
   // concurrently running scout's successful search to this one (carry-forward ruling 25).
-  const searchOk = scout.stopped === "done" && scout.searchHealth.length > 0 && scout.searchHealth.every((status) => status === "ok");
+  const searchOk = scout.stopped === "done" && (scout.searchHealth.includes("ok") || (scout.successfulFetches ?? 0) > 0);
   const scoutCost = scout.costUsd;
   if (!searchOk) {
-    return { status: "search_failed", findings: scout.findings, searchOk: false, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
+    return { status: "search_failed", distance: scout.stopped === "done" ? "No successful source retrieval was observed." : `Scout did not complete its report (${scout.stopped}).`, findings: scout.findings, searchOk: false, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
   }
-  if (opts.arbiter === false) return { status: "not_falsified", findings: scout.findings, searchOk: true, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
+  if (opts.arbiter === false) return { status: "search_failed", distance: "Search coverage has not been assessed by the arbiter.", findings: scout.findings, searchOk: true, costUsd: scoutCost, contextPressure: scout.contextPressure, observedUrls };
   const v = await collisionVerdict(deps, d, scout.findings);
   if (!v.conclusive) {
     deps.record.append({ t: "arbiter.verdict", kind: "collision", id: d.id, verdict: "inconclusive", costUsd: v.costUsd });
-    return { status: "search_failed", findings: scout.findings, searchOk: false, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
+    return { status: "search_failed", distance: v.reason, findings: scout.findings, searchOk: false, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
   }
   const artifactUrl = verifiedArtifactUrl(v.artifactUrl, observedUrls);
   const collided = v.same && artifactUrl !== undefined;
@@ -198,5 +206,6 @@ export async function runPriorArtScout(deps: PhaseDeps, d: Dossier, opts: PriorA
   if (collided) {
     return { status: "collided", artifact: { title: v.artifactTitle ?? artifactUrl, url: artifactUrl }, distance: v.reason, findings: scout.findings, searchOk: true, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
   }
+  if (v.same) return { status: "search_failed", distance: "The proposed collision URL was not observed by this scout's successful retrievals.", findings: scout.findings, searchOk: false, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
   return { status: "not_falsified", distance: v.reason || undefined, findings: scout.findings, searchOk: true, costUsd: scoutCost + v.costUsd, contextPressure: scout.contextPressure, observedUrls };
 }

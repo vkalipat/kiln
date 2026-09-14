@@ -3,12 +3,21 @@ import { RunRecord } from "../core/record";
 import { RunControl, RunCancelledError, currentRunControl, throwIfRunCancelled, withRunControl } from "../core/run-control";
 import { watchRunPause } from "../core/pause-request";
 import type { CliDeps } from "./main";
+import type { Phase } from "../core/config";
 
 /** Called by a phase command while its run lock is still held. */
 export function pauseCancelledRun(run: RunPaths): void {
   const status = readStatus(run);
   if (status.state === "done" || status.state === "failed" || (status.state === "paused" && status.pausedReason === "user_cancelled")) return;
   const record = new RunRecord(run.record);
+  // The wall ledger counts unmatched starts through now. Close only active intervals
+  // while the caller still holds its lock, so paused time is excluded on resume.
+  const open = new Set<Phase>();
+  for (const event of record.read()) {
+    if (event.t === "phase.start") open.add(event.phase);
+    if (event.t === "phase.end") open.delete(event.phase);
+  }
+  for (const phase of open) record.append({ t: "phase.end", phase, outcome: "cancelled" });
   record.append({ t: "note", text: "operator cancelled the active step; resume from the saved boundary" });
   writeStatus(run, { state: "paused", outcome: undefined, pausedReason: "user_cancelled", wakeAt: undefined, usdSpent: record.costUsd() });
 }

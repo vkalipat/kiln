@@ -52,7 +52,7 @@ function reversible(deps: BuildDeps, features: FeaturesFile, io: BuildIo): void 
     const state = states[feature.id]!; if (!state.blocked) continue;
     const reason = state.blockedReason ?? "";
     const needs = [...features.init.needs, ...(feature.acceptance.type === "manual" ? [] : feature.acceptance.needs ?? [])];
-    const dependencyReady = reason.startsWith("missing_dependency:") && checkNeeds(needs, { env: checkEnv(needs) }).length === 0;
+    const dependencyReady = reason.startsWith("missing_dependency:") && checkNeeds(needs, { env: checkEnv(needs), cwd: projectPaths(deps.run.project).repo }).length === 0;
     const manualReady = reason === "not_verifiable" && feature.acceptance.type === "manual" && !deps.cfg.autonomous && io.ask !== undefined;
     if (dependencyReady || manualReady) {
       appendRecordedState(deps.run, deps.record, { t: "feature.state", featureId: feature.id, from: "blocked", to: "pending", attempts: state.attempts, repairs: state.repairs, reason: `unblocked:${reason}` });

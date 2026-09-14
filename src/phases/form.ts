@@ -15,6 +15,7 @@ import { rethrowIfRunCancelled, throwIfRunCancelled } from "../core/run-control"
 import { parseDossier, renderDossier, validateDossier, type Dossier, type Evidence } from "../ideation/dossier";
 import { effortFor, NoModelError } from "../providers/models";
 import { bindingItems, CritiqueRunError, runCritique, type Critique } from "../formation/critique";
+import { formationExecutionEvidence } from "../formation/execution-evidence";
 import { assignIds, derivedCaps, parseFeatures, validateFeatures, type FeaturesFile } from "../formation/features";
 import { formationApprovalPath, freeze, verifyFormationApproval, writeFormationApproval } from "../formation/freeze";
 import { verifyAcceptanceLock, type AcceptanceLock } from "../formation/lock";
@@ -28,7 +29,7 @@ import { runValidatedFile, type Promptable } from "./shared";
 export interface FormDeps extends PhaseDeps {
   git?: GitRunner;
   onApprovalStep?: () => void;
-  onFormStage?: (stage: "initial" | "first_critique" | "revised" | "second_critique") => void;
+  onFormStage?: (stage: "initial" | "first_critique" | "revised" | "second_critique" | "third_critique") => void;
   onFreezeStep?: (step: number) => void;
 }
 export interface FormOptions { out?: string; force?: boolean; io?: CheckpointIo }
@@ -51,6 +52,10 @@ interface FormationProgress {
   /** Journal length immediately before this transaction's first critic dispatch. */
   eventOffset: number;
   firstCriticTurns?: number;
+  /** Review cycles overlap: the preceding final review becomes the next repair's input. */
+  cycle?: number;
+  nextReviewOffset?: number;
+  history?: FormationSnapshot[];
 }
 
 export function lastChosenIdea(record: RunRecord): string | undefined {
@@ -70,19 +75,23 @@ function snapshotHash(snapshot: Omit<FormationSnapshot, "hash">): string {
 }
 
 function writeFormationProgress(
-  deps: Pick<PhaseDeps, "run">,
+  deps: Pick<PhaseDeps, "run" | "record">,
   ideaId: string,
   attempt: number,
   stage: FormationProgress["stage"],
   snapshot: Omit<FormationSnapshot, "hash">,
   eventOffset: number,
   firstCriticTurns?: number,
+  previous?: FormationProgress,
 ): FormationProgress {
   const progress: FormationProgress = {
     version: 1, ideaId, attempt, stage,
     snapshot: { ...snapshot, hash: snapshotHash(snapshot) },
     eventOffset,
     ...(firstCriticTurns === undefined ? {} : { firstCriticTurns }),
+    cycle: previous?.cycle ?? 1,
+    ...(stage === "revised" ? { nextReviewOffset: deps.record.read().length } : {}),
+    history: previous ? [...(previous.history ?? []), previous.snapshot] : [],
   };
   writeAtomic(formationProgressPath(deps), `${JSON.stringify(progress, null, 2)}\n`);
   return progress;
@@ -106,6 +115,13 @@ function readFormationProgress(deps: PhaseDeps, ideaId: string, attempt: number)
   }
   if (!Number.isInteger(progress.eventOffset) || progress.eventOffset! < 0 || progress.eventOffset! > deps.record.read().length) {
     throw new Error("integrity: formation progress journal offset is invalid");
+  }
+  if (progress.cycle !== undefined && (!Number.isInteger(progress.cycle) || progress.cycle < 1 || progress.cycle > 2)) {
+    throw new Error("integrity: formation repair cycle is invalid");
+  }
+  if (progress.nextReviewOffset !== undefined && (!Number.isInteger(progress.nextReviewOffset)
+    || progress.nextReviewOffset < progress.eventOffset! || progress.nextReviewOffset > deps.record.read().length)) {
+    throw new Error("integrity: formation review offset is invalid");
   }
   const snapshot = progress.snapshot;
   if (!snapshot || typeof snapshot.spec !== "string" || typeof snapshot.init !== "string" || !snapshot.features || typeof snapshot.hash !== "string") {
@@ -154,7 +170,12 @@ function durableTurns(record: RunRecord, ideaId: string, attempt: number, role: 
 }
 
 function durableTurnsSince(record: RunRecord, eventOffset: number, role: "critic"): number {
-  return record.read().slice(eventOffset).filter((event) => event.t === "turn" && event.phase === "form" && event.role === role).length;
+  const events = record.read().slice(eventOffset);
+  const turns = events.filter((event) => event.t === "turn" && event.phase === "form" && event.role === role).length;
+  // A truncated response never completed the review protocol. Keep its usage and turns in
+  // the journal, but allow a resumed review after its output allowance is corrected.
+  const truncated = events.filter((event) => event.t === "model.call" && event.role === role && event.stopReason === "length").length;
+  return Math.max(0, turns - truncated);
 }
 
 function reusableCritiques(record: RunRecord, eventOffset: number): Critique[] {
@@ -393,13 +414,16 @@ function formPinned(
     `spec.md requires these ## sections: ${SPEC_SECTIONS.join(", ")}. Scope and Non-goals each need a '- ' bullet. First milestone must be 1-600 characters.`,
     `The feature JSON is version 1 with init.needs and ${minFeatures}-${maxFeatures} features carrying title, description and one shell/file/manual acceptance. Leave ids to the harness.`,
     "features.json accepts no extra state fields. The first feature and at least one feature overall need a nontrivial shell or safe repo-relative file check; manual checks need concrete instructions.",
+    "init.needs and acceptance.needs entries are literal executable names (for example python3 or git; explicit executable paths and environment-variable names are also supported). Never put prose, version constraints, or command arguments in needs. Put descriptive requirements in spec.md and executable version checks in init.sh.",
     "init.sh must be nonempty and begin with #!. Stop once all three artifacts are complete; the harness validates them and independently critiques before freezing.",
     `Source idea: ${ideaPath}. Evidence: ${evidencePath}. Re-reading either costs a turn.`,
     "## Constraints", brief.sections.Constraints ?? "", "## Non-goals", brief.sections["Non-goals"] ?? "",
     "## Search success", brief.sections["Search success"] ?? "", "## Chosen idea", dossier,
   ];
   if (direct) pinned.push(
-    `This is a direct supplied task. The original user request at ${direct.seedPath} and complete framing brief at ${direct.briefPath} are authoritative; do not narrow the task to the capped dossier summary or treat provisional axes as a competitive ranking.`,
+    `This is a direct supplied task. The original user request at ${direct.seedPath} is authoritative. The complete framing brief at ${direct.briefPath} is derived context, subordinate to that request; do not narrow the task to the capped dossier summary or treat provisional axes as a competitive ranking.`,
+    "Distinguish requested behavior from discretionary implementation choices. Extra API shapes, exact error codes, diagnostic formats, test-method counts, import formatting, and platform/version promises are not additional acceptance requirements unless the user requested them. Keep useful choices provisional; reconcile or remove unsupported extra promises instead of expanding the contract. Preserve every user-required behavior and its executable acceptance checks.",
+    "For a small self-contained task, prefer one independently verifiable feature encompassing implementation, tests, and documentation. Add multiple features only when the work has genuinely separable deliverables. Preserve all requested behavior and acceptance checks; do not add unrelated requirements to fill feature slots.",
     "## Original user request", direct.seed,
     "## Complete framing brief", direct.brief,
   );
@@ -471,6 +495,12 @@ function approvedInputs(deps: PhaseDeps, project: ProjectPaths): { file: Feature
 }
 
 function finalStatus(deps: PhaseDeps, result: PhaseResult, specHash?: string): PhaseResult {
+  const outputLimitMessage = result.outcome === "failed" && result.failureClass === "budget" && /output.*limit/i.test(result.message)
+    ? result.message : undefined;
+  if (outputLimitMessage) {
+    deps.record.append({ t: "note", text: outputLimitMessage });
+    result = { outcome: "stopped", stopKind: "budget" };
+  }
   if (result.outcome === "failed" && result.failureClass === "budget" && result.message === "dollar cap reached in form") {
     result = { outcome: "stopped", stopKind: "budget", budgetTargetUsd: deps.cfg.budgets.usd };
   }
@@ -487,6 +517,7 @@ function finalStatus(deps: PhaseDeps, result: PhaseResult, specHash?: string): P
   else writeStatus(deps.run, { state: "stopped", outcome: {
     kind: "stopped", stopKind: result.stopKind,
     budgetTargetUsd: result.budgetTargetUsd, wallTargetSeconds: result.wallTargetSeconds,
+    ...(outputLimitMessage ? { message: outputLimitMessage } : {}),
   } });
   return result;
 }
@@ -615,112 +646,155 @@ async function formIdea(deps: FormDeps, git: GitRunner, ideaId: string, attempt:
   }
   autoCompleteInitial = false;
 
-  const critique = async (priorTurns: () => number) => runCritique(deps, {
-    spec: readFileSync(project.spec, "utf8"), features: readFileSync(project.featuresMirror, "utf8"), dossier,
-    brief: critiqueBrief(brief), brainRef: brainSeat.ref, formationCeilingUsd: formationCeiling, spentUsd: () => spent.value, onResult: charge,
-    priorTurns,
-  });
-  const progressOffset = progress.eventOffset;
-  const priorCritiques = reusableCritiques(deps.record, progressOffset);
-  if (progress.stage === "revised" && priorCritiques.length === 0) {
-    throw new Error("integrity: revised formation progress has no durable first critique");
-  }
-  const first = priorCritiques[0] ?? await critique(() => durableTurnsSince(deps.record, progressOffset, "critic"));
-  const firstCriticTurns = progress.stage === "revised" ? progress.firstCriticTurns! : durableTurnsSince(deps.record, progressOffset, "critic");
-  deps.onFormStage?.("first_critique");
-  throwIfRunCancelled();
-
-  let revisedFile: FeaturesFile;
-  if (progress.stage === "revised") {
-    revisedFile = progress.snapshot.features;
-  } else {
-    if (!resumedPartialRevision) restoreFormationSnapshot(project, progress.snapshot);
-    revisionBaseline = progress.snapshot;
-    requiredRevisionTargets = revisionTargets(first, project);
-    const alreadyChanged = changedRevisionArtifacts(project, progress.snapshot);
-    const remainingTargets = [...requiredRevisionTargets].filter((path) => !alreadyChanged.has(path));
-    const revision = ["Revise the complete formed project exactly once. Preserve every assigned feature id and order.",
-      ...(resumedPartialRevision ? ["Resume the interrupted revision from the valid files currently on disk; preserve completed edits and do not restart or reread unchanged work."] : []),
-      ...(remainingTargets.length > 0 ? [`Remaining critic-implicated artifacts: ${remainingTargets.join(", ")}. Make their smallest sufficient corrections first.`] : []),
-      ...first.scopeCreep.map((item) => `Scope creep${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
-      ...first.unverifiable.map((item) => `Unverifiable${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
-      ...first.missing.map((item) => `Missing${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
-      `Binding items: ${bindingItems(first, initialFile).join("; ") || "none"}.`, `Rewrite ${project.spec}, ${project.featuresMirror}, and ${project.initSh} as needed.`].join("\n");
-    if (!deps.record.read().some((event) => event.t === "formation.revision" && event.ideaId === ideaId && event.attempt === attempt)) {
-      deps.record.append({ t: "formation.revision", ideaId, attempt });
+  // Three independent reviews at most: initial, after the first repair, and after
+  // one additional repair. Dollar and producer turn caps remain shared throughout.
+  for (;;) {
+    const critique = async (priorTurns: () => number) => runCritique(deps, {
+      spec: readFileSync(project.spec, "utf8"), features: readFileSync(project.featuresMirror, "utf8"), dossier,
+      brief: critiqueBrief(brief), brainRef: brainSeat.ref, formationCeilingUsd: formationCeiling, spentUsd: () => spent.value, onResult: charge,
+      ...(ideaId === "supplied-task" ? { originalRequest: readFileSync(deps.run.seed, "utf8") } : {}),
+      executionEvidence: formationExecutionEvidence(attemptEvents(deps.record, ideaId, attempt)),
+      priorTurns,
+    });
+    const progressOffset = progress.eventOffset;
+    const priorCritiques = reusableCritiques(deps.record, progressOffset);
+    if (progress.stage === "revised" && priorCritiques.length === 0) {
+      throw new Error("integrity: revised formation progress has no durable first critique");
     }
-    const expectedIds = initialFile.features.map((item) => item.id);
-    const validateRevision = () => {
-      const s = specCandidate(existsSync(project.spec) ? readFileSync(project.spec, "utf8") : "");
-      const f = featureCandidate(existsSync(project.featuresMirror) ? readFileSync(project.featuresMirror, "utf8") : "", s.value ?? parseSpec(""), deps, expectedIds);
-      const i = initCandidate(existsSync(project.initSh) ? readFileSync(project.initSh, "utf8") : "");
-      return { spec: s, features: f, init: i, problems: [...s.problems, ...f.problems, ...i.problems] };
-    };
-    let revisionResult = await brain.run(revision); charge(revisionResult);
-    if (takeExit()) { clearFormationProgress(deps); return { result: { outcome: "honest_exit", ...takeExit()! } }; }
-    let revised = validateRevision();
-    let halted = stop(revisionResult);
-    const requirementsMet = requiredRevisionTargets !== undefined
-      && revisionRequirementsMet(requiredRevisionTargets, changedRevisionArtifacts(project, revisionBaseline));
-    const validAtCap = revised.problems.length === 0 && revised.features.value !== undefined && requirementsMet
-      && (revisionResult.stopped === "turn_cap" || revisionResult.stopped === "usd_cap");
-    if (halted && !validAtCap) return { result: halted };
-    const revisedExecutable = () => revised.features.value?.features.filter((item) => item && typeof item === "object" && item.acceptance?.type !== "manual").length ?? -1;
-    if (revisedExecutable() === 0) {
-      const reasons = ["zero executable acceptance checks remain after revision"];
-      deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
-      clearFormationProgress(deps);
-      return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
-    }
-    if (revised.problems.length > 0) {
-      revisionResult = await brain.run(`The one revision is invalid:\n${revised.problems.map((problem) => `- ${problem}`).join("\n")}\nCorrect all three files once, preserving ids and order.`); charge(revisionResult);
-      if (takeExit()) { clearFormationProgress(deps); return { result: { outcome: "honest_exit", ...takeExit()! } }; }
-      revised = validateRevision();
-      halted = stop(revisionResult);
-      const correctedRequirementsMet = requiredRevisionTargets !== undefined
-        && revisionRequirementsMet(requiredRevisionTargets, changedRevisionArtifacts(project, revisionBaseline));
-      const correctedValidAtCap = revised.problems.length === 0 && revised.features.value !== undefined && correctedRequirementsMet
-        && (revisionResult.stopped === "turn_cap" || revisionResult.stopped === "usd_cap");
-      if (halted && !correctedValidAtCap) return { result: halted };
-    }
-    if (revisedExecutable() === 0) {
-      const reasons = ["zero executable acceptance checks remain after revision"];
-      deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
-      clearFormationProgress(deps);
-      return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
-    }
-    if (revised.problems.length > 0 || !revised.features.value) return { result: { outcome: "failed", failureClass: "verify", message: `formation revision is not usable: ${revised.problems.join("; ")}` } };
-    revisedFile = revised.features.value;
-    writeAtomic(project.featuresMirror, `${JSON.stringify(revisedFile, null, 2)}\n`);
-    progress = writeFormationProgress(deps, ideaId, attempt, "revised", currentFormationSnapshot(project, revisedFile), progressOffset, firstCriticTurns);
-    deps.onFormStage?.("revised");
+    const first = priorCritiques[0] ?? await critique(() => durableTurnsSince(deps.record, progressOffset, "critic"));
+    const firstCriticTurns = progress.stage === "revised" ? progress.firstCriticTurns! : durableTurnsSince(deps.record, progressOffset, "critic");
+    if ((progress.cycle ?? 1) === 1) deps.onFormStage?.("first_critique");
     throwIfRunCancelled();
-  }
 
-  const currentCritiques = reusableCritiques(deps.record, progressOffset);
-  const priorSecondTurns = () => {
-    const total = durableTurnsSince(deps.record, progressOffset, "critic");
-    if (total < firstCriticTurns) throw new Error("integrity: critic turn journal is shorter than formation progress");
-    return total - firstCriticTurns;
-  };
-  const second = currentCritiques[1] ?? await critique(priorSecondTurns);
-  deps.onFormStage?.("second_critique");
-  throwIfRunCancelled();
-  const executable = revisedFile.features.filter((item) => item.acceptance.type !== "manual").length;
-  if (second.verdict === "revise" || executable === 0) {
-    const reasons = [...second.scopeCreep, ...second.unverifiable, ...second.missing].map((item) => item.text);
-    if (second.verdict === "revise" && reasons.length === 0) reasons.push("the second critic still requires revision");
-    if (executable === 0) reasons.push("zero executable acceptance checks remain after revision");
-    deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
-    clearFormationProgress(deps);
-    return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
+    // Newly planned adaptive direct tasks do not rewrite a bundle an independent critic already
+    // approved. Bind approval to the exact reviewed snapshot: a changed byte or a durable revision
+    // marker must follow the ordinary repair/re-review path and can never borrow this verdict.
+    const revisionStarted = revisionMarker(deps.record, ideaId, attempt, progressOffset);
+    if (deps.workflow?.directFrame === "deterministic-v1" && ideaId === "supplied-task"
+      && progress.stage === "initial" && (progress.cycle ?? 1) === 1 && first.verdict === "ok" && !revisionStarted) {
+      const reviewedFile = validInitialBundle(project, deps);
+      if (!reviewedFile) throw new Error("integrity: the formation bundle changed or became invalid after its approving critique");
+      const current = currentFormationSnapshot(project, reviewedFile);
+      const exactBytes = current.spec === progress.snapshot.spec
+        && current.init === progress.snapshot.init
+        && readFileSync(project.featuresMirror, "utf8") === `${JSON.stringify(progress.snapshot.features, null, 2)}\n`;
+      if (!exactBytes || snapshotHash(current) !== progress.snapshot.hash) {
+        throw new Error("integrity: the formation bundle changed after its approving critique");
+      }
+      const finalSpecHash = hashInput(current.spec);
+      writeFormationApproval(deps, ideaId, reviewedFile, finalSpecHash);
+      deps.onApprovalStep?.();
+      throwIfRunCancelled();
+      await freeze(deps, reviewedFile, finalSpecHash, git, { afterStep: deps.onFreezeStep });
+      return { result: { outcome: "ok" }, specHash: finalSpecHash };
+    }
+
+    let revisedFile: FeaturesFile;
+    if (progress.stage === "revised") {
+      revisedFile = progress.snapshot.features;
+    } else {
+      if (!resumedPartialRevision) restoreFormationSnapshot(project, progress.snapshot);
+      revisionBaseline = progress.snapshot;
+      requiredRevisionTargets = revisionTargets(first, project);
+      const alreadyChanged = changedRevisionArtifacts(project, progress.snapshot);
+      const remainingTargets = [...requiredRevisionTargets].filter((path) => !alreadyChanged.has(path));
+      const revision = ["Revise the complete formed project for this review cycle. Preserve every assigned feature id and order.",
+        ...(resumedPartialRevision ? ["Resume the interrupted revision from the valid files currently on disk; preserve completed edits and do not restart or reread unchanged work."] : []),
+        ...(remainingTargets.length > 0 ? [`Remaining critic-implicated artifacts: ${remainingTargets.join(", ")}. Make their smallest sufficient corrections first.`] : []),
+        ...first.scopeCreep.map((item) => `Scope creep${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
+        ...first.unverifiable.map((item) => `Unverifiable${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
+        ...first.missing.map((item) => `Missing${item.featureId ? ` ${item.featureId}` : ""}: ${item.text}`),
+        ...((progress.cycle ?? 1) > 1 ? [`Preserve fixes for all earlier review feedback as well:\n${JSON.stringify(attemptEvents(deps.record, ideaId, attempt).filter((event) => event.t === "critique").map((event) => event.t === "critique" ? { scopeCreep: event.scopeCreep, unverifiable: event.unverifiable, missing: event.missing } : {}))}`] : []),
+        `Binding items: ${bindingItems(first, initialFile).join("; ") || "none"}.`, `Rewrite ${project.spec}, ${project.featuresMirror}, and ${project.initSh} as needed.`].join("\n");
+      if (!revisionMarker(deps.record, ideaId, attempt, progressOffset)) {
+        deps.record.append({ t: "formation.revision", ideaId, attempt });
+      }
+      const expectedIds = initialFile.features.map((item) => item.id);
+      const validateRevision = () => {
+        const s = specCandidate(existsSync(project.spec) ? readFileSync(project.spec, "utf8") : "");
+        const f = featureCandidate(existsSync(project.featuresMirror) ? readFileSync(project.featuresMirror, "utf8") : "", s.value ?? parseSpec(""), deps, expectedIds);
+        const i = initCandidate(existsSync(project.initSh) ? readFileSync(project.initSh, "utf8") : "");
+        return { spec: s, features: f, init: i, problems: [...s.problems, ...f.problems, ...i.problems] };
+      };
+      let revisionResult = await brain.run(revision); charge(revisionResult);
+      if (takeExit()) { clearFormationProgress(deps); return { result: { outcome: "honest_exit", ...takeExit()! } }; }
+      let revised = validateRevision();
+      let halted = stop(revisionResult);
+      const requirementsMet = requiredRevisionTargets !== undefined
+        && revisionRequirementsMet(requiredRevisionTargets, changedRevisionArtifacts(project, revisionBaseline));
+      const validAtCap = revised.problems.length === 0 && revised.features.value !== undefined && requirementsMet
+        && (revisionResult.stopped === "turn_cap" || revisionResult.stopped === "usd_cap");
+      if (halted && !validAtCap) return { result: halted };
+      const revisedExecutable = () => revised.features.value?.features.filter((item) => item && typeof item === "object" && item.acceptance?.type !== "manual").length ?? -1;
+      if (revisedExecutable() === 0) {
+        const reasons = ["zero executable acceptance checks remain after revision"];
+        deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
+        clearFormationProgress(deps);
+        return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
+      }
+      if (revised.problems.length > 0) {
+        revisionResult = await brain.run(`The one revision is invalid:\n${revised.problems.map((problem) => `- ${problem}`).join("\n")}\nCorrect all three files once, preserving ids and order.`); charge(revisionResult);
+        if (takeExit()) { clearFormationProgress(deps); return { result: { outcome: "honest_exit", ...takeExit()! } }; }
+        revised = validateRevision();
+        halted = stop(revisionResult);
+        const correctedRequirementsMet = requiredRevisionTargets !== undefined
+          && revisionRequirementsMet(requiredRevisionTargets, changedRevisionArtifacts(project, revisionBaseline));
+        const correctedValidAtCap = revised.problems.length === 0 && revised.features.value !== undefined && correctedRequirementsMet
+          && (revisionResult.stopped === "turn_cap" || revisionResult.stopped === "usd_cap");
+        if (halted && !correctedValidAtCap) return { result: halted };
+      }
+      if (revisedExecutable() === 0) {
+        const reasons = ["zero executable acceptance checks remain after revision"];
+        deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
+        clearFormationProgress(deps);
+        return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
+      }
+      if (revised.problems.length > 0 || !revised.features.value) return { result: { outcome: "failed", failureClass: "verify", message: `formation revision is not usable: ${revised.problems.join("; ")}` } };
+      revisedFile = revised.features.value;
+      writeAtomic(project.featuresMirror, `${JSON.stringify(revisedFile, null, 2)}\n`);
+      progress = writeFormationProgress(deps, ideaId, attempt, "revised", currentFormationSnapshot(project, revisedFile), progressOffset, firstCriticTurns, progress);
+      deps.onFormStage?.("revised");
+      throwIfRunCancelled();
+    }
+
+    const currentCritiques = reusableCritiques(deps.record, progressOffset);
+    // Older progress files predate explicit review offsets. The completed first
+    // review is followed only by producer work before this review's critic turns.
+    const secondOffset = progress.nextReviewOffset ?? deps.record.read().findIndex((event, index) =>
+      index >= progressOffset && event.t === "critique" && (event.stopped === "done" || event.stopped === "refused")) + 1;
+    const priorSecondTurns = () => {
+      const total = durableTurnsSince(deps.record, progressOffset, "critic");
+      if (total < firstCriticTurns) throw new Error("integrity: critic turn journal is shorter than formation progress");
+      return total - firstCriticTurns;
+    };
+    const second = currentCritiques[1] ?? await critique(priorSecondTurns);
+    deps.onFormStage?.((progress.cycle ?? 1) === 1 ? "second_critique" : "third_critique");
+    throwIfRunCancelled();
+    const executable = revisedFile.features.filter((item) => item.acceptance.type !== "manual").length;
+    if (second.verdict === "revise" && executable > 0) {
+      if ((progress.cycle ?? 1) >= 2) {
+        return { result: { outcome: "failed", failureClass: "budget", message: "Formation reached its three-review repair limit; unresolved feedback and progress are retained. The concept has not been classified as infeasible." } };
+      }
+      progress = writeFormationProgress(deps, ideaId, attempt, "initial", currentFormationSnapshot(project, revisedFile), secondOffset, undefined,
+        { ...progress, cycle: 2 });
+      resumedPartialRevision = false;
+      continue;
+    }
+    if (executable === 0) {
+      const reasons = [...second.scopeCreep, ...second.unverifiable, ...second.missing].map((item) => item.text);
+      if (second.verdict === "revise" && reasons.length === 0) reasons.push("the second critic still requires revision");
+      if (executable === 0) reasons.push("zero executable acceptance checks remain after revision");
+      deps.record.append({ t: "honest_exit", kind: "not_formable", reasons, source: "mechanical" });
+      clearFormationProgress(deps);
+      return { result: { outcome: "honest_exit", kind: "not_formable", reasons } };
+    }
+    const finalSpecHash = hashInput(readFileSync(project.spec, "utf8"));
+    writeFormationApproval(deps, ideaId, revisedFile, finalSpecHash);
+    deps.onApprovalStep?.();
+    throwIfRunCancelled();
+    await freeze(deps, revisedFile, finalSpecHash, git, { afterStep: deps.onFreezeStep });
+    return { result: { outcome: "ok" }, specHash: finalSpecHash };
   }
-  const finalSpecHash = hashInput(readFileSync(project.spec, "utf8"));
-  writeFormationApproval(deps, ideaId, revisedFile, finalSpecHash);
-  deps.onApprovalStep?.();
-  throwIfRunCancelled();
-  await freeze(deps, revisedFile, finalSpecHash, git, { afterStep: deps.onFreezeStep });
-  return { result: { outcome: "ok" }, specHash: finalSpecHash };
 }
 
 function frontierAlternative(path: string, excluded: ReadonlySet<string>): boolean {
@@ -763,7 +837,9 @@ export async function runForm(deps: FormDeps, ideaId?: string, options: FormOpti
         rethrowIfRunCancelled(error);
         if (error instanceof NoModelError) throw error;
         if (error instanceof CritiqueRunError) {
-          const stopped = stopFailure("form", deps.cfg.budgets.turns.form, error.result);
+          const stopped: PhaseResult | undefined = error.result.stopDetails?.type === "output_limit"
+            ? { outcome: "failed", failureClass: "budget", message: error.message }
+            : stopFailure("form", deps.cfg.budgets.turns.form, error.result);
           formed = { result: stopped ?? { outcome: "failed", failureClass: classifyFailure({ message: error.message }), message: error.message } };
         } else {
           const message = error instanceof Error ? error.message : String(error);

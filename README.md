@@ -1,14 +1,15 @@
 # Kiln
 
-Kiln is a local, terminal-first harness that turns a rough seed into ranked ideas and a verified first project. It researches the space, tests assumptions, forms a frozen build plan, implements one feature at a time, and records the evidence needed to resume or audit the run.
+Kiln is a local, terminal-first agent harness for researching ideas and delivering verified work. Open it, describe the task, and it selects a workflow and compatible models from your connected providers.
 
-```text
-seed -> frame -> discover -> ideate -> choose -> form -> build -> reflect
-```
+Its focus is two things:
 
-## Quick start
+- **Reliable agent handoffs.** Workers receive original requirements, relevant canonical artifacts, evidence and assigned scope. Long checks and reviews remain available in full; bounded context views never replace their authoritative records.
+- **Task-appropriate orchestration.** Explicit local implementation tasks avoid competitive ideation. Research and idea searches use bounded parallel workers, evidence gathering and comparison. Work is repeated when validation or review requires it.
 
-Kiln requires [Bun](https://bun.sh/) 1.3.14 or newer and Git.
+## Start
+
+Requires [Bun](https://bun.sh/) 1.3.14+ and Git.
 
 ```sh
 git clone https://github.com/vkalipat/kiln.git
@@ -18,63 +19,45 @@ bun link
 kiln
 ```
 
-Launch opens an editable prompt. Type your task and press Enter; if no provider is connected, Kiln asks you to connect once and retains your prompt. Connect a Claude or ChatGPT subscription with OAuth, or enter an Anthropic or OpenAI API key. Existing provider environment variables work too. Kiln does not make a model request until you submit a task.
+Type your task and press Enter. If a provider is missing, Kiln retains the prompt while you connect a Claude or ChatGPT subscription through OAuth, or enter an API key. Launch and local greetings such as `HI` make no model requests.
 
-Fresh interactive and CLI installations enable adaptive routing and autonomous selection. Kiln shows a one-sentence interpretation, chooses a bounded workflow, and records its model assignments. Concrete local coding tasks skip competitive ideation; open-ended ideas use research and comparison. Existing configuration choices and frozen runs are preserved. Missing source material or authority can still require your input.
-
-Inside the TUI, type an idea and press Enter. Use `/login` to change providers, `Ctrl+O` for commands, `Ctrl+S` for effort, `Esc` to pause, and `Ctrl+C` to exit.
-
-Prefer a command line?
+Fresh installations enable adaptive routing and autonomous selection. Kiln shows a one-sentence interpretation and records its workflow, model choices and resource estimates. Existing settings and frozen runs are preserved. Missing source material or authority can still require your input.
 
 ```sh
 kiln auth login anthropic
-kiln run new "A local tool to compare household energy use" --through reflect
+kiln run new "Build a local CSV validation CLI with tests and usage documentation" --through reflect --autonomous --yes
 ```
 
-See [docs/usage.md](docs/usage.md) for the full CLI, TUI controls, recovery rules, and evaluation commands.
+TUI: `/login` connects providers, `Ctrl+O` opens commands, `Ctrl+S` changes effort, `Esc` pauses, and `Ctrl+C` exits. See [usage and recovery](docs/usage.md).
 
-### Run from Codex or Claude Code
+## Capabilities
 
-The [Kiln plugin](plugins/kiln/README.md) lets your coding assistant launch a detached run, watch its logs, and pause or resume the same job. Claude Code can load it with `claude --plugin-dir ./plugins/kiln`, then `/kiln:run <directive>`. Codex uses the same operator skill through its plugin system. Installation does not start provider work.
+- **Evidence-led ideation:** independent lenses, a diversity archive, scout-owned source provenance, explicit prior-art coverage review, executable feasibility probes where appropriate, and pairwise judging in both presentation orders. Inadequate research remains unknown.
+- **Verified delivery:** a validated specification and frozen acceptance criteria, feature-scoped builders, actual executable checks, and independent audits of detached repository snapshots. Unavailable audit evidence cannot approve a feature.
+- **Inspectable context:** exact task requirements, ownership-aware review, full retained audit evidence, and source/hash references for material too large to inline.
+- **Bounded work:** portfolio sizing, affordable research units, answer-time reserves, task-specific workflows, and provider-supported reasoning/cache settings. Estimates are not guarantees.
+- **Durable operation:** file-backed runs, Git evidence, live steering, interrupted-work recovery, and recorded model/tool usage. Recovery does not reset spent budgets or silently replace accepted requirements.
+- **Gated improvement:** reflection proposes playbook changes; promotion requires separate evaluation and integrity checks. A suggestion is not automatically a verified lesson.
 
-## What is implemented
+[Adaptive routing details](docs/adaptive-routing.md) explain model eligibility and role selection. Reviewed benchmark evidence informs routing; Kiln does not claim every selected model leads every live leaderboard.
 
-- Three isolated idea islands search with different lenses. A quality-diversity archive rejects near duplicates, scouts check prior art, and short executable probes test feasibility when possible.
-- A commit-first pairwise judge compares candidates in both orders. Kiln keeps a Pareto frontier and asks for one human choice, or makes the choice in autonomous mode.
-- Formation produces a spec, executable acceptance criteria, and an initialization script, then freezes them before implementation begins.
-- Each feature gets a fresh builder context. An independent auditor checks a detached copy of the exact repository bytes, and only external checks can mark the feature complete.
-- Runs are file-backed, Git-native, and resumable after interruption. The append-only record includes model calls, tool calls, costs, status changes, checks, audits, and commit evidence.
-- The full-screen TUI and scriptable CLI share the same lifecycle. The TUI supports live steering and an effort dial; CLI commands cover pause, resume, inspection, per-role model effort, and structured JSON output.
-- Reflection proposes small playbook changes; operators can also propose prompt variants. Promotion requires isolated development and held-out evaluation, integrity checks, statistical gates, and a reversible Git transaction.
-- Claude and ChatGPT subscription OAuth use the provider flows from the pi libraries. API keys can be entered with a masked prompt and are stored locally.
-- [Adaptive model routing](docs/adaptive-routing.md), enabled on fresh launches, selects task-relevant models from reviewed benchmark evidence, checks provider and budget fit, explains each role's assignment, and freezes an auditable plan per run.
+### Codex and Claude Code
+
+The [operator plugin](plugins/kiln/README.md) lets a coding assistant launch, monitor, pause and resume a run. Claude Code can load it with `claude --plugin-dir ./plugins/kiln`, then `/kiln:run <directive>`. Codex uses the same operator skill through its plugin system. Installation does not start provider work.
 
 ## Evidence and limits
 
-The automated suite includes onboarding, adaptive routing and resume coverage, and [two provider-free autonomy demonstrations](docs/testing/usecases.md). Both demonstrations use production CLI, build, and reflect orchestration with real filesystem tools, shell checks, Git commits and trailers, detached audit snapshots, journals, and recovery. One resumes a post-commit interruption without another builder call; the other records a failed check, repairs it in a fresh attempt, and finishes with one clean commit.
+A live CSV task completed with **16/16 independent behavioral checks**, 14 generated tests and a usable independent audit. Its simple tool-using baseline hit a per-call output limit without delivering. A separate CLI recovery passed 7/7 external checks and 11 generated tests. These are small development qualifications, not proof of general benchmark superiority.
 
-The demonstrations mock builder, auditor, and reflector responses, credentials, and usage. A bounded live check confirmed tool-call interoperability with Fable and GPT-5.5 for about $0.031 in recorded usage; it did not test complete task delivery. Kiln has not established live-model coding quality or an advantage over a one-shot model. Evaluation commands require an explicit budget and confirmation.
+Earlier ideation trials stopped before producing a usable shortlist. Research-budget and handoff fixes have regression coverage; updated native ideation qualification is still pending. See the [development results](docs/testing/2026-09-10-completion-development.md) and [consolidation record](docs/testing/2026-09-13-consolidation.md). Software tests, model preferences and small examples do not establish AGI, biological-discovery or clinical reliability.
 
-Automated TUI tests check animation repaint, resize, shutdown, prompt-first onboarding, and exactly-once submission after login using a fake terminal. A prior manual live-terminal smoke test confirmed launch and clean alternate-buffer exit. See [the plug-and-play verification record](docs/testing/plug-and-play.md) for the latest scope and limitations.
+Kiln is a single-operator local tool. **Shell commands are not OS-sandboxed.** Use an appropriately isolated environment for untrusted work. Shell scratch defaults are unique and run-local, but this is not filesystem isolation. Run dollar budgets are planning targets checked at turn boundaries; an admitted provider turn may finish above its target. Evaluations require explicit spending authorization.
 
-Kiln is a single-operator local prototype. Its shell and file tools run on the host without a sandbox, so use a disposable checkout or container for untrusted work. A run budget is a planning target checked at turn boundaries, not a hard spending ceiling; an in-flight provider turn is allowed to finish.
+## Inspiration
 
-## Origins
+Kiln combines ideas from [oh-my-pi](https://github.com/can1357/oh-my-pi) for agent loops, providers and terminal primitives; [Amp's Neo TUI](https://ampcode.com/news/neo) for the interaction model; [Anthropic's long-running harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), [Ralph](https://ghuntley.com/ralph/) and [Fractal](https://github.com/plasma-ai/fractal) for durable, Git-native work.
 
-Kiln began as a smaller answer to a much larger agent-orchestration design: find the least machinery needed to move from an open-ended idea to an independently verified artifact, then improve that machinery without letting it grade itself.
-
-Its implementation and interaction model draw from:
-
-- [oh-my-pi](https://github.com/can1357/oh-my-pi) for the native agent loop, provider adapters, subscription OAuth, model catalog, and terminal primitives.
-- [Amp's Neo TUI](https://ampcode.com/news/neo) for the focused transcript, command palette, effort dial, and keyboard-first terminal experience.
-- [Anthropic's long-running agent harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents) and [Ralph](https://ghuntley.com/ralph/) for fresh work sessions with durable progress in files and Git.
-- [Google's AI co-scientist](https://arxiv.org/abs/2502.18864), [FunSearch](https://doi.org/10.1038/s41586-023-06924-6), [AlphaEvolve](https://arxiv.org/abs/2506.13131), and [ShinkaEvolve](https://arxiv.org/abs/2509.19349) for islands, archives, pairwise selection, novelty rejection, and evaluator-driven evolution.
-- [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954), [GEPA](https://arxiv.org/abs/2507.19457), and [ACE](https://arxiv.org/abs/2510.04618) for guarded, traceable changes to prompts and playbooks.
-- [Fractal](https://github.com/plasma-ai/fractal) for the original emphasis on Git-native workspaces, budgets, audit trails, and explicit completion contracts.
-
-Kiln adapts these ideas to open-ended ideation and local project formation. It is not affiliated with those projects.
-
-The [design records](docs/design/README.md) preserve the research trail, rejected alternatives, and later corrections behind the implementation.
+Its search and evaluation foundations draw from [AI co-scientist](https://arxiv.org/abs/2502.18864), [FunSearch](https://doi.org/10.1038/s41586-023-06924-6), [AlphaEvolve](https://arxiv.org/abs/2506.13131), [ShinkaEvolve](https://arxiv.org/abs/2509.19349), [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954), [GEPA](https://arxiv.org/abs/2507.19457) and [ACE](https://arxiv.org/abs/2510.04618). Kiln is not affiliated with these projects. [Historical design records](docs/design/README.md) retain the original reasoning and corrections.
 
 ## Development
 
@@ -83,5 +66,3 @@ bun test
 bun run typecheck
 bun run kiln --help
 ```
-
-The repository is private and under active development.

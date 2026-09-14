@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createRun } from "../../src/core/run";
+import { TASKS } from "../../scripts/benchmarks/paired-completion";
 import {
   compileWorkflow,
   ensureWorkflowPlan,
@@ -15,6 +16,67 @@ import {
 } from "../../src/workflow/plan";
 
 describe("adaptive workflow planning", () => {
+  test("quantified alternative searches select broad ideation without authorizing a build", () => {
+    const actual = "Find three genuinely different, evidence-backed ways a small software team could reduce the time independent repair businesses spend turning customer emails into accurate quotes. Assume a two-person team and a six-week prototype window. Research existing products so the proposals have a concrete distinction from existing offerings; compare value, feasibility, and differentiation; recommend the strongest starting point and explain what evidence could invalidate it. Deliver an ideation shortlist and recommendation only. Do not build, buy anything, contact people, or deploy services.";
+    for (const seed of [actual,
+      "Find 4 distinct ways to reduce food waste. Ideas only.",
+      "Suggest several practical approaches to scheduling repairs. Recommendations only.",
+      "Identify two evidence-backed, meaningfully different approaches to affordable cooling. Research only.",
+      "Generate five ambitious ideas for reliable local transport. Ideas only.",
+    ]) {
+      const plan = planWorkflow(seed);
+      expect(plan).toMatchObject({ intent: "open_ended_ideation", goal: "explore", defaultThrough: "checkpoint", strategy: { mode: "exploratory", research: "broad" } });
+      expect(compileWorkflow(plan, {}).phases).toEqual(["frame", "discover", "ideate", "checkpoint"]);
+    }
+    for (const seed of ["Find three bugs in this repo", "Find three different approaches to fixing my existing app"]) {
+      expect(planWorkflow(seed)).toMatchObject({ intent: "existing_artifact", artifactContext: "not_supplied" });
+    }
+    expect(planWorkflow("Find way to implement this spec for a CSV parser")).toMatchObject({ intent: "supplied_concept", strategy: { mode: "direct", research: "none" } });
+  });
+  test("complete local task prompts preserve direct execution through all location clauses", () => {
+    for (const task of TASKS) {
+      const plan = planWorkflow(task.prompt);
+      expect(plan).toMatchObject({ intent: "supplied_concept", goal: "deliver", strategy: { mode: "direct", research: "none" }, directFrame: "deterministic-v1" });
+      expect(compileWorkflow(plan, {}).phases).toEqual(["frame", "form", "build", "reflect"]);
+      expect(planWorkflow(task.prompt, { adaptive: false }).directFrame).toBeUndefined();
+    }
+  });
+  test("greenfield output locations do not imply an existing source project", () => {
+    for (const seed of [
+      "Create and ship a Python CLI to normalize text. Put the named CLI at the project root.",
+      "Write a CSV converter script. Save its files in the project directory.",
+      "Create a command-line calculator in the project directory.",
+      "Create a Python CLI. Run its tests from the project root.",
+      "Build a JSON parser script. Include tests passing with a test command from the project directory.",
+      "Write a parser script and verify it with python -m unittest discover.",
+    ]) {
+      const plan = planWorkflow(seed);
+      expect(plan).toMatchObject({ intent: "supplied_concept", goal: "deliver", artifactContext: "not_applicable", defaultThrough: "reflect" });
+      expect(compileWorkflow(plan, {}).phases).toEqual(["frame", "form", "build", "reflect"]);
+    }
+    for (const seed of [
+      "Create a CLI feature in this repo. Put it at the project root.",
+      "Create a feature in my existing app.",
+      "Update the project root configuration.",
+      "Review the project directory.",
+      "Continue building the project.",
+      "Create a report from files in the project directory.",
+      "Create a report. Run a command reading files from the project directory.",
+    ]) expect(planWorkflow(seed)).toMatchObject({ intent: "existing_artifact", artifactContext: "not_supplied", defaultThrough: "checkpoint" });
+    expect(planWorkflow("Create a parser CLI; discover alternatives before implementing it. Run python -m unittest discover.").strategy?.mode).toBe("focused");
+  });
+
+  test("existing frozen plans retain their original intent after classifier changes", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-frozen-location-"));
+    const seed = "Create a CLI. Put its files at the project root.";
+    const run = createRun(home, seed);
+    const plan = planWorkflow(readFileSync(run.seed, "utf8"));
+    const { directFrame: _directFrame, ...unmarked } = plan;
+    const historical = { ...unmarked, intent: "existing_artifact" as const, artifactContext: "not_supplied" as const,
+      defaultThrough: "checkpoint" as const, checkpointDefault: "human" as const };
+    saveWorkflowPlan(run, historical);
+    expect(ensureWorkflowPlan(run)).toEqual(historical);
+  });
   test("ordinary requests to write or make an implementation need no delivery flags", () => {
     for (const seed of ["Write a Python script to convert CSV to JSON", "Make a command-line calculator"]) {
       const plan = planWorkflow(seed);

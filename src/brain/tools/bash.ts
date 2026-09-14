@@ -1,4 +1,6 @@
 import type { AgentTool } from "@oh-my-pi/pi-agent-core";
+import { lstatSync, mkdirSync, mkdtempSync, realpathSync } from "node:fs";
+import { join } from "node:path";
 import { runProcess } from "../../core/process";
 import { redactEnv } from "../../core/secrets";
 import { fail, ok, shapeResult } from "./shape";
@@ -16,11 +18,25 @@ export function clampTimeoutMs(seconds: number): number {
 }
 
 export function bashTool(ctx: ToolContext): AgentTool<any> {
+  let scratch: string | undefined;
+  const temporaryDirectory = () => {
+    const root = realpathSync(ctx.run.dir);
+    const parent = join(root, ".shell-tmp");
+    mkdirSync(parent, { recursive: true, mode: 0o700 });
+    if (lstatSync(parent).isSymbolicLink() || realpathSync(parent) !== parent) {
+      throw new Error("shell temporary directory parent must not redirect outside the run");
+    }
+    scratch ??= mkdtempSync(join(parent, "session-"));
+    if (lstatSync(scratch).isSymbolicLink() || realpathSync(scratch) !== scratch) {
+      throw new Error("shell temporary directory must not be redirected");
+    }
+    return scratch;
+  };
   return {
     name: "bash",
     label: "Bash",
     intent: "omit",
-    description: "Run a shell command in the working directory and return its exit code, stdout, and stderr. Commands are killed at the deadline.",
+    description: "Run an unsandboxed shell; return exit code, stdout and stderr. Deadline kills commands. Restrict writes to the assigned workspace and run-owned $TMPDIR (also TMP/TEMP), retained across calls. Use mktemp -d \"$TMPDIR/probe.XXXXXX\" for unique scratch. Never pre-clean guessed global paths. Clean up only exact paths you created and own; never delete workspace roots or unknown contents.",
     parameters: {
       type: "object",
       properties: { command: { type: "string" }, timeoutSeconds: { type: "number" } },
@@ -33,7 +49,9 @@ export function bashTool(ctx: ToolContext): AgentTool<any> {
       try {
         // The child gets an environment with every credential-named variable stripped, as its
         // whole environment (not an overlay), so `env` or a leaky subprocess cannot echo a key.
-        r = await runProcess({ cmd: "sh", args: ["-c", p.command], cwd: ctx.cwd, timeoutMs, env: redactEnv(), envReplace: true, signal });
+        const temp = temporaryDirectory();
+        r = await runProcess({ cmd: "sh", args: ["-c", p.command], cwd: ctx.cwd, timeoutMs,
+          env: { ...redactEnv(), TMPDIR: temp, TMP: temp, TEMP: temp }, envReplace: true, signal });
       } catch (e) {
         return fail(`cannot run command: ${(e as Error).message}`);
       }
@@ -43,7 +61,11 @@ export function bashTool(ctx: ToolContext): AgentTool<any> {
         : r.timedOut
           ? `deadline: killed after ${timeoutMs / 1000}s\n${body}`
           : body;
-      return ok(shapeResult(ctx, "bash", text));
+      const shaped = shapeResult(ctx, "bash", text);
+      return { ...ok(shaped), details: { process: {
+        exitCode: r.exitCode, signal: r.signal, timedOut: r.timedOut, cancelled: r.cancelled === true,
+        outputTruncated: r.truncated || shaped !== text,
+      } } };
     },
   };
 }

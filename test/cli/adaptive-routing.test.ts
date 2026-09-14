@@ -44,14 +44,18 @@ describe("adaptive run integration", () => {
     const id = readdirSync(join(home, "runs"))[0]!; const run = runPaths(home, id);
     const frozen = loadFrozenRouting(run)!;
     expect(frozen.version).toBe(1); expect(frozen.roles).toEqual(first!.roles);
+    expect(frozen.ideationProfile).toEqual(first!.ideation);
     expect(frozen.roles.generator[0]).not.toBe(frozen.roles.judge[0]);
     expect(readFileSync(join(home, "config.json"), "utf8")).toBe(original);
-    const cfg = loadConfig(home); cfg.roles.brain = ["anthropic/claude-opus-4-8"]; cfg.routing = { mode: "manual" }; cfg.budgets.usd += 5; saveConfig(home, cfg);
+    const cfg = loadConfig(home); cfg.roles.brain = ["anthropic/claude-opus-4-8"]; cfg.routing = { mode: "manual" }; cfg.budgets.usd += 5;
+    cfg.ideation.islands = 3; cfg.ideation.ideasPerBatch = 5; cfg.ideation.entrantsCap = 16; cfg.ideation.pairCap = 24;
+    saveConfig(home, cfg);
     let resumed: KilnConfig | undefined;
     expect(await main(["run", "resume", id, "--home", home, "--through", "discover", "--json"], out, {
       apiKeyFor, runDiscover: async (d) => { resumed = d.cfg; writeStatus(d.run, { phase: "ideate" }); return { outcome: "ok" }; },
     })).toBe(0);
     expect(resumed!.roles).toEqual(frozen.roles); expect(resumed!.routing?.mode).toBe("adaptive");
+    expect(resumed!.ideation).toEqual(frozen.ideationProfile!);
     expect(resumed!.budgets.usd).toBe(cfg.budgets.usd);
     expect(resumed!.budgets.phaseBudgetUsd("ideate")).toBe(cfg.budgets.usd * frozen.share.ideate);
     expect(loadFrozenRouting(run)).toEqual(frozen);

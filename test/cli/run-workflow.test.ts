@@ -7,6 +7,52 @@ import { main } from "../../src/cli/main";
 import { writeStatus } from "../../src/core/run";
 import type { WorkflowPlan } from "../../src/workflow/plan";
 import { initHome } from "../../src/core/home";
+import { parseBrief } from "../../src/phases/frame";
+import { validateBrief } from "../../src/phases/contracts";
+
+test("new adaptive direct tasks use a deterministic frame without embedding or changing the original request", async () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-workflow-direct-frame-"));
+  initHome(home, { plugAndPlay: true });
+  const seed = "Build a dependency-free JSON formatter CLI.\n\n## User heading\n\n```text\nkeep this fence exact\n```\n\nNo external research.\n";
+  const output: string[] = [];
+  const model = createMockModel({ id: "brain", responses: [{ content: ["provider must not frame"] }] as never });
+  let formed = 0;
+  const code = await main(["run", "new", seed, "--home", home, "--through", "form", "--json"], { write: (text) => output.push(text) }, {
+    adaptiveWorkflow: true,
+    models: { brain: model as never },
+    apiKeyFor: async (provider) => provider === "anthropic" ? "key" : undefined,
+    runFrame: async () => { throw new Error("direct deterministic frame called the model phase"); },
+    runForm: async (deps) => {
+      formed += 1;
+      expect(validateBrief(parseBrief(readFileSync(deps.run.brief, "utf8")))).toEqual([]);
+      expect(readFileSync(deps.run.seed, "utf8")).toBe(seed);
+      expect(readFileSync(deps.run.brief, "utf8")).not.toContain("## User heading");
+      writeStatus(deps.run, { phase: "build", state: "running" });
+      return { outcome: "ok" };
+    },
+  });
+  expect(code).toBe(0);
+  expect(formed).toBe(1);
+  const summary = JSON.parse(output.join(""));
+  expect(summary.workflow.directFrame).toBe("deterministic-v1");
+  expect(summary.status.shape).toBe("product");
+  expect(summary.lastEvents).toBeUndefined();
+  expect(model.calls).toHaveLength(0);
+});
+
+test("manual direct requests retain model framing and do not gain the adaptive marker", async () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-workflow-manual-frame-"));
+  initHome(home);
+  const output: string[] = []; let framed = 0;
+  const model = createMockModel({ id: "brain", responses: [{ content: ["unused"] }] as never });
+  const code = await main(["run", "new", "Build a dependency-free JSON formatter CLI", "--home", home, "--through", "frame", "--json"], { write: (text) => output.push(text) }, {
+    models: { brain: model as never }, apiKeyFor: async () => "key",
+    runFrame: async (deps) => { framed += 1; writeStatus(deps.run, { phase: "discover" }); return { outcome: "ok" }; },
+  });
+  expect(code).toBe(0);
+  expect(framed).toBe(1);
+  expect(JSON.parse(output.join("")).workflow.directFrame).toBeUndefined();
+});
 
 test("run new freezes and delivers the adaptive plan to the frame phase", async () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-workflow-cli-"));

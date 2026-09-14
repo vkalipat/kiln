@@ -12,6 +12,7 @@ import type { CollapsedJudgedPair } from "../../src/evals/wilson";
 import { runM1 } from "../../src/evals/m1";
 import { effortKey, writeEffortFile, type EffortEntry } from "../../src/evals/effort";
 import type { Role } from "../../src/core/config";
+import { RunControl, withRunControl } from "../../src/core/run-control";
 
 const AT = "2026-09-05T00:00:00.000Z";
 const FABLE = "anthropic/claude-fable-5-1";
@@ -48,7 +49,7 @@ interface ComparisonView {
 interface M1View {
   evalId: string;
   status: "complete" | "incomplete";
-  stoppedReason?: "budget" | "deadline";
+  stoppedReason?: "budget" | "deadline" | "sample_limit";
   runs: RunSummary[];
   comparisons: ComparisonView[];
   costUsd: number;
@@ -179,6 +180,43 @@ function sweptEntry(evalId: string): EffortEntry {
   return { winner: "medium", sweptLevels: ["low", "medium", "high"], metric: "pairWinRate", quality: 0.5, usdPerSuccess: 1, n: 96, at: AT, evalId };
 }
 describe("M1 runner", () => {
+  test("an explicit diagnostic sample limit stops after the durable paired cell and is frozen", async () => {
+    const f = fixture();
+    const options = { maxSeedCells: 1, fableLow: false, frontier: false };
+    const report = await run(f, options);
+    expect(f.calls).toHaveLength(2);
+    expect(f.judged).toHaveLength(1);
+    expect(report.status).toBe("incomplete");
+    expect(report.stoppedReason).toBe("sample_limit");
+    await run(f, options);
+    expect(f.calls).toHaveLength(2);
+    await expect(run(f, { ...options, maxSeedCells: 2 })).rejects.toThrow("frozen config");
+    await expect(run(f, { maxSeedCells: 0 })).rejects.toThrow("positive safe integer");
+  });
+  test("saves an interrupted B0 and its censored pair before stopping further paid work", async () => {
+    const control = new RunControl();
+    const f = fixture({ alter: (spec, summary) => {
+      if (spec.arm !== "B0") return summary;
+      control.cancel("evaluation wall deadline");
+      return { ...summary, costUsd: 1.25, status: { ...summary.status, state: "paused", pausedReason: "user_cancelled", outcome: { kind: "stopped", stopKind: "deadline", message: "evaluation wall deadline" } } };
+    } });
+    const report = await withRunControl(control, () => run(f));
+    expect(report.status).toBe("incomplete");
+    expect(report.stoppedReason).toBe("deadline");
+    expect(report.costUsd).toBe(1.5);
+    expect(f.calls.map((spec) => spec.arm)).toEqual(["A0", "B0"]);
+    expect(f.judged).toHaveLength(0);
+    expect(report.comparisons[0]!.rows[0]).toMatchObject({ pairCensored: true, pairCensoredBy: ["deadline"] });
+    expect(report.comparisons[0]!.summary).toMatchObject({ n: 0, evidence: false, prediction: "not evidence" });
+    // A fresh invocation keeps the censored arm and continues missing work only.
+    f.deps.executor = async (spec) => {
+      if (spec.seedIdentity.id === f.calls[0]!.seedIdentity.id && ["A0", "B0"].includes(spec.arm)) throw new Error("repeated paid arm");
+      return { ...report.runs[0]!, runId: spec.runId, seedId: spec.seedIdentity.id, arm: spec.arm };
+    };
+    const resumed = await run(f);
+    expect(resumed.status).toBe("complete");
+    expect(resumed.runs.filter((r) => r.runId === report.runs[1]!.runId)).toHaveLength(1);
+  });
   test("runs A0, explicit bare B0, Fable-low A1, and frontier A2 in binding order", async () => {
     const f = fixture();
     const report = await run(f);

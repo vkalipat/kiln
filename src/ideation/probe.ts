@@ -117,11 +117,11 @@ export function validateSpec(spec: ProbeSpec): string[] {
 /**
  * Which declared dependencies are absent. A need is satisfied by a non-empty variable in the
  * environment the probe will actually see (credentials stripped, so a token can never satisfy it)
- * or by an executable on PATH.
+ * or by an executable on PATH. Relative executable paths resolve against the execution cwd.
  */
-export function checkNeeds(needs: string[], opts: { env?: Record<string, string | undefined>; which?: (name: string) => string | null } = {}): string[] {
+export function checkNeeds(needs: string[], opts: { env?: Record<string, string | undefined>; cwd?: string; which?: (name: string) => string | null } = {}): string[] {
   const env = opts.env ?? redactEnv();
-  const which = opts.which ?? ((name: string) => Bun.which(name));
+  const which = opts.which ?? ((name: string) => Bun.which(name, { cwd: opts.cwd }));
   return needs.filter((n) => !(typeof env[n] === "string" && env[n] !== "") && which(n) === null);
 }
 
@@ -179,11 +179,11 @@ export async function runProbe(run: RunPaths, spec: ProbeSpec, cfg: { timeoutSec
   if (problems.length > 0) {
     return finish(run, record, { ideaId: id, status: "error", reason: `spec_invalid: ${problems.join("; ")}`, durationMs: 0 }, true);
   }
-  const missing = checkNeeds(spec.needs);
+  const dir = probeDir(run, id);
+  const missing = checkNeeds(spec.needs, { cwd: dir });
   if (missing.length > 0) {
     return finish(run, record, { ideaId: id, status: "not_run", reason: `missing_dependency:${missing[0]}`, durationMs: 0 }, true);
   }
-  const dir = probeDir(run, id);
   try {
     mkdirSync(dir, { recursive: true });
     for (const f of spec.files) {

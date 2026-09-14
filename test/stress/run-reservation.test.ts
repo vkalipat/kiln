@@ -76,6 +76,6 @@ describe("exclusive run reservation", () => {
     const events = new RunRecord(run.record).read();
     expect(events.filter((event) => event.t === "run.created")).toHaveLength(1);
     expect(events.filter((event) => event.t === "phase.end" && event.phase === "frame")).toHaveLength(1);
-    expect(modelCalls).toBe(2);
+    expect(modelCalls).toBe(1); // One authoritative artifact, no redundant completion narration.
   }, 10_000);
 });

@@ -5,24 +5,349 @@ import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
 import type { Context } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-catalog";
-import { parseLandscape, runDiscover, SCOUT_CHECKPOINT_POLICY_VERSION } from "../../src/phases/discover";
+import { cachedDiscoverySynthesisWallMs, discoverySynthesisReady, parseLandscape, runDiscover, SCOUT_CHECKPOINT_POLICY_VERSION } from "../../src/phases/discover";
 import { parseBrief, type PhaseDeps } from "../../src/phases/frame";
-import { shapeHash } from "../../src/phases/contracts";
+import { discoverContract, shapeHash } from "../../src/phases/contracts";
 import { defaultConfig } from "../../src/core/config";
 import { Limiter } from "../../src/core/limiter";
 import { createRun, readStatus, writeStatus, type RunPaths } from "../../src/core/run";
 import { hashInput, RunRecord } from "../../src/core/record";
 import { RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
 import { initHome } from "../../src/core/home";
+import { freezeRouting } from "../../src/workflow/routing";
 
 const AXES = "- who it serves: hobbyists | sideliners | commercial\n- mechanism class: sensing | modeling | logistics\n- where the value shows up: prevention | diagnosis | recovery";
 const BRIEF = `# Brief\n\n## Problem\np\n\n## Constraints\n- c\n\n## Search success\n- s\n\n## Non-goals\n- n\n\n## Shape\nproduct\n\n## Axes\n${AXES}\n\n## Discovery questions\n- Q1?\n- Q2?\n`;
 const LANDSCAPE = `# Landscape\n\n## Obvious list\n- an app that counts mites\n\n## Atoms\n- mite (common)\n- acoustic sensing (rare)\n\n## Tensions\n- cheap vs accurate\n\n## Distant domains\n- vineyard pest monitoring\n`;
 
 describe("parseLandscape", () => {
+  test("a final landscape write preserves explicit evidence gaps and ends before another call", async () => {
+    const base = setup();
+    const scout = createMockModel({ handler: async () => ({ content: ["- Observation from https://example.test/source; other coverage unknown."] }) } as never);
+    const landscape = LANDSCAPE + "\nEvidence: https://example.test/source. Coverage is partial; uncited suggestions remain unverified.\n";
+    const brain = createMockModel({ responses: [
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "landscape.md", content: landscape } }] },
+      { throw: "unnecessary paid continuation" },
+    ] as never });
+    expect(await runDiscover(deps(base, brain, scout))).toEqual({ outcome: "ok" });
+    expect(brain.calls).toHaveLength(1);
+    expect(readFileSync(base.run.landscape, "utf8")).toBe(landscape);
+  });
+  test("empty headings remain a draft until a valid edit ends synthesis without another call", async () => {
+    const base = setup();
+    const draft = "## Obvious list\n## Atoms\n## Tensions\n## Distant domains\n";
+    const scout = createMockModel({ handler: async () => ({ content: ["- Source observation; coverage remains partial."] }) } as never);
+    const brain = createMockModel({ responses: [
+      { content: [{ type: "toolCall", name: "write", arguments: { path: "landscape.md", content: draft } }] },
+      { content: [{ type: "toolCall", name: "read", arguments: { path: "landscape.md" } }] },
+      { content: [{ type: "toolCall", name: "edit", arguments: { path: "landscape.md", old: draft, new: LANDSCAPE } }] },
+      { throw: "unnecessary paid continuation" },
+    ] as never });
+    expect(await runDiscover(deps(base, brain, scout))).toEqual({ outcome: "ok" });
+    expect(brain.calls).toHaveLength(3);
+    expect(parseLandscape(readFileSync(base.run.landscape, "utf8")).atoms).toHaveLength(2);
+    expect(readStatus(base.run).phase).toBe("ideate");
+  });
   test("extracts the four lists", () => {
     const l = parseLandscape(LANDSCAPE);
     expect(l.missing).toEqual([]); expect(l.obvious).toEqual(["an app that counts mites"]); expect(l.atoms.length).toBe(2); expect(l.domains).toEqual(["vineyard pest monitoring"]);
+  });
+});
+
+describe("discovery research expansion", () => {
+  test("the discovery contract prefers supplied evidence instead of mandatory rereading", () => {
+    const base = setup(); const contract = discoverContract(base.run, ["Q1?"], 20);
+    expect(contract).not.toContain("read them first");
+    expect(contract).toContain("supplied"); expect(contract).toContain("overflow");
+  });
+
+  for (const closeDuring of ["scouts", "synthesis"]) test(`network tools disappear when the soft window closes during ${closeDuring}`, async () => {
+    const base = setup(); const contexts: string[][] = [];
+    const scout = createMockModel({ id: "observed", handler: async (context: Context) => context.messages.some((message) => message.role === "toolResult")
+      ? { delayMs: closeDuring === "scouts" ? 450 : 0, content: ["- Observed source https://example.test/source"] }
+      : { content: [{ type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/source" } }] } } as never);
+    const brain = createMockModel({ id: "local-synthesis", handler: async (context: Context) => {
+      contexts.push((context.tools ?? []).map((tool) => tool.name));
+      if (closeDuring === "synthesis" && contexts.length === 1) return { delayMs: 450, content: [{ type: "toolCall", name: "note", arguments: { text: "Compose from supplied findings" } }] };
+      return { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] };
+    } } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 1.2;
+    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
+    d.searchJitterMs = 0; d.fetchImpl = (async () => new Response("Observed source")) as unknown as typeof fetch;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    const finalTools = contexts.at(-1)!;
+    for (const name of ["web_search", "web_fetch", "scout"]) expect(finalTools).not.toContain(name);
+    for (const name of ["read", "write", "edit", "note", "exit"]) expect(finalTools).toContain(name);
+  });
+
+  test("a denied late retrieval leaves sanitized durable evidence without request arguments", async () => {
+    const base = setup(); let fetches = 0;
+    const scout = createMockModel({ id: "scout", handler: async () => ({ content: ["- Finding"] }) } as never);
+    const brain = createMockModel({ id: "late-fetch", responses: [
+      { content: [{ type: "toolCall", name: "note", arguments: { text: "ready" } }] },
+      { content: [
+        { type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/private-query-token" } },
+        { type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } },
+      ] },
+    ] as never });
+    const d = deps(base, brain, scout, 2); d.fetchImpl = (async () => { fetches++; return new Response("must not run"); }) as unknown as typeof fetch;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" }); expect(fetches).toBe(0);
+    const denials = base.record.read().filter((event) => event.t === "note" && event.text.startsWith("Discovery research denied:"));
+    expect(denials).toHaveLength(1); expect(JSON.stringify(denials)).toContain("web_fetch");
+    expect(JSON.stringify(denials)).not.toContain("private-query-token");
+  });
+
+  test("resumed synthesis cannot refill the research half or repeat paid successful scouts", async () => {
+    const base = setup(BRIEF + "- Q3?\n- Q4?\n");
+    base.record.append({ t: "phase.start", phase: "frame" });
+    base.record.append({ t: "model.call", role: "brain", provider: "mock", model: "frame", inputHash: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0.54, stopReason: "stop", excerpt: "" });
+    base.record.append({ t: "phase.end", phase: "frame", outcome: "ok" });
+    const scout = createMockModel({ id: "paid-resumable", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, handler: async (context: Context) => (context.tools?.length ?? 0) === 0
+      ? { content: ["- Observed evidence."], usage: { input: 6_000, output: 2_800 } }
+      : { content: [{ type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/source" } }], usage: { input: 8_000, output: 1_600 } } } as never);
+    const firstBrain = createMockModel({ id: "transient-synthesis", handler: async () => ({ throw: "rate limit exceeded" }) } as never);
+    const d = deps(base, firstBrain, scout); d.cfg.budgets.usd = 10;
+    d.cfg.budgets.share = { frame: 0.05, discover: 0.15, ideate: 0.4, form: 0.075, build: 0.3, reflect: 0.025 };
+    d.fetchImpl = (async () => new Response("Observed source")) as unknown as typeof fetch; d.searchJitterMs = 0;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+    expect(scout.calls).toHaveLength(6);
+    const resumed = createMockModel({ id: "resumed", responses: [
+      { content: [0, 1, 2].map((i) => ({ type: "toolCall", name: "scout", arguments: { question: `Extra ${i}?` } })) },
+      { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] },
+    ] as never });
+    d.models = (role) => ({ model: (role === "scout" ? scout : resumed) as unknown as Model, ref: `mock/${role}` });
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    expect(scout.calls).toHaveLength(6); expect(base.record.costUsd()).toBeCloseTo(1.06);
+  });
+
+  test("a crossing call cannot dispatch another queued scout after the research pool is spent", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "crosses-pool", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, handler: async () => ({ content: ["- Completed source finding."], usage: { input: 200_000, output: 0 } }) } as never);
+    const brain = createMockModel({ id: "synthesis", responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] }] as never });
+    const d = deps(base, brain, scout); d.cfg.budgets.usd = 10; d.limiter = new Limiter(1);
+    d.cfg.budgets.share = { frame: 0.05, discover: 0.15, ideate: 0.4, form: 0.075, build: 0.3, reflect: 0.025 };
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    expect(scout.calls).toHaveLength(1); expect(base.record.costUsd()).toBeCloseTo(1);
+    expect(checkpointMetadata(join(base.run.discoveryDir, "2-q2.md"))).toMatchObject({ state: "failure", failure: { class: "budget" } });
+    expect(d.limiter.pending).toBe(0); expect(d.limiter.active).toBe(0);
+  });
+
+  test("a configured fallback is not launched with an unfinishable leftover allowance", async () => {
+    const base = setup();
+    const primary = createMockModel({ id: "primary-priced", provider: "openai", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, handler: async () => ({ stopReason: "error", errorMessage: "rate limit exceeded", usage: { input: 120_000, output: 0 } }) } as never);
+    const fallback = createMockModel({ id: "fallback-priced", provider: "anthropic", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, handler: async () => ({ content: ["must not run"] }) } as never);
+    const brain = createMockModel({ id: "brain", handler: async () => ({ content: ["must not run"] }) } as never);
+    const d = deps(base, brain, primary); d.cfg.budgets.usd = 10;
+    d.cfg.budgets.share = { frame: 0.05, discover: 0.15, ideate: 0.4, form: 0.075, build: 0.3, reflect: 0.025 };
+    d.cfg.roles.scout = ["openai/primary-priced", "anthropic/fallback-priced"];
+    d.availableProviders = new Set(["openai", "anthropic"]);
+    d.modelsOn = () => ({ model: fallback as unknown as Model, ref: "anthropic/fallback-priced" });
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+    expect(fallback.calls).toHaveLength(0); expect(brain.calls).toHaveLength(0);
+  });
+
+  for (const [target, funded] of [[10, 2], [25, 4]]) test(`a $${target} run funds ${funded} complete scouts before landscape synthesis`, async () => {
+    const brief = BRIEF + "- Q3?\n- Q4?\n";
+    const base = setup(brief);
+    base.record.append({ t: "phase.start", phase: "frame" });
+    base.record.append({ t: "model.call", role: "brain", provider: "mock", model: "frame", inputHash: "test", usage: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 }, costUsd: 0.54, stopReason: "stop", excerpt: "" });
+    base.record.append({ t: "phase.end", phase: "frame", outcome: "ok" });
+    const scout = createMockModel({ id: "priced-scout", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, handler: async (context: Context) => (context.tools?.length ?? 0) === 0
+      ? { content: ["- Observed finding https://example.test/source; additional coverage unknown."], usage: { input: 6_000, output: 2_800 } }
+      : { content: [{ type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/source" } }], usage: { input: 8_000, output: 1_600 } } } as never);
+    const brain = createMockModel({ id: "synthesis", responses: [{ content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] }] as never });
+    const d = deps(base, brain, scout); d.cfg.budgets.usd = target;
+    d.cfg.budgets.share = { frame: 0.05, discover: 0.15, ideate: 0.4, form: 0.075, build: 0.3, reflect: 0.025 };
+    d.fetchImpl = (async () => new Response("Observed source evidence")) as unknown as typeof fetch; d.searchJitterMs = 0;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    const checkpoints = readdirSync(base.run.discoveryDir).map((file) => checkpointMetadata(join(base.run.discoveryDir, file)));
+    expect(checkpoints.filter((checkpoint) => checkpoint.state === "ok")).toHaveLength(funded);
+    expect(checkpoints.filter((checkpoint) => checkpoint.state === "failure")).toHaveLength(4 - funded);
+    for (const checkpoint of checkpoints.filter((item) => item.state === "failure")) expect(checkpoint).toMatchObject({ failure: { class: "budget" }, budgetTargetUsd: target });
+    expect(brain.calls).toHaveLength(1);
+    expect(base.record.costUsd() - 0.54).toBeLessThanOrEqual((target * 0.2 - 0.54) / 2);
+  });
+
+  test("an allocation below one complete priced scout dispatches no models", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "unfunded", cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 }, handler: async () => ({ content: ["must not run"] }) } as never);
+    const brain = createMockModel({ id: "unfunded-brain", handler: async () => ({ content: ["must not run"] }) } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.usd = 0.1;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "budget" });
+    expect(scout.calls).toHaveLength(0); expect(brain.calls).toHaveLength(0);
+    expect(readdirSync(base.run.discoveryDir)).toHaveLength(2);
+  });
+
+  test("oversized cached findings remain bounded with explicit provenance and overflow paths", async () => {
+    const base = setup(); let synthesisInput = "";
+    for (const [index, question] of ["Q1?", "Q2?"].entries()) {
+      const checkpoint = Buffer.from(JSON.stringify({ fingerprint: hashInput({ brief: BRIEF, question }), state: "ok" }), "utf8").toString("base64url");
+      writeFileSync(join(base.run.discoveryDir, `${index + 1}-q${index + 1}.md`), `<!-- kiln-scout-v1:${checkpoint} -->\n# Question\n${question}\n\n# Findings\n- [Source](https://example.test/${index}) ${"x".repeat(20_000)} hidden-tail-${index}\n`);
+    }
+    const scout = createMockModel({ id: "must-not-repeat", handler: async () => ({ content: ["must not run"] }) } as never);
+    const brain = createMockModel({ id: "bounded-handoff", handler: async (context: Context) => {
+      synthesisInput = JSON.stringify(context.messages);
+      return { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] };
+    } } as never);
+    expect(await runDiscover(deps(base, brain, scout))).toMatchObject({ outcome: "ok" });
+    expect(scout.calls).toHaveLength(0); expect(brain.calls).toHaveLength(1);
+    expect(synthesisInput.length).toBeLessThan(20_000);
+    expect(synthesisInput).toContain("Overflow:"); expect(synthesisInput).toContain("1-q1.md"); expect(synthesisInput).toContain("2-q2.md");
+    expect(synthesisInput).toContain("https://example.test/0"); expect(synthesisInput).not.toContain("hidden-tail-");
+  });
+
+  test("synthesis receives current checkpoint evidence and failures without filesystem model turns", async () => {
+    const base = setup(); let calls = 0; let synthesisInput = "";
+    writeFileSync(join(base.run.discoveryDir, "untrusted.md"), "stale unverified claim must not be inlined");
+    const staleQuestion = "A follow-up from the previous brief";
+    const staleFingerprint = hashInput({ brief: "previous brief", question: staleQuestion });
+    const staleMetadata = Buffer.from(JSON.stringify({ fingerprint: staleFingerprint, state: "ok" }), "utf8").toString("base64url");
+    writeFileSync(join(base.run.discoveryDir, `followup-${staleFingerprint}.md`), `<!-- kiln-scout-v1:${staleMetadata} -->\n# Question\n${staleQuestion}\n\n# Findings\nstale fingerprint claim\n`);
+    const scout = createMockModel({ id: "handoff-scout", handler: async () => calls++ === 0
+      ? { content: ["- Supported observation [source](https://example.test/source)."] }
+      : { stopReason: "error", errorMessage: "Refusal (safety)", stopDetails: { type: "refusal", category: "safety" } } } as never);
+    const brain = createMockModel({ id: "handoff-brain", handler: async (context: Context) => {
+      synthesisInput = JSON.stringify(context.messages);
+      return { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] };
+    } } as never);
+    expect(await runDiscover(deps(base, brain, scout))).toMatchObject({ outcome: "ok" });
+    expect(brain.calls).toHaveLength(1);
+    expect(synthesisInput).toContain("Supported observation [source](https://example.test/source)");
+    expect(synthesisInput).toContain("1-q1.md"); expect(synthesisInput).toContain("2-q2.md");
+    expect(synthesisInput).toContain("refusal"); expect(synthesisInput).toContain("safety");
+    expect(synthesisInput).not.toContain("stale unverified claim");
+    expect(synthesisInput).not.toContain("stale fingerprint claim");
+  });
+
+  test("a soft retrieval cutoff with no observed source cannot manufacture discovery evidence", async () => {
+    const base = setup(); let fetches = 0;
+    const scout = createMockModel({ id: "late-retrieval", handler: async (context: Context) => (context.tools?.length ?? 0) === 0
+      ? { content: ["- unsupported invented observation"] }
+      : { delayMs: 240, content: [{ type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/source" } }] } } as never);
+    const brain = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["must not run"] }) } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 0.6;
+    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
+    d.fetchImpl = (async () => { fetches++; return new Response("Source content"); }) as unknown as typeof fetch;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "failed", failureClass: "verify" });
+    expect(fetches).toBe(0); expect(brain.calls).toHaveLength(0);
+    expect(existsSync(base.run.landscape)).toBe(false);
+    for (const file of readdirSync(base.run.discoveryDir)) expect(readFileSync(join(base.run.discoveryDir, file), "utf8")).not.toContain("unsupported invented observation");
+  });
+
+  test("configured scout turn cap triggers the tool-free findings window in discovery", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "configured-cap", handler: async (context: Context) => (context.tools?.length ?? 0) === 0
+      ? { content: ["- Supported finding; remaining coverage is unknown."] }
+      : { content: [{ type: "toolCall", name: "read", arguments: { path: base.run.brief } }] } } as never);
+    const brain = createMockModel({ id: "brain", responses: [
+      { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] },
+    ] as never });
+    const d = deps(base, brain, scout, 1); d.cfg.ideation.scoutTurnCap = 6;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    // Four researching turns then one tool-free summary, independently for each question.
+    expect(scout.calls).toHaveLength(10);
+    expect(readdirSync(base.run.discoveryDir)).toHaveLength(2);
+  });
+
+  test("a completed scout survives its sibling's research deadline and feeds landscape synthesis", async () => {
+    const base = setup(); let secondQuestionCalls = 0;
+    const cost = { input: 0.01, output: 0, cacheRead: 0, cacheWrite: 0, total: 0.01 };
+    const scout = createMockModel({ id: "mixed-deadline", cost: { input: 0.01, output: 0, cacheRead: 0, cacheWrite: 0 }, handler: async (context: Context) => {
+      if (JSON.stringify(context.messages).includes("Question: Q1?")) return { content: ["- Observed source evidence from https://example.test/source"], usage: { input: 1_000_000, cost } };
+      if (secondQuestionCalls++ === 0) return { content: [{ type: "toolCall", name: "read", arguments: { path: base.run.brief } }], usage: { input: 1_000_000, cost } };
+      return { delayMs: 5_000, content: ["must never become findings"] };
+    } } as never);
+    const brain = createMockModel({ id: "synthesis", handler: async () => {
+      expect(readFileSync(join(base.run.discoveryDir, "1-q1.md"), "utf8")).toContain("Observed source evidence");
+      expect(checkpointMetadata(join(base.run.discoveryDir, "2-q2.md"))).toMatchObject({ state: "failure", failure: { class: "deadline" } });
+      return { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE + "\nEvidence gap: the second question reached its research deadline.\n" } }] };
+    } } as never);
+    const d = deps(base, brain, scout, 1); d.cfg.budgets.wallSeconds = 1.2;
+    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    expect(brain.calls).toHaveLength(1);
+    expect(d.limiter.active).toBe(0); expect(d.limiter.pending).toBe(0);
+    const canonicalCost = base.record.read().reduce((sum, event) => sum + (event.t === "model.call" ? event.costUsd : 0), 0);
+    expect(canonicalCost).toBeGreaterThanOrEqual(0.02);
+    expect(readStatus(base.run).usdSpent).toBeCloseTo(canonicalCost);
+    expect(readFileSync(join(base.run.discoveryDir, "2-q2.md"), "utf8")).not.toContain("must never become findings");
+  });
+
+  test("previous discovery wall consumption preserves the downstream allocation on resume", async () => {
+    const base = setup();
+    writeFileSync(base.run.record, [
+      { seq: 1, ts: "2026-01-01T00:00:00.000Z", t: "phase.start", phase: "discover" },
+      { seq: 2, ts: "2026-01-01T00:01:00.000Z", t: "phase.end", phase: "discover", outcome: "stopped" },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+    base.record = new RunRecord(base.run.record);
+    const scout = createMockModel({ id: "scout", handler: async () => ({ content: ["must not run"] }) } as never);
+    const brain = createMockModel({ id: "brain", handler: async () => ({ content: ["must not run"] }) } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 1_500;
+    // Explicit 4% cumulative phase share has already consumed its 60 seconds; 1440 remain
+    // for later phases, and an ordinary resume must not spend them on discovery.
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "deadline" });
+    expect(scout.calls).toHaveLength(0); expect(brain.calls).toHaveLength(0);
+  });
+
+  test("discovery preserves downstream dollars and cannot replenish its phase allocation on resume", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "paid", cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0 }, handler: async () => ({ content: ["- evidence"], usage: { input: 1_000_000, cost: { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 } } }) } as never);
+    const brain = createMockModel({ id: "brain", handler: async () => ({ content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] }) } as never);
+    const d = deps(base, brain, scout);
+    d.cfg.budgets.usd = 25;
+    d.cfg.budgets.share = { frame: 0, discover: 0.04, ideate: 0.46, form: 0, build: 0.5, reflect: 0 };
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "budget" });
+    expect(base.record.costUsd()).toBe(2); // Crossing calls finish; later phases retain $23.
+    expect(brain.calls).toHaveLength(0);
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "budget" });
+    expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(0);
+  });
+
+  test("direct blocked retrieval batches cannot replenish their allowance on resume", async () => {
+    const base = setup(); let fetches = 0;
+    const scout = createMockModel({ id: "scout", handler: async () => ({ content: ["- evidence"] }) } as never);
+    const batch = { content: Array.from({ length: 8 }, (_, i) => ({ type: "toolCall", name: "web_fetch", arguments: { url: `https://example.test/${i}` } })) };
+    const first = createMockModel({ id: "first", responses: [batch, { throw: "rate limit exceeded" }] as never });
+    const d = deps(base, first, scout); d.cfg.ideation.scoutTurnCap = 2;
+    d.fetchImpl = (async () => { fetches++; return new Response("blocked", { status: 403 }); }) as unknown as typeof fetch;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+    expect(fetches).toBe(4);
+    const resumed = createMockModel({ id: "resumed", responses: [batch,
+      { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] }, { content: ["done"] },
+    ] as never });
+    d.models = (role) => ({ model: (role === "scout" ? scout : resumed) as unknown as Model, ref: `mock/${role}` });
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
+    expect(fetches).toBe(4);
+  });
+
+  test("the final synthesis turn can write but cannot dispatch additional research", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "scout", handler: async () => ({ content: ["- evidence"] }) } as never);
+    const brain = createMockModel({ id: "brain", responses: [
+      { content: [{ type: "toolCall", name: "note", arguments: { text: "ready" } }] },
+      { content: [
+        { type: "toolCall", name: "scout", arguments: { question: "More?" } },
+        { type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } },
+      ] },
+    ] as never });
+    expect(await runDiscover(deps(base, brain, scout, 2))).toMatchObject({ outcome: "ok" });
+    expect(scout.calls).toHaveLength(2);
+  });
+
+  test("one follow-up wave remains bounded across a transient synthesis resume", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "bounded-scout", handler: async () => ({ content: ["- evidence"] }) } as never);
+    const requests = Array.from({ length: 8 }, (_, i) => ({ type: "toolCall", name: "scout", arguments: { question: `Follow-up ${i}?` } }));
+    const first = createMockModel({ id: "first", responses: [{ content: requests }, { throw: "rate limit exceeded" }] as never });
+    expect(await runDiscover(deps(base, first, scout))).toMatchObject({ outcome: "stopped", stopKind: "transient" });
+    expect(scout.calls).toHaveLength(4); // Two initial questions, then one refinement per question.
+    const resumed = createMockModel({ id: "resumed", responses: [
+      { content: requests },
+      { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] },
+      { content: ["done"] },
+    ] as never });
+    expect(await runDiscover(deps(base, resumed, scout))).toMatchObject({ outcome: "ok" });
+    expect(scout.calls).toHaveLength(4);
   });
 });
 
@@ -61,12 +386,87 @@ function seedFailureCheckpoints(base: ReturnType<typeof setup>, failureClass: "b
   }
 }
 
+function seedSuccessCheckpoints(base: ReturnType<typeof setup>) {
+  const brief = readFileSync(base.run.brief, "utf8");
+  for (const [index, question] of parseBrief(brief).questions.slice(0, 4).entries()) {
+    const checkpoint = { fingerprint: hashInput({ brief, question }), state: "ok", policyVersion: SCOUT_CHECKPOINT_POLICY_VERSION };
+    const encoded = Buffer.from(JSON.stringify(checkpoint), "utf8").toString("base64url");
+    writeFileSync(join(base.run.discoveryDir, `${index + 1}-q${index + 1}.md`), `<!-- kiln-scout-v1:${encoded} -->\n# Question\n${question}\n\n# Findings\n- cached finding ${index + 1}\n`);
+  }
+}
+
+function freezeCheckpointExecution(base: ReturnType<typeof setup>, cfg: ReturnType<typeof defaultConfig>) {
+  freezeRouting(base.run, cfg, { workflow: { phases: ["frame", "discover", "ideate", "checkpoint"] } });
+}
+
 function checkpointMetadata(path: string): Record<string, unknown> {
   const line = readFileSync(path, "utf8").split("\n", 1)[0]!;
   return JSON.parse(Buffer.from(line.slice("<!-- kiln-scout-v1:".length, -4), "base64url").toString("utf8"));
 }
 
 describe("runDiscover", () => {
+  test("same-target resume synthesizes complete cached checkpoints without any research side effect", async () => {
+    const base = setup(); seedSuccessCheckpoints(base);
+    const now = Date.now();
+    const iso = (offsetMs: number) => new Date(now + offsetMs).toISOString();
+    writeFileSync(base.run.record, [
+      { seq: 1, ts: iso(-300_017), t: "phase.start", phase: "frame" },
+      { seq: 2, ts: iso(-214_176), t: "phase.end", phase: "frame", outcome: "ok" },
+      { seq: 3, ts: iso(-214_176), t: "phase.start", phase: "discover" },
+      { seq: 4, ts: iso(0), t: "phase.end", phase: "discover", outcome: "stopped" },
+    ].map((event) => JSON.stringify(event)).join("\n") + "\n");
+    base.record = new RunRecord(base.run.record);
+    writeStatus(base.run, { phase: "discover", state: "stopped", outcome: { kind: "stopped", stopKind: "deadline", wallTargetSeconds: 1500 } });
+    const scout = createMockModel({ id: "no-replayed-scout", handler: async () => ({ content: ["must not run"] }) } as never);
+    let tools: string[] = [];
+    const brain = createMockModel({ id: "cached-synthesis", handler: async (context: Context) => {
+      tools = (context.tools ?? []).map((tool) => tool.name);
+      return { content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] };
+    } } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.usd = 25; d.cfg.budgets.wallSeconds = 1500;
+    d.cfg.budgets.share = { frame: 0.05, discover: 0.15, ideate: 0.4, form: 0.075, build: 0.3, reflect: 0.025 };
+    d.executionPhases = ["frame", "discover", "ideate"];
+    freezeCheckpointExecution(base, d.cfg);
+    expect(discoverySynthesisReady(base.run)).toBe(true);
+    expect(cachedDiscoverySynthesisWallMs(base.run, d.cfg, base.record, now, d.executionPhases)).toBeCloseTo(599_983, -1);
+    expect(await runDiscover(d)).toEqual({ outcome: "ok" });
+    expect(scout.calls).toHaveLength(0);
+    for (const name of ["web_search", "web_fetch", "scout"]) expect(tools).not.toContain(name);
+    expect(readStatus(base.run)).toMatchObject({ phase: "ideate", state: "running" });
+  });
+
+  test("fresh scouts keep their original window and then unlock synthesis-only headroom", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "bounded-scout", handler: async () => ({ delayMs: 40, content: ["- completed current finding"] }) } as never);
+    let synthesisTools: string[] = [];
+    const brain = createMockModel({ id: "extended-synthesis", handler: async (context: Context) => {
+      synthesisTools = (context.tools ?? []).map((tool) => tool.name);
+      return { delayMs: 180, content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] };
+    } } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.usd = 25; d.cfg.budgets.wallSeconds = 1;
+    d.cfg.budgets.share = { frame: 0, discover: 0.2, ideate: 0.2, form: 0.1, build: 0.4, reflect: 0.1 };
+    d.executionPhases = ["frame", "discover", "ideate"];
+    freezeCheckpointExecution(base, d.cfg);
+    const started = Date.now();
+    expect(await runDiscover(d)).toEqual({ outcome: "ok" });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(200);
+    expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(1);
+    for (const name of ["web_search", "web_fetch", "scout"]) expect(synthesisTools).not.toContain(name);
+  });
+
+  test("fresh synthesis-only headroom expires as a resumable deadline stop", async () => {
+    const base = setup();
+    const scout = createMockModel({ id: "quick-scout", handler: async () => ({ delayMs: 10, content: ["- completed current finding"] }) } as never);
+    const brain = createMockModel({ id: "too-slow-synthesis", handler: async () => ({ delayMs: 1_000, content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] }) } as never);
+    const d = deps(base, brain, scout); d.cfg.budgets.usd = 25; d.cfg.budgets.wallSeconds = 1;
+    d.cfg.budgets.share = { frame: 0, discover: 0.2, ideate: 0.2, form: 0.1, build: 0.4, reflect: 0.1 };
+    d.executionPhases = ["frame", "discover", "ideate"];
+    freezeCheckpointExecution(base, d.cfg);
+    expect(await runDiscover(d)).toEqual({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: 1 });
+    expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(1);
+    expect(readStatus(base.run)).toMatchObject({ phase: "discover", state: "stopped", outcome: { stopKind: "deadline", wallTargetSeconds: 1 } });
+  });
+
   test("successful direct source fetches remain usable when the search engine is blocked", async () => {
     const base = setup();
     const scout = createMockModel({ id: "scout", handler: async (ctx: any) => {
@@ -256,22 +656,24 @@ describe("runDiscover", () => {
       content: [{ type: "toolCall", name: "read", arguments: { path: base.run.brief } }], usage: { input: 1_000_000, cost: charged },
     }) } as never);
     const brain = createMockModel({ id: "brain", handler: async () => ({ content: ["must not run"] }) } as never);
-    const first = deps(base, brain, cappedScout); first.cfg.budgets.usd = 0.1;
-    expect(await runDiscover(first)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 0.1 });
+    const first = deps(base, brain, cappedScout); first.cfg.budgets.usd = 3;
+    expect(await runDiscover(first)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 3 });
     expect(cappedScout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(0);
     expect(checkpointMetadata(join(base.run.discoveryDir, "1-q1.md"))).toMatchObject({
-      policyVersion: SCOUT_CHECKPOINT_POLICY_VERSION, budgetTargetUsd: 0.1, failure: { class: "budget" },
+      policyVersion: SCOUT_CHECKPOINT_POLICY_VERSION, budgetTargetUsd: 3, failure: { class: "budget" },
     });
 
     const sameScout = createMockModel({ id: "same", handler: async () => ({ content: ["must not run"] }) } as never);
     const sameBrain = createMockModel({ id: "same-brain", handler: async () => ({ content: ["must not run"] }) } as never);
-    const same = deps(base, sameBrain, sameScout); same.cfg.budgets.usd = 0.1;
-    expect(await runDiscover(same)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 0.1 });
+    const same = deps(base, sameBrain, sameScout); same.cfg.budgets.usd = 3;
+    expect(await runDiscover(same)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 3 });
     expect(sameScout.calls).toHaveLength(0); expect(sameBrain.calls).toHaveLength(0);
 
     const retryScout = createMockModel({ id: "retry", handler: async () => ({ content: ["- recovered"] }) } as never);
     const retryBrain = createMockModel({ id: "retry-brain", handler: async () => ({ content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }] }) } as never);
-    const increased = deps(base, retryBrain, retryScout, 1); increased.cfg.budgets.usd = 3;
+    // The configured cumulative phase share is 4%; the increased target must actually cover
+    // the $2 already spent within its research half before dispatching recovery models.
+    const increased = deps(base, retryBrain, retryScout, 1); increased.cfg.budgets.usd = 125;
     expect(await runDiscover(increased)).toMatchObject({ outcome: "ok" });
     expect(retryScout.calls).toHaveLength(2); expect(retryBrain.calls).toHaveLength(1);
   });
@@ -510,7 +912,8 @@ describe("runDiscover", () => {
     const charged = { input: 1, output: 0, cacheRead: 0, cacheWrite: 0, total: 1 };
     const scout = createMockModel({ id: "paid-scout", cost: pricing, handler: async () => ({ content: ["- finding"], usage: { input: 1_000_000, cost: charged } }) } as never);
     const brain = createMockModel({ id: "paid-brain", cost: pricing, handler: async () => ({ content: [{ type: "toolCall", name: "write", arguments: { path: base.run.landscape, content: LANDSCAPE } }], usage: { input: 1_000_000, cost: charged } }) } as never);
-    expect(await runDiscover(deps(base, brain, scout, 1))).toMatchObject({ outcome: "ok" });
+    const d = deps(base, brain, scout, 1); d.cfg.budgets.usd = 100;
+    expect(await runDiscover(d)).toMatchObject({ outcome: "ok" });
     expect(base.record.costUsd()).toBeCloseTo(3);
     expect(readStatus(base.run).usdSpent).toBeCloseTo(base.record.costUsd());
   });
@@ -539,11 +942,14 @@ describe("runDiscover", () => {
     const base = setup();
     const scout = createMockModel({ id: "slow-scout", handler: async () => ({ delayMs: 5_000, content: ["late"] }) } as never);
     const brain = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["x"] }) } as never);
-    const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 0.03;
-    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: 0.03 });
+    // Leave enough time to dispatch both mocks before the two-thirds research window expires.
+    const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 0.3;
+    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
+    expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: 0.3 });
     expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(0);
     expect(d.limiter.active).toBe(0); expect(d.limiter.pending).toBe(0);
-    expect(readStatus(base.run)).toMatchObject({ state: "stopped", outcome: { stopKind: "deadline", wallTargetSeconds: 0.03 } });
+    expect(existsSync(base.run.landscape)).toBe(false);
+    expect(readStatus(base.run)).toMatchObject({ state: "stopped", outcome: { stopKind: "deadline", wallTargetSeconds: 0.3 } });
   });
 
   test("the same run wall deadline also aborts discovery synthesis after scouts finish", async () => {
@@ -551,6 +957,7 @@ describe("runDiscover", () => {
     const scout = createMockModel({ id: "fast-scout", handler: async () => ({ content: ["- finding"] }) } as never);
     const brain = createMockModel({ id: "slow-brain", handler: async () => ({ delayMs: 5_000, content: ["late"] }) } as never);
     const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 0.8;
+    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
     expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "deadline", wallTargetSeconds: 0.8 });
     expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(1);
     expect(readStatus(base.run)).toMatchObject({ state: "stopped", outcome: { stopKind: "deadline", wallTargetSeconds: 0.8 } });
@@ -561,6 +968,7 @@ describe("runDiscover", () => {
     const scout = createMockModel({ id: "crossing-scout", cost: pricing, handler: async () => ({ content: ["- finding"], usage: { input: 1_000_000, cost: { input: 2, output: 0, cacheRead: 0, cacheWrite: 0, total: 2 } } }) } as never);
     const brain = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["x"] }) } as never);
     const d = deps(base, brain, scout); d.cfg.budgets.usd = 1;
+    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
     expect(await runDiscover(d)).toMatchObject({ outcome: "stopped", stopKind: "budget", budgetTargetUsd: 1 });
     expect(scout.calls).toHaveLength(2); expect(brain.calls).toHaveLength(0);
     expect(base.record.costUsd()).toBeCloseTo(4);

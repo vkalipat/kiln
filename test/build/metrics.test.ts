@@ -21,8 +21,8 @@ const file: FeaturesFile = {
   })),
 };
 
-test("attempt disposition inventory includes refusal", () => {
-  expect(ATTEMPT_DISPOSITIONS).toContain("refused");
+test("attempt disposition inventory includes refusal and unavailable audits", () => {
+  expect(ATTEMPT_DISPOSITIONS).toEqual(expect.arrayContaining(["refused", "audit_unavailable"]));
 });
 
 function setup() {
@@ -83,9 +83,9 @@ describe("build metrics", () => {
       claimedUnverifiedCount: 0, regressions: [], checkQualityAdequate: quality, truncated: false, usdCapHit: cap, crossProvider: cross, costUsd: 0.5,
     });
     audit("c1", "agree", false, true, true); audit("c2", "disagree", true, false, false); audit("void", "agree", true, false, false);
-    record.append({ t: "audit.disposition", featureId: "f01", attempt: 1, checkId: "c1", rawVerdict: "disagree", effectiveVerdict: "agree", emptyDisagree: true, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: false });
+    record.append({ t: "audit.disposition", featureId: "f01", attempt: 1, checkId: "c1", rawVerdict: "disagree", effectiveVerdict: "agree", emptyDisagree: true, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: false, evidenceVersion: 2 });
     record.append({ t: "audit.disposition", featureId: "f04", attempt: 1, checkId: "c2", rawVerdict: "disagree", effectiveVerdict: "disagree", emptyDisagree: false, malformed: false, truncated: true, retried: true, evidenceUsable: false, checkVoided: false });
-    record.append({ t: "audit.disposition", featureId: "f01", attempt: 2, checkId: "void", rawVerdict: "disagree", effectiveVerdict: "agree", emptyDisagree: true, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: true });
+    record.append({ t: "audit.disposition", featureId: "f01", attempt: 2, checkId: "void", rawVerdict: "disagree", effectiveVerdict: "agree", emptyDisagree: true, malformed: false, truncated: false, retried: false, evidenceUsable: true, checkVoided: true, evidenceVersion: 2 });
     record.append({ t: "sweep", featureId: "f01", planned: 2, run: 1, skipped: ["f02"], durationMs: 1_500, complete: false, scope: "partial" });
     record.append({ t: "relock", before: "a", after: "b", confirmed: true });
     record.append({ t: "spec.drift", expected: "a", actual: "b" });
@@ -110,7 +110,7 @@ describe("build metrics", () => {
     expect(metrics.initExitCode).toBe(1);
     expect([metrics.regressionsCaught, metrics.regressionRepairs, metrics.regressionSweepSeconds]).toEqual([1, 1, 1.5]);
     expect([metrics.regressionChecksRun, metrics.regressionChecksSkipped, metrics.sweepsIncomplete]).toEqual([1, 1, 1]);
-    expect([metrics.auditorAgreeRate, metrics.auditorDisagreeRate, metrics.auditorEmptyDisagreeRate]).toEqual([0.5, 0.5, 0.5]);
+    expect([metrics.auditorAgreeRate, metrics.auditorDisagreeRate, metrics.auditorEmptyDisagreeRate]).toEqual([null, null, 0.5]);
     expect([metrics.auditorTruncated, metrics.auditEvidenceUsable, metrics.auditRetried]).toEqual([1, 1, 1]);
     expect(metrics.auditorTokenShare).toBeGreaterThan(0);
     expect(metrics.auditorCostUsd).toBe(1.5);
@@ -145,6 +145,50 @@ describe("build metrics", () => {
     });
     expect(Object.values(metrics.costByPhase).reduce((sum, value) => sum + value, 0)).toBe(metrics.costUsd);
     expect(Object.keys(metrics)).toEqual(expect.arrayContaining(Object.keys(foldBuildMetrics(run))));
+  });
+
+  test("excludes unavailable and legacy unusable evidence from verdict rates", () => {
+    const { run, record } = setup();
+    const disposition = (
+      checkId: string,
+      effectiveVerdict: "agree" | "disagree" | "unavailable",
+      evidenceUsable: boolean,
+      evidenceVersion?: 2,
+      overrides: Partial<Extract<RecordEvent, { t: "audit.disposition" }>> = {},
+    ) => record.append({
+      t: "audit.disposition", featureId: "f01", attempt: 1, checkId,
+      rawVerdict: effectiveVerdict === "disagree" ? "disagree" : "agree", effectiveVerdict,
+      emptyDisagree: false, malformed: false, truncated: false, retried: false,
+      evidenceUsable, checkVoided: false, evidenceVersion, ...overrides,
+    });
+    disposition("usable-agree", "agree", true, 2);
+    disposition("unavailable", "unavailable", false, 2);
+    disposition("legacy-unusable-agree", "agree", false);
+    disposition("legacy-claimed-usable", "agree", true);
+    disposition("truncated", "agree", true, 2, { truncated: true });
+    disposition("malformed", "agree", true, 2, { malformed: true });
+    disposition("empty-disagree", "agree", true, 2, { rawVerdict: "disagree", emptyDisagree: true });
+    disposition("mismatched", "agree", true, 2, { rawVerdict: "disagree" });
+
+    expect(foldBuildMetrics(run)).toMatchObject({
+      auditorAgreeRate: 1,
+      auditorDisagreeRate: 0,
+      auditEvidenceUsable: 6,
+    });
+
+    const onlyUnavailable = setup();
+    onlyUnavailable.record.append({
+      t: "audit.disposition", featureId: "f01", attempt: 1, checkId: "unavailable",
+      rawVerdict: "agree", effectiveVerdict: "unavailable", emptyDisagree: false,
+      malformed: false, truncated: false, retried: false, evidenceUsable: false,
+      checkVoided: false, presentationTruncated: true, evidenceVersion: 2,
+    });
+    expect(foldBuildMetrics(onlyUnavailable.run)).toMatchObject({
+      auditorAgreeRate: null,
+      auditorDisagreeRate: null,
+      auditEvidenceUsable: 0,
+      auditorTruncated: 0,
+    });
   });
 
   test("classifies only the final honest exit as mechanical or declared", () => {

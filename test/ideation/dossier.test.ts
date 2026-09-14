@@ -148,6 +148,7 @@ describe("renderDossier", () => {
     expect(r({ status: "collided", artifact: { title: "HiveEar", url: "https://x.test/h" }, distance: "same sensor, same claim" })).toContain("Distance: same sensor, same claim");
     expect(r({ status: "not_falsified" })).toContain("Prior art: searched, no matching artifact found");
     expect(r({ status: "search_failed" })).toContain("Prior art: search failed (novelty unknown)");
+    expect(r({ status: "search_failed", distance: "Only unrelated search results were retrieved." })).toContain("Coverage limit: Only unrelated search results were retrieved.");
   });
   test("renders all five probe statuses", () => {
     const r = (p: NonNullable<Evidence["probe"]>) => renderDossier(full(), { status: "active", probe: p });
@@ -195,8 +196,8 @@ describe("renderHash and RENDER_VERSION", () => {
     expect(renderHash("abc")).toBe(renderHash("abc"));
     expect(renderHash("abc")).not.toBe(renderHash("abd"));
   });
-  test("RENDER_VERSION is 1 and is not part of the rendered text", () => {
-    expect(RENDER_VERSION).toBe(1);
+  test("RENDER_VERSION is 2 for explicit coverage limits and is not part of the rendered text", () => {
+    expect(RENDER_VERSION).toBe(2);
     expect(renderDossier(full(), undefined)).not.toContain("RENDER_VERSION");
   });
 });

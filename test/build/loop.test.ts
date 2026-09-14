@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { derivedCaps } from "../../src/formation/features";
 import { foldState } from "../../src/build/state";
@@ -11,6 +11,17 @@ import { RunCancelledError, RunControl, withRunControl } from "../../src/core/ru
 import { builderResult, feature, setupLoop } from "./loop-fixture";
 
 describe("build loop", () => {
+  test("a repo-relative executable unblocks without spending attempts in the wrong cwd", async () => {
+    const s = setupLoop([feature("f01", { type: "shell", command: "./local-runtime", needs: ["./local-runtime"] })]);
+    expect(await runBuild(s.deps)).toMatchObject({ outcome: "stopped", stopKind: "blocked" });
+    expect(s.builderCalls).toHaveLength(0);
+    expect(foldState(s.deps.run).f01).toMatchObject({ blocked: true, attempts: 0 });
+    writeFileSync(join(s.project.repo, "local-runtime"), "#!/bin/sh\nexit 0\n", { mode: 0o755 });
+    expect(await runBuild(s.deps)).toEqual({ outcome: "ok" });
+    expect(s.builderCalls).toEqual(["f01"]);
+    expect(foldState(s.deps.run).f01).toMatchObject({ passes: true, attempts: 1 });
+  });
+
   test("cancellation at a durable boundary stops before attempt evidence", async () => {
     const s = setupLoop();
     const control = new RunControl();

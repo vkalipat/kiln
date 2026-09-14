@@ -7,6 +7,9 @@ import { initHome } from "../../src/core/home";
 import { loadConfig, saveConfig } from "../../src/core/config";
 import { createRun, writeStatus } from "../../src/core/run";
 import { createRunExecutor, pairCensoredBy, type RunSummary } from "../../src/evals/executor";
+import { RunControl, throwIfRunCancelled, withRunControl } from "../../src/core/run-control";
+import { RunRecord } from "../../src/core/record";
+import { runPaths } from "../../src/core/run";
 
 const seed = { id: "dev-product-01", split: "dev" as const, sha256: "a".repeat(64) };
 
@@ -20,6 +23,29 @@ function summary(stop?: "budget" | "deadline" | "transient" | "stalled" | "round
 }
 
 describe("eval run executor", () => {
+  test("persists interrupted discovery cost and censoring without dispatching the next phase", async () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-executor-cancel-")); initHome(home);
+    const model = createMockModel({ id: "fixture", provider: "fixture" });
+    const control = new RunControl(); let ideateCalls = 0;
+    const executor = createRunExecutor(home, {
+      models: { brain: model as never }, apiKeyFor: async () => "fixture",
+      runFrame: async (d) => { writeStatus(d.run, { phase: "discover" }); return { outcome: "ok" }; },
+      runDiscover: async (d) => {
+        d.record.append({ t: "model.call", role: "brain", provider: "fixture", model: "fixture", effort: "medium", addendaHash: "fixture", inputHash: "fixture", usage: { input: 100, output: 10, cacheRead: 0, cacheWrite: 0 }, costUsd: 1.25, durationMs: 1, stopReason: "aborted", excerpt: "partial response" });
+        control.cancel("evaluation wall deadline"); throwIfRunCancelled();
+        return { outcome: "ok" };
+      },
+      runIdeate: async () => { ideateCalls += 1; return { outcome: "ok" }; },
+    });
+    const result = await withRunControl(control, () => executor({ home, seedText: "seed", seedIdentity: seed, arm: "B0", through: "ideate", cloneAfter: "none", rounds: 1, runId: "cancelled", effort: {} }));
+    expect(result.status).toMatchObject({ phase: "discover", state: "paused", pausedReason: "user_cancelled", usdSpent: 1.25 });
+    expect(result.outcome?.message).toBe("evaluation wall deadline");
+    expect(result.costUsd).toBe(1.25);
+    expect(pairCensoredBy([result])).toEqual(["deadline"]);
+    expect(ideateCalls).toBe(0);
+    const events = new RunRecord(runPaths(home, "cancelled").record).read();
+    expect(new Set(events.map((event) => event.seq)).size).toBe(events.length);
+  });
   test("classifies only pair-level censoring stops", () => {
     expect(pairCensoredBy([summary("budget"), summary("rounds"), summary("blocked"), summary("stalled")])).toEqual(["budget", "stalled"]);
     expect(pairCensoredBy([summary(undefined, "paused")])).toEqual(["deadline"]);

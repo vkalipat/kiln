@@ -37,6 +37,14 @@ async function check(acceptance: Acceptance, patch: Partial<RunCheckOptions> = {
 }
 
 describe("runCheck shell", () => {
+  test("resolves declared executable needs in the actual check cwd", async () => {
+    const s = setup();
+    writeFileSync(join(s.cwd, "local-runtime"), "#!/bin/sh\nprintf verified\n", { mode: 0o755 });
+    const result = await runCheck({ type: "shell", command: "./local-runtime", needs: ["./local-runtime"] }, s.options);
+    expect(result).toMatchObject({ ok: true, exitCode: 0 });
+    expect(result.output).toContain("verified");
+  });
+
   test("runs in cwd with an allowlisted environment and matches combined output", async () => {
     const s = await check(
       { type: "shell", command: "printf '%s|%s|%s|%s' \"$PWD\" \"$KILN_ALLOWED\" \"$KILN_HIDDEN\" \"$TERM\"; printf ' stderr-token' >&2", expect: { type: "substring", value: "stderr-token" }, needs: ["KILN_ALLOWED"] },

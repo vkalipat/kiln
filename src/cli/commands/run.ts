@@ -1,6 +1,6 @@
 import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { join, resolve } from "node:path";
-import { loadConfig } from "../../core/config";
+import { loadConfig, type Phase } from "../../core/config";
 import { classifyFailure } from "../../core/failure";
 import { initHome } from "../../core/home";
 import { Limiter } from "../../core/limiter";
@@ -10,7 +10,7 @@ import { RunRecord } from "../../core/record";
 import { RunCancelledError, throwIfRunCancelled } from "../../core/run-control";
 import { pauseCancelledRun } from "../controlled-command";
 import { createRun, readStatus, runExists, runPaths, writeStatus, type RunPaths, type RunStatus } from "../../core/run";
-import { runDiscover } from "../../phases/discover";
+import { cachedDiscoverySynthesisWallMs, runDiscover } from "../../phases/discover";
 import { runFrame, type PhaseDeps, type PhaseResult } from "../../phases/frame";
 import { runIdeate } from "../../phases/ideate";
 import { runBuild, runBuildSingleSession, type BuildDeps } from "../../phases/build";
@@ -33,7 +33,7 @@ import { HeldoutSeedError } from "../../evals/identity";
 import { verifyEvalsManifest } from "../../evals/manifest";
 import { manifestDriftNote, resolveNewSeed, type NewSeedInput } from "./run-seed";
 import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, planWorkflow, workflowInterpretation, type WorkflowExecution, type WorkflowPhase } from "../../workflow/plan";
-import { prepareSuppliedTask } from "../../workflow/supplied-task";
+import { prepareDeterministicDirectFrame, prepareSuppliedTask } from "../../workflow/supplied-task";
 import { applyWorkflowProfile } from "../../workflow/profile";
 import { applyFrozenRouting, freezeRouting, loadFrozenRouting } from "../../workflow/routing";
 import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../routing/adaptive";
@@ -233,7 +233,13 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     try { new RunRecord(resumedRun.record).append({ t: "note", text: drift }); }
     finally { noteLock.release(); }
   }
-  const route = resumedRun && resumedStatus ? routeResume(resumedStatus, existsSync(resumedRun.frontier), cfg) : undefined;
+  const requestedResumePhases = resumedRun && explicitThrough
+    ? THROUGH.slice(0, THROUGH.indexOf(explicitThrough as Through) + 1).filter((phase): phase is Phase => phase !== "checkpoint")
+    : [];
+  const cachedDiscoverySynthesis = resumedRun && resumedStatus?.phase === "discover"
+    ? cachedDiscoverySynthesisWallMs(resumedRun, cfg, new RunRecord(resumedRun.record), Date.now(), requestedResumePhases) > 0 : false;
+  let route = resumedRun && resumedStatus
+    ? routeResume(resumedStatus, existsSync(resumedRun.frontier), cfg, Date.now(), { cachedDiscoverySynthesis }) : undefined;
   if (route?.kind === "wait") {
     if (!json) io.write(`run ${resumedRun!.id} is paused${route.wakeAt ? ` until ${route.wakeAt}` : ""}\n`);
     printRunSummary(resumedRun!, resultFromStatus(resumedStatus!), json, io);
@@ -327,6 +333,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
     streamFn: deps.streamFn,
     effort: cfg.effort,
     workflow,
+    executionPhases: workflowExecution.phases.filter((phase): phase is Phase => phase !== "checkpoint"),
     fetchImpl: deps.fetchImpl,
     fetchUsage: runtime.fetchUsage,
     forceLock: flags.force === true,
@@ -342,9 +349,9 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
 
   let result: PhaseResult = { outcome: "ok" };
   let status = readStatus(run);
-  const forced = route?.kind === "phase" && (!explicitThrough || reaches(through, route.phase as Through)) ? route.phase : undefined;
+  const forced = () => route?.kind === "phase" && (!explicitThrough || reaches(through, route.phase as Through)) ? route.phase : undefined;
   const eligible = (phase: ResumePhase): boolean => workflowExecution.phases.includes(phase)
-    || (forced === phase && (workflow.strategy?.mode !== "direct" || !["discover", "ideate", "checkpoint"].includes(phase)));
+    || (forced() === phase && (workflow.strategy?.mode !== "direct" || !["discover", "ideate", "checkpoint"].includes(phase)));
   let commandLock: RunLock;
   try { commandLock = acquireRunLock(run, { force: flags.force === true }); }
   catch (error) { if (error instanceof RunLockedError) { err(`${error.message}\n`); return 2; } throw error; }
@@ -355,13 +362,38 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
       if (!json) io.write(`Adaptive routing: ${workflow.strategy?.mode ?? "exploratory"} workflow; ${cfg.roles.builder[0]} build. ${workflow.strategy?.mode === "direct" ? "Competitive ideation skipped for the supplied task." : `${cfg.ideation.rounds} planned ideation round(s), $${cfg.budgets.phaseBudgetUsd("ideate").toFixed(2)} ideation allocation.`} Details: ${join(run.dir, "routing.json")}\n`);
     }
     deps.onRun?.(run);
+    if (resumedRun) {
+      // The precheck keeps terminal resumes cheap, but it cannot authorize mutation after an
+      // asynchronous runtime setup or lock wait. Re-read and reroute under the held lock—also
+      // after onRun, the UI seam that announces the authoritative run—before clearing any stop.
+      status = readStatus(run);
+      const cached = status.phase === "discover"
+        ? cachedDiscoverySynthesisWallMs(run, cfg, record, Date.now(), base.executionPhases) > 0 : false;
+      route = routeResume(status, existsSync(run.frontier), cfg, Date.now(), { cachedDiscoverySynthesis: cached });
+      if (route.kind === "wait") {
+        if (!json) io.write(`run ${run.id} is paused${route.wakeAt ? ` until ${route.wakeAt}` : ""}\n`);
+        printRunSummary(run, resultFromStatus(status), json, io);
+        return 0;
+      }
+      if (route.kind === "refuse") { err(`${route.message}\n`); return 2; }
+      if (route.kind === "stop") {
+        if (!json) io.write(`${route.message}\n`);
+        printRunSummary(run, resultFromStatus(status), json, io);
+        return 0;
+      }
+    }
     if (route?.kind === "phase" && route.wake) {
       writeStatus(run, { state: "running", outcome: undefined, pausedReason: undefined, wakeAt: undefined });
       status = readStatus(run);
     }
     if (eligible("frame") && status.phase === "frame" && status.state === "running") {
-      runtime.models("brain");
-      result = await (deps.runFrame ?? runFrame)(base);
+      if (workflow.directFrame === "deterministic-v1") {
+        prepareDeterministicDirectFrame(base);
+        result = { outcome: "ok" };
+      } else {
+        runtime.models("brain");
+        result = await (deps.runFrame ?? runFrame)(base);
+      }
       throwIfRunCancelled();
       status = readStatus(run);
     }
@@ -370,7 +402,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
       prepareSuppliedTask(base); status = readStatus(run);
     }
     if (result.outcome === "ok" && eligible("discover") && status.phase === "discover" && status.state === "running") {
-      runtime.models("brain"); runtime.models("scout");
+      runtime.models("brain");
       result = await (deps.runDiscover ?? runDiscover)(base);
       throwIfRunCancelled();
       status = readStatus(run);
