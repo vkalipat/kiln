@@ -29,16 +29,49 @@ Codex does not honor the caller's requested output-token cap. The canary reserve
 ## Qualification status
 
 - Native provider-free VCC orchestration: exact assignments reach the prober, persisted spec, dossier and comparison; unavailable data and synthetic precondition scope remain visible. Selection advances to formation and is not reported as biological task completion.
-- Full regression suite: **1,931 passing tests, zero failures**, 11,925 assertions across 205 files (153.79 seconds). TypeScript, evaluation-manifest integrity and leak checks pass. Independent final review found no concrete blocker and passed 26 focused checks. The first full pass exposed a strict-schema regression and a hash-bound evaluation fixture edit; both were fixed, preserving the original evaluation assertion file.
+- Full regression suite after cohesive-feature guidance: **1,933 passing tests, zero failures**, 11,962 assertions across 206 files (150.10 seconds). TypeScript passes. The preceding 1,931-test core also passed private GitHub CI, evaluation-manifest integrity and leak checks. Independent review found no concrete blocker and passed 26 focused checks; the later formation change passed 53 focused tests. The first full pass exposed a strict-schema regression and a hash-bound evaluation fixture edit; both were fixed, preserving the original evaluation assertion file.
 - Official CPU metric integration: **passed** in 14.61 seconds with zero provider calls. Pinned `cell-eval2` 0.16.0 / `vcc2026` / explicit CPU Scanpy produced all six scored metric names and four diagnostics in both synthetic cases. The final receipt hash is `65d674ed028adefea269e3be9f5d89f5450c5ec6454b56c38bcc5b7538ee20ed`. The fixture is explicitly synthetic, not held-out biological observations; no reference-scaled leaderboard overall was computed.
 - Real-data predictive performance: **unmeasured**. Official 2026 controls require registration; no authorized local validation data or challenge submission is available in this pass.
 
 No GPU rental, account registration, challenge submission, model-switch retry after refusal, or mutation of the failed user run was performed. Raw private receipts retain all failed test attempts; they are not included as worker context.
 
-## Native delivery qualification — running
+## Native delivery qualification — first trial passed
 
-A separate fresh native CLI run implements a dependency-free JSON count-matrix validator against a supplied public contract and 20 frozen external edge cases. It follows deterministic frame, formation/critique, build/audit and reflection, with the actual adaptive router. It is a software utility, not a predictor, an official `.vcc` package, or a live ideation comparison. The existing role effort defaults are used; manual all-ultra settings were backed up and only the two effort fields changed locally.
+A separate fresh native CLI run implemented a dependency-free JSON count-matrix validator against a supplied public contract and 20 frozen external edge cases. It completed deterministic frame, formation/critique, build/audit and reflection, with the actual adaptive router. All **20 external checks and 13 generated tests passed**. It is a software utility, not a predictor, an official `.vcc` package, or a live ideation comparison. The existing role effort defaults were used; manual all-ultra settings were backed up and only the two effort fields changed locally.
 
 The supplied utility prompt abbreviates the challenge as “VCC,” so the conservative biological-workload detector does not trigger for this trial. The frozen actual seats are Fable for formation/auditing and Astra for building/critique/reflection. This receipt must not be presented as a live test of the explicit full-name Virtual Cell routing preference, which is covered by native provider-free integration tests.
 
 The run shares the $25 completion-pass exposure allowance, including the preceding $0.0198 canary, with a 40-request and 25-minute limit. Exact transmitted inputs are reserved before dispatch; Codex uses the catalog output maximum and Anthropic an enforced request cap. No automatic restart follows a terminal failure. External checks are separate from model-authored tests and check the public contract, not a secret or adversarially isolated benchmark. All outcomes, not merely a zero exit code, must establish delivery before this qualification passes.
+
+First-trial results: **37 model requests, $4.854025 recorded usage, 976.589 seconds** of native run time, three completed features and independent audits, no failed requests or unresolved charges. Token counters: input 132,497; output 44,727; cache read 266,830; cache write 82,070. Including the canary, retained completion-pass exposure was $4.873825. The receipt hash is `af5eebe475733ea81cb0f764a49332051c621ad3158dc2ea3dcb1af4d0677094`; final journal hash `f7ff83d0e3765d70c0340035c5df8da7bfc2862f877828f274731d07243203e9`.
+
+Astra's first critique caught acceptance checks that could mistake newline-only stdout for empty output, missing blank-target coverage, and keyword-only README checks. The producer corrected them; independent re-review approved the corrected contract. The controller did not send corrections or oracle results into the worker.
+
+## Same-task efficiency comparison — both trials passed
+
+The first successful utility was split into implementation, tests and README features, each with a separate builder/auditor cycle. Its frozen direct profile already allowed one feature (`minFeatures: 1`); this was a decomposition choice, not a mechanical three-feature floor.
+
+The only subsequent production change is formation guidance: group implementation, corresponding tests and documentation by independently useful behavior, not by file or work category. Larger tasks can still use multiple features. No executable check, critic, auditor, budget floor, acceptance lock or historical run was removed or rewritten.
+
+The second trial was a prospectively frozen fresh run of the **same seed and same 20 external cases**, with identical model lists, effective efforts and input configuration. It started with the full previous $4.873825 exposure retained under the unchanged $25 ceiling. The test driver was extended to bind that prior receipt, check identical model/effort routing, and reject literal references to the earlier worker/controller artifacts. This is a developmental before/after comparison, not a randomized effect estimate; outputs and provider caching can vary between runs.
+
+| Measurement | First trial | Cohesive-feature trial |
+| --- | ---: | ---: |
+| External contract checks | 20/20 | 20/20 |
+| Generated tests passing | 13 | 20 |
+| Completed features / independent audits | 3 / 3 | 1 / 1 |
+| Critiques | revise, then approve | revise, then approve |
+| Model requests | 37 | 19 |
+| Output tokens | 44,727 | 19,005 |
+| Input tokens, excluding separately reported caches | 132,497 | 56,249 |
+| Cache-read / cache-write tokens | 266,830 / 82,070 | 118,233 / 34,595 |
+| Sum of all four token counters | 526,124 | 228,082 |
+| Recorded cost estimate | $4.854025 | $2.0634105 |
+| Native run wall time | 976.589 s | 330.588 s |
+| Terminal outcome | success | success |
+
+The observed reduction was approximately **57% in total token counters**, **57% in estimated cost**, and **66% in wall time** on this one task. The unchanged external checks and both successful native audits support contract conformance, not a universal equality-of-quality claim. Both trials retained a requested revision and independent re-review; no approval stage was bypassed. Builder and auditor calls each fell from 12 to 5; brain calls fell from 10 to 6. Neither trial recorded a failed request, unknown charge, or literal controller-access attempt.
+
+The second source hash is `aaf083b61aa147138a1256cd650b2c92300190e315f48a8410df664c729930a3`; driver hash `26b05470b0df133d26da6373a006ba77cb73fd26edff3752cc8ca6ba3c1aee50`. Its receipt hash is `370dc2aa649e6616d6dcbed4f8de43a639192a81dc2a905a448fd77625ca0067`; final journal hash `03d77ad7fc4407ad31ea70b3c9b4abdbf959c7fbaedad2970b47faab4a784219`. The source stayed unchanged during each trial. All private run artifacts, generated projects, receipts and earlier failures are retained separately.
+
+Total completion-pass recorded/settled exposure, including both native trials and the arithmetic canary: **$6.9372355**. No outstanding reservation remains. This does not alter the earlier broad benchmark campaign's ledger or establish real Virtual Cell prediction performance.

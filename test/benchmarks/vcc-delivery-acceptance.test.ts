@@ -1,8 +1,23 @@
 import { describe, expect, test } from "bun:test";
 import { planWorkflow, compileWorkflow } from "../../src/workflow/plan";
-import { mentionsController, nativeDeliveryComplete, oraclePass, vccOracles, vccWireReservation, VCC_LIMITS, VCC_SEED } from "../../scripts/benchmarks/vcc-delivery-acceptance";
+import { mentionsController, nativeDeliveryComplete, oraclePass, retainedVccExposure, vccOracles, vccWireReservation, VCC_LIMITS, VCC_SEED } from "../../scripts/benchmarks/vcc-delivery-acceptance";
 
 describe("VCC native delivery qualification protocol", () => {
+  test("same-task second qualification retains full prior shared ledger without double-counting canary", () => {
+    const canary = { passed: true, chargedUsd: 0.0198 };
+    const previous = { passed: true, chargedUsd: 4.873825, spentUsd: 4.854025, priorCanaryUsd: 0.0198,
+      status: { state: "done", outcome: { kind: "success" } },
+      phaseOutcomes: ["frame", "form", "build", "reflect"].map(phase => ({ phase, outcome: "ok" })) };
+    expect(retainedVccExposure(canary)).toBe(0.0198);
+    expect(retainedVccExposure(canary, previous)).toBe(4.873825);
+    expect(25 - retainedVccExposure(canary, previous)).toBeCloseTo(20.126175);
+    expect(previous.chargedUsd).toBe(4.873825);
+    for (const patch of [{ passed: false }, { chargedUsd: NaN }, { chargedUsd: 25 }, { chargedUsd: 4.854025 },
+      { spentUsd: -1 }, { priorCanaryUsd: 0 }, { status: { state: "failed" } }, { phaseOutcomes: [] }]) {
+      expect(() => retainedVccExposure(canary, { ...previous, ...patch })).toThrow();
+    }
+    expect(() => retainedVccExposure({ passed: true, chargedUsd: NaN }, previous)).toThrow();
+  });
   test("native completion requires successful final status and every required phase", () => {
     const status = { state: "done", outcome: { kind: "success" } };
     const phases = ["frame", "form", "build", "reflect"].map(phase => ({ phase, outcome: "ok" }));

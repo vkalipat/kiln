@@ -413,6 +413,7 @@ function formPinned(
     `Write ${project.spec}, ${project.featuresMirror}, and ${project.initSh} in that order.`,
     `spec.md requires these ## sections: ${SPEC_SECTIONS.join(", ")}. Scope and Non-goals each need a '- ' bullet. First milestone must be 1-600 characters.`,
     `The feature JSON is version 1 with init.needs and ${minFeatures}-${maxFeatures} features carrying title, description and one shell/file/manual acceptance. Leave ids to the harness.`,
+    "Plan each feature as a cohesive, independently verifiable behavior slice, including its implementation, corresponding tests, and documentation. Do not create separate features just for tests or README work supporting the same behavior. Use multiple features for independently useful and verifiable behaviors, each with its own relevant tests and documentation. Preserve every user requirement and executable acceptance check within these slices.",
     "features.json accepts no extra state fields. The first feature and at least one feature overall need a nontrivial shell or safe repo-relative file check; manual checks need concrete instructions.",
     "init.needs and acceptance.needs entries are literal executable names (for example python3 or git; explicit executable paths and environment-variable names are also supported). Never put prose, version constraints, or command arguments in needs. Put descriptive requirements in spec.md and executable version checks in init.sh.",
     "init.sh must be nonempty and begin with #!. Stop once all three artifacts are complete; the harness validates them and independently critiques before freezing.",
@@ -423,7 +424,7 @@ function formPinned(
   if (direct) pinned.push(
     `This is a direct supplied task. The original user request at ${direct.seedPath} is authoritative. The complete framing brief at ${direct.briefPath} is derived context, subordinate to that request; do not narrow the task to the capped dossier summary or treat provisional axes as a competitive ranking.`,
     "Distinguish requested behavior from discretionary implementation choices. Extra API shapes, exact error codes, diagnostic formats, test-method counts, import formatting, and platform/version promises are not additional acceptance requirements unless the user requested them. Keep useful choices provisional; reconcile or remove unsupported extra promises instead of expanding the contract. Preserve every user-required behavior and its executable acceptance checks.",
-    "For a small self-contained task, prefer one independently verifiable feature encompassing implementation, tests, and documentation. Add multiple features only when the work has genuinely separable deliverables. Preserve all requested behavior and acceptance checks; do not add unrelated requirements to fill feature slots.",
+    "A small supplied local utility should usually be one feature covering the complete requested behavior, tests, and documentation. File boundaries and implementation/test/documentation work categories are not feature boundaries. Larger tasks with independent behaviors can use multiple features; do not add unrelated requirements to fill feature slots.",
     "## Original user request", direct.seed,
     "## Complete framing brief", direct.brief,
   );

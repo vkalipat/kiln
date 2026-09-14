@@ -1,7 +1,7 @@
 /** Explicitly authorized native delivery qualification; public schema contract, not biology evaluation. */
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, resolve } from "node:path";
 import { tmpdir } from "node:os";
 import { streamSimple, createAssistantMessageEventStream, type AssistantMessageEvent, type FetchImpl } from "@oh-my-pi/pi-ai";
 import { coworkFetch } from "@oh-my-pi/pi-ai/providers/cowork-fetch";
@@ -74,14 +74,44 @@ export function vccWireReservation(provider: string, modelId: string, maxOutput:
   return { wireBytes: Buffer.byteLength(body), wireSha256: sha(body), reservedOutputTokens: output,
     enforcedOutputTokens: provider === "openai-codex" ? null : enforced, reserveUsd: reservation(cost, Buffer.byteLength(body), output) };
 }
-export function prepareVcc(out: string, canaryReceipt: string) {
+export function retainedVccExposure(canary: any, previous?: any): number {
+  if (canary?.passed !== true || !Number.isFinite(canary.chargedUsd)
+    || Math.abs(canary.chargedUsd - VCC_LIMITS.priorCanaryUsd) > 1e-9) throw new Error("Canary receipt/exposure differs");
+  if (previous === undefined) return canary.chargedUsd;
+  if (previous?.passed !== true || !nativeDeliveryComplete(previous.status, previous.phaseOutcomes ?? [])
+    || previous.priorReceipt || (previous.caseOrder !== undefined && previous.caseOrder !== 1)
+    || !Number.isFinite(previous.chargedUsd) || !Number.isFinite(previous.spentUsd) || previous.spentUsd < 0
+    || previous.priorCanaryUsd !== VCC_LIMITS.priorCanaryUsd
+    || previous.chargedUsd + 1e-9 < previous.spentUsd + canary.chargedUsd
+    || previous.chargedUsd >= VCC_LIMITS.totalExposureUsd) throw new Error("Prior native receipt is not a passed funded qualification");
+  // The previous charged ledger already includes the canary; never add it a second time.
+  return previous.chargedUsd;
+}
+export function prepareVcc(out: string, canaryReceipt: string, priorReceipt?: string) {
   const prior = JSON.parse(readFileSync(canaryReceipt, "utf8"));
-  if (!prior.passed || Math.abs(prior.chargedUsd - VCC_LIMITS.priorCanaryUsd) > 1e-9) throw new Error("Canary receipt/exposure differs");
+  const previous = priorReceipt ? JSON.parse(readFileSync(priorReceipt, "utf8")) : undefined;
+  const initialExposureUsd = retainedVccExposure(prior, previous);
+  const previousProtocol = priorReceipt ? JSON.parse(readFileSync(join(dirname(priorReceipt), "protocol.json"), "utf8")) : undefined;
+  const previousPlan = priorReceipt ? JSON.parse(readFileSync(join(dirname(priorReceipt), "native-plan.json"), "utf8")) : undefined;
+  if (previousProtocol && (previousProtocol.seedSha256 !== sha(VCC_SEED) || previousProtocol.oracleSha256 !== sha(JSON.stringify(vccOracles()))
+    || previousProtocol.sourceSha256 !== previous.sourceSha256 || previousProtocol.driverSha256 !== previous.driverSha256
+    || previousProtocol.canaryReceiptSha256 !== sha(readFileSync(canaryReceipt)) || previousProtocol.home !== previous.home
+    || previousProtocol.configSha256 !== sha(readFileSync(join(previous.home, "config.json")))
+    || !previousPlan?.routing?.roles || !previousPlan.routing.effectiveEffort)) throw new Error("Prior task/oracles/config/routing differ");
   mkdirSync(out, { mode: 0o700 });
   const home = mkdtempSync(join(tmpdir(), "kiln-vcc-delivery-worker-")); initHome(home, { plugAndPlay: true });
-  const cfg = loadConfig(kilnHome()); cfg.routing = { mode: "adaptive" }; cfg.autonomous = true; cfg.provider.fallbacks = "off";
+  const cfg = loadConfig(previous?.home ?? kilnHome()); cfg.routing = { mode: "adaptive" }; cfg.autonomous = true; cfg.provider.fallbacks = "off";
   cfg.budgets.usd = 25; cfg.budgets.wallSeconds = VCC_LIMITS.wallMs / 1000; saveConfig(home, cfg);
   const protocol = { version: 1, ...deliveryHashes(), ...VCC_LIMITS, home, canaryReceipt: resolve(canaryReceipt),
+    initialExposureUsd, caseOrder: previous ? 2 : 1,
+    comparison: previous ? "Developmental same-task before/after; not randomized, not a scientific effect estimate, not recovery or retry" : "Original first qualification",
+    ...(priorReceipt ? { priorReceipt: resolve(priorReceipt), priorReceiptSha256: sha(readFileSync(priorReceipt)),
+      priorProtocolSha256: sha(readFileSync(join(dirname(priorReceipt), "protocol.json"))),
+      priorPlanSha256: sha(readFileSync(join(dirname(priorReceipt), "native-plan.json"))),
+      previousSourceSha256: previous.sourceSha256, previousDriverSha256: previous.driverSha256,
+      sourceChanged: previous.sourceSha256 !== deliveryHashes().sourceSha256,
+      driverChanged: previous.driverSha256 !== deliveryHashes().driverSha256,
+      expectedRoles: previousPlan.routing.roles, expectedEffort: previousPlan.routing.effectiveEffort, previousHome: previous.home } : {}),
     canaryReceiptSha256: sha(readFileSync(canaryReceipt)), configSha256: sha(readFileSync(join(home, "config.json"))),
     seedSha256: sha(VCC_SEED), oracleSha256: sha(JSON.stringify(vccOracles())),
     scope: "Public contract conformance only; no biological prediction, official VCC packaging or hidden benchmark claim",
@@ -110,9 +140,15 @@ async function gradeProject(repo: string, oracles: Oracle[]) {
     readmePresent: existsSync(join(repo, "README.md")) && readFileSync(join(repo, "README.md"), "utf8").trim().length > 0 };
 }
 
-export async function liveVcc(out: string, expectedSource: string, expectedDriver: string) {
+export async function liveVcc(out: string, expectedSource: string, expectedDriver: string, priorReceipt?: string) {
   const p = JSON.parse(readFileSync(join(out, "protocol.json"), "utf8"));
   const hashes = deliveryHashes();
+  if (Boolean(p.priorReceipt) !== Boolean(priorReceipt) || (priorReceipt && resolve(priorReceipt) !== p.priorReceipt)) throw new Error("Repeat dispatch requires the frozen --prior-receipt");
+  const previous = priorReceipt ? JSON.parse(readFileSync(priorReceipt, "utf8")) : undefined;
+  const initialExposure = retainedVccExposure(JSON.parse(readFileSync(p.canaryReceipt, "utf8")), previous);
+  if (initialExposure !== p.initialExposureUsd || (priorReceipt && (p.priorReceiptSha256 !== sha(readFileSync(priorReceipt))
+    || p.priorProtocolSha256 !== sha(readFileSync(join(dirname(priorReceipt), "protocol.json")))
+    || p.priorPlanSha256 !== sha(readFileSync(join(dirname(priorReceipt), "native-plan.json")))))) throw new Error("Retained lineage changed");
   if (hashes.sourceSha256 !== expectedSource || hashes.driverSha256 !== expectedDriver
     || JSON.stringify(hashes.helperHashes) !== JSON.stringify(p.helperHashes) || p.sourceSha256 !== expectedSource || p.driverSha256 !== expectedDriver
     || p.oracleSha256 !== sha(readFileSync(join(out, "oracles.json"))) || p.seedSha256 !== sha(VCC_SEED)
@@ -120,8 +156,8 @@ export async function liveVcc(out: string, expectedSource: string, expectedDrive
     || Object.entries(VCC_LIMITS).some(([key, value]) => p[key] !== value)) throw new Error("Frozen qualification changed");
   writeFileSync(join(out, "execution.json"), JSON.stringify({ ...hashes, startedAt: new Date().toISOString() }), { flag: "wx", mode: 0o600 });
   const control = new RunControl(), pending = new Set<Promise<unknown>>(), calls: any[] = [];
-  let charged = VCC_LIMITS.priorCanaryUsd as number, spent = 0, requests = 0, nativePreflight = false, code = 1;
-  const ledger = () => writeAtomic(join(out, "ledger.json"), JSON.stringify({ priorExposureUsd: VCC_LIMITS.priorCanaryUsd, chargedUsd: charged, spentUsd: spent, requests, calls }, null, 2), { mode: 0o600 });
+  let charged = initialExposure, spent = 0, requests = 0, nativePreflight = false, code = 1;
+  const ledger = () => writeAtomic(join(out, "ledger.json"), JSON.stringify({ priorExposureUsd: initialExposure, chargedUsd: charged, spentUsd: spent, requests, calls }, null, 2), { mode: 0o600 });
   const cfg = loadConfig(p.home), runtime = await createCliRuntime(kilnHome(), cfg, {});
   const guarded: StreamFn = (model, context, options) => {
     if (!nativePreflight) throw new Error("Native frozen routing must precede dispatch");
@@ -152,7 +188,8 @@ export async function liveVcc(out: string, expectedSource: string, expectedDrive
         const known = [message.usage.input, message.usage.output, message.usage.cacheRead, message.usage.cacheWrite].every(n => Number.isFinite(n) && n >= 0)
           && message.usage.input + message.usage.output + message.usage.cacheRead + message.usage.cacheWrite > 0;
         const actual = known ? modelCostUsd(model, message.usage) : NaN;
-        const access = message.content.some(x => x.type === "toolCall" && mentionsController(x.arguments, out));
+        const protectedPaths = [out, ...(p.priorReceipt ? [dirname(p.priorReceipt), p.previousHome] : [])];
+        const access = message.content.some(x => x.type === "toolCall" && protectedPaths.some(path => mentionsController(x.arguments, path)));
         const bad = access || !known || message.provider !== model.provider || message.model !== model.id || ["error", "aborted"].includes(message.stopReason)
           || Boolean(message.errorMessage) || (message as any).stopDetails?.type === "refusal";
         const kept = entry.dispatched ? settleReservation(reserved, actual, bad ? "error" : message.stopReason) : 0;
@@ -172,6 +209,8 @@ export async function liveVcc(out: string, expectedSource: string, expectedDrive
     code = await withRunControl(control, () => main(["run", "new", VCC_SEED, "--id", ID, "--home", p.home, "--through", "reflect", "--autonomous", "--yes", "--json"],
       { write: () => {}, error: () => {} }, { apiKeyFor: runtime.apiKeyFor, fetchUsage: runtime.fetchUsage, streamFn: guarded,
         onRun(run) { const direct = assertDirectWorkflow(run); const routing = loadFrozenRouting(run); if (!routing) throw new Error("Missing adaptive routing");
+          if (p.priorReceipt && (JSON.stringify(routing.roles) !== JSON.stringify(p.expectedRoles)
+            || JSON.stringify(routing.effectiveEffort) !== JSON.stringify(p.expectedEffort))) throw new Error("Repeat model seats or role efforts changed");
           nativePreflight = true; writeAtomic(join(out, "native-plan.json"), JSON.stringify({ direct, routing }, null, 2), { mode: 0o600 }); } }));
   } catch { code = 1; }
   finally { clearTimeout(timer); await Promise.allSettled([...pending]); ledger(); }
@@ -181,6 +220,9 @@ export async function liveVcc(out: string, expectedSource: string, expectedDrive
   const status = existsSync(run.status) ? readStatus(run) : null;
   const phaseOutcomes = events.filter(e => e.t === "phase.end");
   const receipt = { scope: p.scope, boundary: p.boundary, ...hashes, home: p.home, code, status, nativePreflight,
+    caseOrder: p.caseOrder, comparison: p.comparison, priorReceipt: p.priorReceipt ?? null, priorReceiptSha256: p.priorReceiptSha256 ?? null,
+    previousSourceSha256: p.previousSourceSha256 ?? null, previousDriverSha256: p.previousDriverSha256 ?? null,
+    sourceChanged: p.sourceChanged ?? false, driverChanged: p.driverChanged ?? false, initialExposureUsd: initialExposure,
     sourceUnchanged: sourceHash(ROOT) === expectedSource, cancelled: control.signal.aborted, phaseOutcomes,
     criticObserved: events.some(e => e.t === "model.call" && e.role === "critic"), auditorObserved: events.some(e => e.t === "model.call" && e.role === "auditor"),
     grading, requests, spentUsd: spent, chargedUsd: charged, priorCanaryUsd: VCC_LIMITS.priorCanaryUsd, recordedUsd: record?.costUsd() ?? 0,
@@ -194,7 +236,8 @@ export async function liveVcc(out: string, expectedSource: string, expectedDrive
 if (import.meta.main) {
   const arg = (name: string) => { const i = Bun.argv.indexOf(name); return i < 0 ? undefined : Bun.argv[i + 1]; };
   const out = arg("--out"); if (!out || Bun.argv.includes("--prepare") === Bun.argv.includes("--live")) throw new Error("Use --prepare or --live with --out");
-  if (Bun.argv.includes("--prepare")) { const prior = arg("--canary-receipt"); if (!prior) throw new Error("Existing canary receipt required"); console.log(JSON.stringify(prepareVcc(resolve(out), prior))); }
+  if (Bun.argv.includes("--repeat") && !arg("--prior-receipt")) throw new Error("Repeat qualification requires --prior-receipt");
+  if (Bun.argv.includes("--prepare")) { const prior = arg("--canary-receipt"); if (!prior) throw new Error("Existing canary receipt required"); console.log(JSON.stringify(prepareVcc(resolve(out), prior, arg("--prior-receipt")))); }
   else { const source = arg("--expected-source-sha"), driver = arg("--expected-driver-sha"); if (!source || !driver) throw new Error("Explicit source/driver approval hashes required");
-    const receipt = await liveVcc(resolve(out), source, driver); console.log(JSON.stringify({ receipt: join(resolve(out), "receipt.json"), passed: receipt.passed })); process.exit(receipt.passed ? 0 : 1); }
+    const receipt = await liveVcc(resolve(out), source, driver, arg("--prior-receipt")); console.log(JSON.stringify({ receipt: join(resolve(out), "receipt.json"), passed: receipt.passed })); process.exit(receipt.passed ? 0 : 1); }
 }

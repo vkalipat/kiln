@@ -88,6 +88,8 @@ Completed compatible research can survive an interrupted reviewer or synthesis s
 
 Formation turns the selected task into `spec.md`, `features.json`, and `acceptance.lock`. An independent critic reviews the exact artifact bytes. On the optimized direct route, a clean first review can freeze them immediately; a requested correction must be applied and reviewed again.
 
+Features are planned around independently useful behavior, with their corresponding tests and documentation included. A small utility should not require separate builder/auditor cycles merely because its code, tests, and README live in different files. Larger independent behaviors can still be split.
+
 On that direct route, the builder receives the original request in a stable quoted context plus its current feature scope. Each feature has executable acceptance checks where the behavior is machine-verifiable. Kiln records Git evidence, check output, progress, and append-only state.
 
 An independent auditor reviews a detached copy of the exact repository snapshot and the complete frozen feature scope. Missing or unusable audit evidence cannot approve a feature. Resume keeps prior attempts, spending, elapsed time, and accepted artifacts.
@@ -163,6 +165,8 @@ A run directory contains ordinary files that can be inspected without Kiln:
 One live CSV delivery completed 16 of 16 independent behavioral checks, produced 14 generated tests, and ended with a usable independent audit at $4.47223725 recorded usage. Its simple tool-using baseline hit a per-call output limit and delivered no artifact. A separate CLI recovery completed 7 of 7 external checks with 11 generated tests.
 
 These are small development qualifications, not broad benchmark wins. The CSV baseline's output limit is a material condition. Provider-free tests also show that direct tasks remove one framing invocation and one redundant clean-review cycle while retaining correction and re-review, but those counts are not measured provider latency or cost.
+
+A live VCC-related **JSON validation utility** passed the same 20 external checks before and after cohesive-feature planning. Requests fell from 37 to 19, total reported token counters (including caches) from 526,124 to 228,082, estimated cost from $4.85 to $2.06, and native time from 16.3 to 5.5 minutes. Both runs retained critique, revision, independent audit, and reflection. This is one developmental comparison, not a general effect estimate. The official `cell-eval2` CPU integration also passed on a pinned synthetic fixture; **real biological prediction performance remains unmeasured**. Details and limitations are in the [Virtual Cell readiness record](docs/testing/2026-09-14-vcc-readiness.md).
 
 The September 13 live ideation continuation completed a landscape and generated eight draft candidates, then stopped at its external evaluation spending guard before evidence review, probes, tournament, frontier, or checkpoint. A separate Virtual Cell trial reached probes but failed on provider refusals; its synthetic probe was not biological validation. Neither delivered a validated shortlist. See the [consolidation record](docs/testing/2026-09-13-consolidation.md), [change evaluation](docs/testing/2026-09-13-change-evaluation.md), and [Virtual Cell readiness record](docs/testing/2026-09-14-vcc-readiness.md).
 
