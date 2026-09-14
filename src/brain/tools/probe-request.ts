@@ -11,7 +11,7 @@ export const PROBE_REQUEST_SCHEMA = {
       maxItems: 40,
       items: {
         type: "object",
-        properties: { ideaId: { type: "string" }, rationale: { type: "string" } },
+        properties: { ideaId: { type: "string" }, rationale: { type: "string", minLength: 1, maxLength: 8000 } },
         required: ["ideaId", "rationale"],
         additionalProperties: false,
       },
@@ -38,7 +38,8 @@ export function probeRequestTool(ctx: ToolContext): AgentTool<any> {
       const ideas = Array.isArray(p.ideas) ? p.ideas.filter((i) => i && typeof i.ideaId === "string" && i.ideaId.trim() !== "") : [];
       if (ideas.length === 0) return fail("probe_request needs at least one idea with an ideaId");
       if (ideas.length > 40) return fail("probe_request accepts at most 40 ideas per call");
-      const cleaned = ideas.map((i) => ({ ideaId: i.ideaId.trim(), rationale: String(i.rationale ?? "").slice(0, 300) }));
+      if (ideas.some((i) => typeof i.rationale !== "string" || !i.rationale.trim() || i.rationale.length > 8000)) return fail("Every probe rationale must be nonempty and at most 8000 characters; no assignment was recorded or truncated.");
+      const cleaned = ideas.map((i) => ({ ideaId: i.ideaId.trim(), rationale: i.rationale }));
       ctx.record.append({ t: "probe.request", round: ctx.round ?? 0, ideas: cleaned });
       ctx.onProbeRequest?.(cleaned);
       return ok(`requested ${cleaned.length} probe${cleaned.length === 1 ? "" : "s"}`);

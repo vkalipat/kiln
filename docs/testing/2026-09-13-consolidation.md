@@ -70,7 +70,7 @@ Independent cmux spot-checks supported the adjacent-product descriptions on [Voo
 
 Recorded campaign usage after the continuation: $74.2741425. Retained uncertainty is $23.904088, giving conservative exposure of $98.1782305 against the user's $100 authorization. The remaining $1.8217695 is not authority for another trial; paid testing has ended. Neither recovery nor a new controller resets prior usage. No new paid run is authorized by merely preparing a runner or installing the tool.
 
-The GitHub repository is currently public despite the earlier private-release preference. Publication awaits confirmation of intended visibility; no public push is made implicitly. Local changes and the existing historical design records are preserved.
+Publication was initially held because GitHub was public despite the earlier private-release preference. The user subsequently authorized changing it to private and pushing `main`; both actions are complete. Follow-up efficiency/recovery results and the remaining quality limitations are in the [change evaluation](2026-09-13-change-evaluation.md). The original historical design records remain unmodified.
 
 Current CSV and both recent ideation controllers, plus their run artifacts, are archived privately with SHA-256 `34663401594f32720de945e9b2809c2a800590a6e76b4f68bc9cb61914bb74ba`. Earlier temporary controllers `8hJh6T`, `IXzYkb`, `AWx44c`, `Ddge2B`, `AiPGq6` and the earlier CLI worker run were found to contain no files at retention inspection. Their cause of removal is unknown. The earlier reported observations remain in development documentation, but those missing raw files cannot now be independently revalidated; they were not reconstructed or silently replaced.
 

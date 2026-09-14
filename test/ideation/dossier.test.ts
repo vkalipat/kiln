@@ -159,6 +159,7 @@ describe("renderDossier", () => {
     expect(r({ status: "error", reason: "spawn ENOENT" })).toContain("Probe: error (spawn ENOENT)");
     expect(r({ status: "not_run", reason: "missing_dependency:ffmpeg" })).toContain("Probe: not run (missing_dependency:ffmpeg)");
     expect(r({ status: "not_run" })).toContain("Probe: not run (not yet requested)");
+    expect(r({ status: "pass", scope: "precondition" })).toContain("Probe scope: precondition (declared; not independent verification of assignment alignment or real-world performance)");
   });
   test("orders axes by name so key order cannot change the render", () => {
     const one = renderDossier(full({ axisValues: { b: "2", a: "1" } }), undefined);
@@ -196,8 +197,8 @@ describe("renderHash and RENDER_VERSION", () => {
     expect(renderHash("abc")).toBe(renderHash("abc"));
     expect(renderHash("abc")).not.toBe(renderHash("abd"));
   });
-  test("RENDER_VERSION is 2 for explicit coverage limits and is not part of the rendered text", () => {
-    expect(RENDER_VERSION).toBe(2);
+  test("RENDER_VERSION is 3 for declared probe scope and is not part of the rendered text", () => {
+    expect(RENDER_VERSION).toBe(3);
     expect(renderDossier(full(), undefined)).not.toContain("RENDER_VERSION");
   });
 });

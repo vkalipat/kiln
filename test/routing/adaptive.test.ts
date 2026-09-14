@@ -1,9 +1,10 @@
 import { describe, expect, test } from "bun:test";
 import { getBundledModel, type GeneratedProvider } from "@oh-my-pi/pi-catalog";
 import { defaultConfig, ROLES } from "../../src/core/config";
-import { resolveRoleOn, otherProvider } from "../../src/providers/models";
+import { isKilnToolModelSupported, resolveRoleOn, otherProvider } from "../../src/providers/models";
 import { registerRuntimeEffort } from "../../src/providers/effort-runtime";
 import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../src/routing/adaptive";
+import { workloadPreferenceFor } from "../../src/routing/workloads";
 import { applyWorkflowProfile } from "../../src/workflow/profile";
 import { compileWorkflow, planWorkflow } from "../../src/workflow/plan";
 
@@ -25,13 +26,95 @@ describe("adaptive routing planner", () => {
     expect(report.roleReasons.judge.reviewAgainst).toBe(report.selectedRoleRefs.generator);
     expect(report.roleReasons.scout.reviewAgainst).toBe(report.selectedRoleRefs.brain);
   });
+
+  test("uses the prospective Astra preference for a computational-biology workload without calling it benchmark leadership", () => {
+    const cfg = defaultConfig();
+    const before = JSON.stringify(cfg);
+    const { config, report } = planAdaptiveRouting(
+      cfg,
+      providers,
+      "Build a virtual-cell Perturb-seq model for single-cell GFP protein binding",
+      now,
+    );
+    const producers = ["brain", "generator", "builder", "prober", "reflector"] as const;
+    expect(report.workloadPreference).toMatchObject({
+      policy: "prospective_user_workload_preference_v1",
+      workload: "computational_biology_vcc",
+      requestedModelRef: "openai-codex/gpt-6-astra",
+      status: "applied",
+      producingRoles: producers,
+    });
+    expect(report.domain).toBe("science");
+    expect(report.selectionPolicy).toBe("quality_first_with_workload_preference");
+    expect(report.workloadPreference.reason).toContain("user/workload preference");
+    expect(report.workloadPreference.reason).toContain("not biology benchmark evidence");
+    for (const role of producers) {
+      expect(report.selectedRoleRefs[role]).toBe("openai-codex/gpt-6-astra");
+      expect(report.roleReasons[role].selection).toBe("workload_preference");
+    }
+    expect(report.selectedRoleRefs.critic).not.toBe(report.selectedRoleRefs.brain);
+    expect(report.selectedRoleRefs.judge).not.toBe(report.selectedRoleRefs.generator);
+    expect(report.selectedRoleRefs.auditor).not.toBe(report.selectedRoleRefs.builder);
+    expect(report.selectedRoleRefs.scout).not.toBe(report.selectedRoleRefs.brain);
+    expect(report.selectedRoleRefs.arbiter).not.toBe(report.selectedRoleRefs.generator);
+    expect(config.budgets.usd).toBe(cfg.budgets.usd);
+    expect(config.budgets.wallSeconds).toBe(cfg.budgets.wallSeconds);
+    expect(config.ideation.minComparisons).toBe(cfg.ideation.minComparisons);
+    expect(report.portfolio.candidates).toBeGreaterThanOrEqual(cfg.ideation.minComparisons + 1);
+    expect(report.budget.projectedRoundUsd).toBeLessThanOrEqual(report.budget.ideateUsd);
+    expect(report.warnings.some((warning) => warning.includes("not automatic retries"))).toBe(true);
+    expect(JSON.stringify(cfg)).toBe(before);
+  });
+
+  test("reports an unavailable workload preference and the actually selected fallbacks without claiming Astra use", () => {
+    const { report } = planAdaptiveRouting(
+      defaultConfig(),
+      new Set(["anthropic"]),
+      "Use bioinformatics to design a GFP minibinder",
+      now,
+    );
+    expect(report.workloadPreference.status).toBe("unavailable");
+    expect(report.workloadPreference.reason).toContain("provider openai-codex is not connected");
+    expect(report.workloadPreference.reason).toContain("Normal evidence-ranked/configured fallbacks were selected");
+    expect(report.workloadPreference.reason).toContain("Astra was not used");
+    for (const role of report.workloadPreference.producingRoles) {
+      expect(report.selectedRoleRefs[role]).not.toBe("openai-codex/gpt-6-astra");
+      expect(report.workloadPreference.reason).toContain(role + "=" + report.selectedRoleRefs[role]);
+    }
+    expect(report.warnings).toContain(report.workloadPreference.reason);
+  });
+
+  test.each([
+    "Train a VirtualCell model",
+    "Model Perturb-seq responses",
+    "Analyze a single-cell transcriptomics dataset",
+    "Create a bioinformatics pipeline",
+    "Design a GFP protein binder",
+  ])("recognizes high-signal computational-biology workload %j", (seed) => {
+    expect(workloadPreferenceFor(seed)?.workload).toBe("computational_biology_vcc");
+  });
+
+  test.each([
+    "Format the cell column in a business spreadsheet",
+    "Update a single cell in the business spreadsheet",
+    "Simulate a unit cell in condensed-matter physics",
+    "Build a cell-phone pricing business",
+    "Find a general startup idea",
+  ])("does not apply the biology preference to unrelated workload %j", (seed) => {
+    expect(workloadPreferenceFor(seed)).toBeUndefined();
+    const { report } = planAdaptiveRouting(defaultConfig(), providers, seed, now);
+    expect(report.workloadPreference.status).toBe("not_applicable");
+    expect(report.workloadPreference.requestedModelRef).toBeNull();
+    expect(Object.values(report.roleReasons).every(({ selection }) => selection !== "workload_preference")).toBe(true);
+  });
   test("selects category leaders, independent review, and a feasible whole-round plan without mutation", () => {
     const cfg = defaultConfig(); const before = JSON.stringify(cfg);
     const { config, report } = planAdaptiveRouting(cfg, providers, "Find a business idea", now);
     expect(report.domain).toBe("business");
     expect(config.roles.generator[0]).toBe("anthropic/claude-fable-5-1");
-    expect(config.roles.builder[0]).toBe("anthropic/claude-fable-5-1");
-    expect(config.roles.judge[0]).toBe("anthropic/claude-opus-5");
+    expect(config.roles.builder[0]).toBe("openai-codex/gpt-6-astra");
+    expect(config.roles.judge[0]).toBe("openai-codex/gpt-6-astra");
+    expect(report.workloadPreference.status).toBe("not_applicable");
     expect(report.budget.affordableRounds).toBeGreaterThanOrEqual(1);
     expect(report.budget.affordableRounds).toBeLessThanOrEqual(report.budget.requestedRounds);
     expect(config.ideation.rounds).toBe(report.budget.affordableRounds);
@@ -41,14 +124,12 @@ describe("adaptive routing planner", () => {
     expect(config.build).toEqual(cfg.build); expect(config.budgets.turns).toEqual(cfg.budgets.turns);
     expect(JSON.stringify(cfg)).toBe(before);
     for (const role of ROLES) expect(config.seating.default[role]).toEqual(config.roles[role]);
-    expect(config.roles.builder).toContain("openai-codex/gpt-5.5");
-    expect(config.roles.builder).not.toContain("openai-codex/gpt-6-astra");
+    expect(config.roles.builder).toContain("openai-codex/gpt-6-astra");
     expect(report.roleRefs).toEqual(config.roles);
     for (const ref of Object.values(report.selectedRoleRefs)) {
       const [provider, id] = ref.split("/");
       const model = getBundledModel(provider as GeneratedProvider, id!);
-      expect(model?.supportsTools).not.toBe(false);
-      expect(model?.toolMode).not.toBe("code_mode_only");
+      expect(isKilnToolModelSupported(model)).toBe(true);
     }
   });
 
@@ -91,7 +172,7 @@ describe("adaptive routing planner", () => {
     const cfg = applyWorkflowProfile(defaultConfig(), planWorkflow("Find a business idea"));
     cfg.budgets.usd = 10;
     cfg.budgets.wallSeconds = 1500;
-    const { config, report } = planAdaptiveRouting(cfg, providers, "Find a business idea", now, snapshot(), {
+    const { config, report } = planAdaptiveRouting(cfg, new Set(["anthropic"]), "Find a business idea", now, snapshot(), {
       phases: ["frame", "discover", "ideate", "checkpoint"],
     });
     expect(report.portfolio.candidates).toBe(cfg.ideation.minComparisons + 1);
@@ -99,6 +180,15 @@ describe("adaptive routing planner", () => {
     expect(config.ideation.rounds).toBe(1);
     expect(report.budget.ideateUsd).toBeGreaterThan(4);
     expect(report.budget.buildUsd).toBeLessThan(3);
+  });
+
+  test("a ten-dollar mixed-provider plan refuses before dispatch rather than silently lowering its selected models", () => {
+    const cfg = applyWorkflowProfile(defaultConfig(), planWorkflow("Find a business idea"));
+    cfg.budgets.usd = 10;
+    cfg.budgets.wallSeconds = 1500;
+    expect(() => planAdaptiveRouting(cfg, providers, "Find a business idea", now, snapshot(), {
+      phases: ["frame", "discover", "ideate", "checkpoint"],
+    })).toThrow("smallest valid 4-candidate portfolio");
   });
 
   test.each([["anthropic"], ["openai-codex"], ["openai"], ["openai", "openai-codex"]])("single-vendor transport combination %j preserves distinct model identities", (...items) => {
@@ -133,15 +223,17 @@ describe("adaptive routing planner", () => {
     expect(planAdaptiveRouting(defaultConfig(), providers, "A business", now, evidence).config.roles.generator[0]).toBe("anthropic/claude-fable-5-1");
   });
 
-  test("quality outranks vendor diversity and blocked leaders are explicitly disclosed", () => {
+  test("quality outranks vendor diversity and adapter-eligible leaders are explicitly selected", () => {
     const { report } = planAdaptiveRouting(defaultConfig(), providers, "A business idea", now);
-    expect(report.selectedRoleRefs.judge).toBe("anthropic/claude-opus-5");
-    expect(report.selectedRoleRefs.critic).toBe("anthropic/claude-opus-5");
-    expect(report.selectedRoleRefs.auditor).toBe("anthropic/claude-opus-5");
-    expect(report.roleReasons.judge.benchmarkEffort).toBe("xhigh");
-    expect(report.roleReasons.builder.benchmarkConditions).toContain("Claude Code");
-    expect(report.unavailableRankedModels).toContainEqual({ modelRef: "openai-codex/gpt-6-astra", reason: "requires Code Mode; Kiln has no Code Mode execution adapter" });
-    expect(report.warnings.some((warning) => warning.includes("quality takes priority"))).toBe(true);
+    expect(report.selectedRoleRefs.judge).toBe("openai-codex/gpt-6-astra");
+    expect(report.selectedRoleRefs.critic).toBe("openai-codex/gpt-6-astra");
+    expect(report.selectedRoleRefs.auditor).toBe("anthropic/claude-fable-5-1");
+    expect(report.roleReasons.judge.benchmarkEffort).toBe("high");
+    expect(report.roleReasons.builder.benchmarkConditions).toContain("Codex");
+    expect(report.unavailableRankedModels.some(({ modelRef }) => modelRef === "openai-codex/gpt-6-astra")).toBe(false);
+    expect(report.selectedRoleRefs.judge).not.toBe(report.selectedRoleRefs.generator);
+    expect(report.selectedRoleRefs.critic).not.toBe(report.selectedRoleRefs.brain);
+    expect(report.selectedRoleRefs.auditor).not.toBe(report.selectedRoleRefs.builder);
     expect(report.warnings.some((warning) => warning.includes("benchmark effort"))).toBe(true);
   });
 
@@ -149,6 +241,7 @@ describe("adaptive routing planner", () => {
     const evidence = snapshot();
     const entries = evidence.rankings.find((ranking: any) => ranking.category === "knowledge_calibration").entries;
     const opus = entries.find((entry: any) => entry.modelRef === "anthropic/claude-opus-5");
+    entries.find((entry: any) => entry.modelRef === "openai-codex/gpt-6-astra").score = 0;
     entries.find((entry: any) => entry.modelRef === "openai-codex/gpt-5.5").score = opus.score;
     expect(planAdaptiveRouting(defaultConfig(), providers, "business", now, evidence).report.selectedRoleRefs.judge).toBe("openai-codex/gpt-5.5");
   });

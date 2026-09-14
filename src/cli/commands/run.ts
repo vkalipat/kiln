@@ -36,7 +36,7 @@ import { compileWorkflow, ensureWorkflowPlan, loadWorkflowPlan, planWorkflow, wo
 import { prepareDeterministicDirectFrame, prepareSuppliedTask } from "../../workflow/supplied-task";
 import { applyWorkflowProfile } from "../../workflow/profile";
 import { applyFrozenRouting, freezeRouting, loadFrozenRouting } from "../../workflow/routing";
-import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../routing/adaptive";
+import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot, type AdaptiveRoutingReport } from "../../routing/adaptive";
 import { recoverCompletedFrame } from "../../phases/frame-recovery";
 
 const USAGE = 'usage: kiln run new ("<seed>" | --seed-id ID | --seed-file PATH) [--id ID] [--eval ID] [--out DIR] [--through frame|discover|ideate|checkpoint|form|build|reflect] [--bare] [--autonomous|--interactive] [--reinit] [--single-session] [--yes] [--force] [--json] | kiln run show <id> | kiln run list | kiln run resume <id> | kiln run recover-frame <id>\n';
@@ -273,7 +273,7 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
   if (typeof flags.id === "string" && existsSync(runPaths(runHome, flags.id).dir)) { err(`run ${flags.id} already exists; inspect or resume it instead\n`); return 2; }
   const runtime = await createCliRuntime(home, cfg, resumedRun && loadFrozenRouting(resumedRun)
     ? { ...deps, runtimeEffort: { enabled: false, frozen: loadFrozenRouting(resumedRun)?.effectiveEffort } } : deps);
-  let routingReport: unknown;
+  let routingReport: AdaptiveRoutingReport | undefined;
   // Evaluator seats and embedding-supplied models remain authoritative, never auto-reselected.
   if (!resumedRun && cfg.routing?.mode === "adaptive" && flags.eval === undefined
     && !seedInput?.identity && deps.runtimeEffort?.enabled !== false
@@ -360,6 +360,9 @@ export async function runCommand(cmd: string[], flags: Record<string, string | b
       freezeRouting(run, cfg, routingReport);
       record.append({ t: "note", text: "Adaptive model routing frozen in routing.json; costs are planning estimates, not measured reliability or spend." });
       if (!json) io.write(`Adaptive routing: ${workflow.strategy?.mode ?? "exploratory"} workflow; ${cfg.roles.builder[0]} build. ${workflow.strategy?.mode === "direct" ? "Competitive ideation skipped for the supplied task." : `${cfg.ideation.rounds} planned ideation round(s), $${cfg.budgets.phaseBudgetUsd("ideate").toFixed(2)} ideation allocation.`} Details: ${join(run.dir, "routing.json")}\n`);
+      if (!json && routingReport.workloadPreference.status !== "not_applicable") {
+        io.write(`Workload model preference (${routingReport.workloadPreference.status}): ${routingReport.workloadPreference.reason}\n`);
+      }
     }
     deps.onRun?.(run);
     if (resumedRun) {

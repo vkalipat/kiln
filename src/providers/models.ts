@@ -23,12 +23,24 @@ export function parseModelRef(ref: string): { provider: string; modelId: string 
   return { provider: ref.slice(0, i), modelId: ref.slice(i + 1) };
 }
 
+/** The scoped host adapter supports this installed Codex custom-tool dialect, not arbitrary Code Mode models. */
+export function usesKilnCodeMode(model: Model | undefined): boolean {
+  return model?.provider === "openai-codex" && model.id === "gpt-6-astra"
+    && model.api === "openai-codex-responses" && model.toolMode === "code_mode_only"
+    && model.applyPatchToolType === "freeform";
+}
+
+export function isKilnToolModelSupported(model: Model | undefined): boolean {
+  return model !== undefined && model.supportsTools !== false
+    && (model.toolMode !== "code_mode_only" || usesKilnCodeMode(model));
+}
+
 /** Look up a bundled catalog model. `getBundledModel` never throws for an unknown provider/id — it returns `undefined`. */
 function catalogModel(provider: string, modelId: string): Model | undefined {
   const model = getBundledModel(provider as GeneratedProvider, modelId) ?? undefined;
   // Every harness seat receives tools. Catalog entries that explicitly disable them can produce
   // text, but cannot satisfy Kiln's decision, research, or delivery contracts.
-  return model?.supportsTools === false || model?.toolMode === "code_mode_only" ? undefined : model;
+  return isKilnToolModelSupported(model) ? model : undefined;
 }
 
 export async function availableProviders(auth: AuthStore, cfg: KilnConfig): Promise<Set<string>> {

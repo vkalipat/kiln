@@ -39,6 +39,38 @@ function fixture(models: Partial<Record<Role, unknown>>) {
 }
 
 describe("ideation evidence enrichment", () => {
+  test("five optional probe refusals reject those drafts while the sixth probe remains eligible", async () => {
+    const ids = Array.from({ length: 6 }, (_, i) => `r1-i1-${i + 1}`);
+    const brain = createMockModel({ id: "selector", responses: [{ content: [{ type: "toolCall", name: "probe_request", arguments: { ideas: ids.map((ideaId) => ({ ideaId, rationale: "Run the assigned bounded check; report unavailable inputs instead of substituting another test." })) } }] }] as never });
+    const prober = createMockModel({ id: "optional-prober", handler: async (context: unknown) => JSON.stringify(context).includes("r1-i1-6")
+      ? { content: [{ type: "toolCall", name: "probe_spec", arguments: { files: [], command: "echo checked", needs: [], networkRequired: false, timeoutSeconds: 5, successPredicate: { type: "substring", value: "checked" }, scope: "precondition" } }] }
+      : { stopReason: "error", errorMessage: "provider refused", stopDetails: { type: "refusal", category: "safety" } } } as never);
+    const { deps, archive, record } = fixture({ brain, prober });
+    for (const id of ids.slice(1)) archive.insert({ ...dossier(), id });
+    for (const id of ids) archive.mergeEvidence(id, { priorArt: { status: "not_falsified" } });
+    const result = await enrichEvidence(deps, archive, ids, "product", 1, new Limiter(2));
+    expect(result.failure).toBeUndefined();
+    for (const id of ids.slice(0, 5)) {
+      expect(archive.get(id)?.evidence).toMatchObject({ status: "rejected", rejectReason: "probe_refused", probe: { status: "not_run", reason: "worker_refused:safety" } });
+    }
+    expect(archive.get(ids[5]!)?.evidence.probe?.status).toBe("pass");
+    expect(archive.get(ids[5]!)?.evidence.status).not.toBe("rejected");
+    expect(archive.seedable()).toEqual([ids[5]!]);
+    expect(record.read().filter((event) => event.t === "model.call" && event.role === "prober")).toHaveLength(6);
+  });
+
+  for (const [message, failureClass] of [["budget exhausted", "budget"], ["rate limit exceeded", "transient"], ["integrity check failed", "integrity"]] as const) {
+    test(`optional probe collection still stops on ${failureClass} worker failure`, async () => {
+      const brain = createMockModel({ id: "selector", responses: [{ content: [{ type: "toolCall", name: "probe_request", arguments: { ideas: [{ ideaId: "r1-i1-1", rationale: "Run the exact bounded check." }] } }] }] as never });
+      const prober = createMockModel({ id: "failed-worker", responses: [{ stopReason: "error", errorMessage: message }] as never });
+      const { deps, archive } = fixture({ brain, prober });
+      archive.mergeEvidence("r1-i1-1", { priorArt: { status: "not_falsified" } });
+      const result = await enrichEvidence(deps, archive, ["r1-i1-1"], "product", 1, new Limiter(1));
+      expect(result.failure?.failureClass).toBe(failureClass);
+      expect(archive.get("r1-i1-1")?.evidence.probe).toBeUndefined();
+    });
+  }
+
   test("a completed scout survives sibling cancellation and resumes into review without replay", async () => {
     const control = new RunControl();
     let ready!: () => void;
@@ -228,7 +260,7 @@ describe("ideation evidence enrichment", () => {
     } } as never);
     const prober = createMockModel({ id: "handoff-prober", responses: [{ content: [{ type: "toolCall", name: "probe_spec", arguments: {
       files: [{ path: "check.sh", content: "echo ready\n" }], command: "sh check.sh", needs: ["sh"], networkRequired: false,
-      timeoutSeconds: 20, successPredicate: { type: "substring", value: "ready" },
+      timeoutSeconds: 20, successPredicate: { type: "substring", value: "ready" }, scope: "precondition",
     } }] }] as never });
     const { deps, archive, record } = fixture({ brain, prober });
     path = join(deps.run.ideasDir, "r1-i1-1.md");

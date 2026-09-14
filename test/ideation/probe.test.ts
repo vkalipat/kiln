@@ -303,6 +303,29 @@ describe("runProbe", () => {
 });
 
 describe("writeProbe", () => {
+  test("the exact assignment and relevant source evidence reach the prober without clipping", async () => {
+    const base = setup(); let packet = "";
+    const rationale = "Check real input availability. " + "constraint ".repeat(100) + "TAIL: do not substitute synthetic inputs.";
+    const model = createMockModel({ id: "assigned", handler: async (context: unknown) => { packet = JSON.stringify(context); return proberSays({ ...GOOD_ARGS, scope: "precondition" })[0]!; } } as never);
+    base.deps.models = () => ({ model: model as never, ref: "mock/assigned" });
+    const result = await writeProbe(base.deps, dossier("assigned"), { status: "active", priorArt: { status: "search_failed", distance: "Data access remains unverified" } }, { rationale });
+    expect(packet).toContain(rationale); expect(packet).toContain("Data access remains unverified");
+    expect(result.spec?.assignmentContext?.assignment.rationale).toBe(rationale);
+    expect(result.spec?.assignmentHash).toMatch(/^[a-f0-9]{64}$/); expect(result.spec?.scope).toBe("precondition");
+  });
+
+  test("an assigned unavailable test can explicitly decline without substituting a toy spec", async () => {
+    const { deps } = setup([{ content: [{ type: "toolCall", name: "cannot_probe", arguments: { reason: "The required dataset is unavailable locally and requires user authorization." } }] }]);
+    const result = await writeProbe(deps, dossier("unavailable"), undefined, { rationale: "Evaluate the assigned real held-out data metric." });
+    expect(result.spec).toBeUndefined(); expect(result.workerFailure).toBeUndefined();
+    expect(result.cannotProbeReason).toContain("required dataset");
+  });
+
+  test("an oversized assignment is rejected before any provider call instead of truncated", async () => {
+    const { deps, record } = setup();
+    expect(await writeProbe(deps, dossier("oversize"), undefined, { rationale: "x".repeat(8001) })).toMatchObject({ workerFailure: "verify", costUsd: 0 });
+    expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(0);
+  });
   test("returns the prober's spec, stamped with the idea id, and its cost", async () => {
     const { deps, record } = setup(proberSays(GOOD_ARGS));
     const r = await writeProbe(deps, dossier("r2-i1-4"));
@@ -345,6 +368,54 @@ describe("writeProbe", () => {
 });
 
 describe("runProbeBatch", () => {
+  test("passed probe reuse requires the same exact assignment and preserves previous specs", async () => {
+    const { deps, run, record } = setup([
+      ...proberSays({ ...GOOD_ARGS, scope: "precondition" }),
+      ...proberSays({ ...GOOD_ARGS, command: "echo changed", successPredicate: { type: "substring", value: "changed" }, scope: "end_to_end" }),
+    ]);
+    const ideas = [{ dossier: { ...dossier("assigned-cache"), vsProbability: undefined } }];
+    const first = await runProbeBatch(deps, ideas, { roundWallSeconds: 600, assignments: { "assigned-cache": { rationale: "First exact test." } } });
+    expect(first[0]?.status).toBe("pass");
+    const repeated = await runProbeBatch(deps, ideas, { roundWallSeconds: 600, assignments: { "assigned-cache": { rationale: "First exact test." } } });
+    expect(repeated[0]?.assignmentHash).toBe(first[0]?.assignmentHash);
+    expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(1);
+    const changed = await runProbeBatch(deps, ideas, { roundWallSeconds: 600, assignments: { "assigned-cache": { rationale: "Changed exact test." } } });
+    expect(changed[0]?.status).toBe("pass"); expect(changed[0]?.assignmentHash).not.toBe(first[0]?.assignmentHash);
+    expect(record.read().filter((event) => event.t === "model.call")).toHaveLength(2);
+    expect(existsSync(join(run.probesDir, `assigned-cache.${first[0]?.assignmentHash}.json`))).toBe(true);
+    expect(evidenceOf(run, "assigned-cache").probe).toMatchObject({ assignmentHash: changed[0]?.assignmentHash, scope: "end_to_end" });
+  });
+  test("worker refusal remains fatal without explicit optional-stage policy", async () => {
+    const { deps, run } = setup([{ stopReason: "error", errorMessage: "request refused", stopDetails: { type: "refusal", category: "safety" } }]);
+    const results = await runProbeBatch(deps, [{ dossier: dossier("required") }], { roundWallSeconds: 600 });
+    expect(results[0]).toMatchObject({ workerFailure: "refusal", status: "not_run" });
+    expect(results[0]?.optionalRefusal).toBeUndefined();
+    expect(existsSync(join(run.ideasDir, "required.evidence.json"))).toBe(false);
+  });
+
+  test("optional policy does not swallow a transient worker failure", async () => {
+    const { deps, run, record } = setup([{ stopReason: "error", errorMessage: "rate limit exceeded" }]);
+    const results = await runProbeBatch(deps, [{ dossier: dossier("unavailable") }], { roundWallSeconds: 600, optional: true });
+    expect(results[0]).toMatchObject({ workerFailure: "transient", status: "not_run" });
+    expect(results[0]?.optionalRefusal).toBeUndefined();
+    expect(existsSync(join(run.ideasDir, "unavailable.evidence.json"))).toBe(false);
+    expect(record.read().filter((event) => event.t === "model.call" && event.role === "prober")).toHaveLength(1);
+  });
+
+  test("an optional worker refusal is durable unrun evidence while its sibling still executes", async () => {
+    const { deps, run, record } = setup([
+      { stopReason: "error", errorMessage: "request refused", stopDetails: { type: "refusal", category: "safety" } },
+      ...proberSays({ ...GOOD_ARGS, command: "echo hi" }),
+    ], 2);
+    const results = await runProbeBatch(deps, [{ dossier: dossier("refused") }, { dossier: dossier("unaffected") }], { roundWallSeconds: 600, optional: true });
+    expect(results[0]).toMatchObject({ status: "not_run", reason: "worker_refused:safety", workerFailure: "refusal", optionalRefusal: true });
+    expect(results[1]?.status).toBe("pass");
+    expect(evidenceOf(run, "refused").probe).toMatchObject({ status: "not_run", reason: "worker_refused:safety" });
+    expect(probeEvents(record)).toContainEqual(expect.objectContaining({ id: "refused", status: "not_run", reason: "worker_refused:safety" }));
+    expect(record.read()).toContainEqual(expect.objectContaining({ t: "failure", class: "refusal", category: "safety" }));
+    expect(record.read().filter((event) => event.t === "model.call" && event.role === "prober")).toHaveLength(2);
+  });
+
   test("writes and runs one probe per idea, recording each", async () => {
     const { deps, run, record } = setup([...proberSays({ ...GOOD_ARGS, command: "echo hi" }), ...proberSays({ ...GOOD_ARGS, command: "echo hi" })]);
     const seen: string[] = [];

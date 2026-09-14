@@ -14,7 +14,7 @@ import { bullets, sections } from "../phases/contracts";
  * `tournament.jsonl` (`aRenderHash`/`bRenderHash`) and the version is part of the calibration hash,
  * so an unversioned change silently invalidates every stored comparison.
  */
-export const RENDER_VERSION = 2;
+export const RENDER_VERSION = 3;
 
 export interface Dossier {
   id: string;
@@ -33,7 +33,7 @@ export interface Dossier {
 
 export interface Evidence {
   priorArt?: { status: "collided" | "not_falsified" | "search_failed"; artifact?: { title: string; url: string }; distance?: string };
-  probe?: { status: "pass" | "fail" | "timeout" | "error" | "not_run"; reason?: string; exitCode?: number; stdoutTail?: string; durationMs?: number };
+  probe?: { status: "pass" | "fail" | "timeout" | "error" | "not_run"; reason?: string; exitCode?: number; stdoutTail?: string; durationMs?: number; assignmentHash?: string; scope?: "precondition" | "end_to_end" };
   strengths?: Record<"value" | "feasibility", { mean: number; lo: number; hi: number; n: number }>;
   cell?: string;
   /** The ideas this one was mutated from, `[]` for a fresh island idea (record §10). The archive
@@ -211,6 +211,7 @@ function probeLines(e: Evidence | undefined, truncated: string[]): string[] {
   else if (p.status === "timeout") out.push(p.durationMs === undefined ? "Probe: timeout" : `Probe: timeout after ${p.durationMs} ms`);
   else if (p.status === "error") out.push(p.reason === undefined ? "Probe: error" : `Probe: error (${p.reason})`);
   else out.push(p.exitCode === undefined ? `Probe: ${p.status}` : `Probe: ${p.status} (exit code ${p.exitCode})`);
+  if (p.scope) out.push(`Probe scope: ${p.scope} (declared; not independent verification of assignment alignment or real-world performance)`);
   if (p.status !== "not_run" && p.durationMs !== undefined && p.status !== "timeout") out.push(`Duration: ${p.durationMs} ms`);
   if (p.reason !== undefined && p.status !== "not_run" && p.status !== "error") out.push(`Reason: ${p.reason}`);
   const tail = p.stdoutTail?.trim();

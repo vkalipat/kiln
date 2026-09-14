@@ -6,7 +6,7 @@ export type StopKind = "rounds" | "stagnant" | "stalled" | "budget" | "no_idea_c
 /** One enum per idea (record §6); `not_run` always carries a `reason`. */
 export type ProbeStatus = "pass" | "fail" | "timeout" | "error" | "not_run";
 /** Why an idea never entered (or left) the ranked archive (record §4, §5). */
-export type IdeaRejectReason = "restatement" | "lost_cell" | "collided";
+export type IdeaRejectReason = "restatement" | "lost_cell" | "collided" | "probe_refused";
 /** The two things the arbiter decides, each with its own per-round cap (record §2). */
 export type ArbiterKind = "novelty" | "collision";
 /** Which of the two orderings of a judged pair a line records (record §7). */

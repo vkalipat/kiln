@@ -3,9 +3,13 @@ import { getBundledModel, type GeneratedProvider, type Model } from "@oh-my-pi/p
 import { PHASES, ROLES, type KilnConfig, type Role } from "../core/config";
 import { derivedCaps } from "../formation/features";
 import { ADAPTIVE_LATENCY_SECONDS, projectedAdaptiveRound, type AdaptiveRoundProjection } from "../ideation/budget";
-import { effortFor, parseModelRef } from "../providers/models";
+import { effortFor, isKilnToolModelSupported, parseModelRef } from "../providers/models";
 import type { WorkflowPhase } from "../workflow/plan";
 import { adaptivePortfolioCandidates } from "../workflow/profile";
+import {
+  COMPUTATIONAL_BIOLOGY_ASTRA_MODEL,
+  workloadPreferenceFor,
+} from "./workloads";
 import bundled from "./evidence-2026-09-09.json";
 
 export const CATEGORIES = ["general_reasoning", "expert_knowledge", "business", "scientific_coding", "tool_execution", "knowledge_calibration"] as const;
@@ -90,9 +94,18 @@ function seat(ref: string, available: Set<string>): Seat | undefined {
   const { provider, modelId } = parseModelRef(ref);
   if (!available.has(provider)) return undefined;
   const model = getBundledModel(provider as GeneratedProvider, modelId);
-  if (!model || model.supportsTools === false || model.toolMode === "code_mode_only" || !model.input.includes("text") || !(model.api.includes("responses") || model.api === "anthropic-messages")
+  if (!model || !isKilnToolModelSupported(model) || !model.input.includes("text")
+    || !(model.api.includes("responses") || model.api === "anthropic-messages")
     || !Number.isFinite(model.cost.input) || !Number.isFinite(model.cost.output) || model.cost.input < 0 || model.cost.output < 0) return undefined;
   return { ref, model };
+}
+function seatUnavailableReason(ref: string, available: Set<string>): string {
+  const { provider, modelId } = parseModelRef(ref);
+  if (!available.has(provider)) return "provider " + provider + " is not connected";
+  const model = getBundledModel(provider as GeneratedProvider, modelId);
+  if (!model) return "the installed provider catalog does not contain the model";
+  if (!isKilnToolModelSupported(model)) return "the model has no approved Kiln tool adapter";
+  return "the model does not satisfy Kiln text, transport, or pricing requirements";
 }
 function aliases(ref: string): string[] {
   const { provider, modelId } = parseModelRef(ref);
@@ -107,19 +120,27 @@ function domainFor(seed: string): "science" | "business" | "general" {
 
 export interface AdaptiveRoutingReport {
   version: 1; domain: "science" | "business" | "general"; status: "ready";
-  selectionPolicy: "quality_first";
+  selectionPolicy: "quality_first" | "quality_first_with_workload_preference";
   evidence: { id: string; asOf: string; sources: EvidenceSnapshot["sources"] };
   selectedRoleRefs: Record<Role, string>;
   roleRefs: Record<Role, string[]>;
   unavailableRankedModels: Array<{ modelRef: string; reason: string }>;
   effectiveEffort: Record<Role, string | null>;
+  workloadPreference: {
+    policy: "prospective_user_workload_preference_v1";
+    workload: "computational_biology_vcc" | null;
+    requestedModelRef: typeof COMPUTATIONAL_BIOLOGY_ASTRA_MODEL | null;
+    producingRoles: readonly Role[];
+    status: "not_applicable" | "applied" | "unavailable";
+    reason: string;
+  };
   /** Decision provenance, not model-generated hidden reasoning or a quality guarantee. */
   roleReasons: Record<Role, {
     category: Category;
     metric: string;
     sourceId: string;
     score: number | null;
-    selection: "ranked" | "configured_fallback";
+    selection: "ranked" | "configured_fallback" | "workload_preference";
     reviewAgainst: string | null;
     benchmarkEffort: string | null;
     benchmarkConditions: string | null;
@@ -164,7 +185,13 @@ export function planAdaptiveRouting(
   const phases = [...(options.phases ?? WORKFLOW_PHASES)];
   const ideationPlanned = phases.includes("ideate");
   const buildPlanned = phases.includes("build");
-  const domain = domainFor(seed);
+  const workloadPreference = workloadPreferenceFor(seed);
+  const domain = workloadPreference ? "science" : domainFor(seed);
+  const preferredWorkloadSeat = workloadPreference
+    ? seat(workloadPreference.requestedModelRef, available)
+    : undefined;
+  const producingRoles = new Set<Role>(workloadPreference?.producingRoles ?? []);
+  const seatForRun = (ref: string): Seat | undefined => seat(ref, available);
   const warnings = [
     "Benchmark rankings inform role assignments; they do not establish Kiln task quality or hallucination rates.",
     "Scores include different effort/fallback settings. Terminal-Bench measures model plus harness with overlapping confidence intervals; configured effort is preserved.",
@@ -176,7 +203,7 @@ export function planAdaptiveRouting(
     const ranked = [...ranking.entries].sort((a, b) => ranking.higherIsBetter ? b.score - a.score : a.score - b.score).map((entry) => entry.modelRef);
     const refs = [...new Set([...ranked, ...cfg.roles[role], ...Object.values(cfg.roles).flat()].flatMap(aliases))];
     return refs.flatMap((ref) => {
-      const value = seat(ref, available);
+      const value = seatForRun(ref);
       if (!value) return [];
       return [value];
     });
@@ -185,6 +212,13 @@ export function planAdaptiveRouting(
   const pick = (role: Role, category: Category, producer?: Seat, requiredVendor?: string): Seat => {
     let candidates = pool(category, role).filter((candidate) => (!producer || candidate.model.id !== producer.model.id)
       && (!requiredVendor || vendor(String(candidate.model.provider)) === requiredVendor));
+    if (preferredWorkloadSeat && producingRoles.has(role)
+      && (!producer || preferredWorkloadSeat.model.id !== producer.model.id)
+      && (!requiredVendor || vendor(String(preferredWorkloadSeat.model.provider)) === requiredVendor)) {
+      candidates = [preferredWorkloadSeat, ...candidates.filter((candidate) =>
+        !(candidate.model.id === preferredWorkloadSeat.model.id
+          && vendor(String(candidate.model.provider)) === vendor(String(preferredWorkloadSeat.model.provider))))];
+    }
     if (producer) {
       const ranking = snapshot.rankings.find((entry) => entry.category === category)!;
       const score = (candidate: Seat) => ranking.entries.find((entry) => aliases(entry.modelRef).includes(candidate.ref))?.score;
@@ -234,7 +268,7 @@ export function planAdaptiveRouting(
     const counterpart = paired[role] ? chosen[paired[role]!] : undefined;
     const candidates = [chosen[role], ...pool(categories[role], role)]
       .filter((candidate) => !counterpart || !sameIdentity(candidate, counterpart));
-    const refs = [...new Set(candidates.flatMap((candidate) => aliases(candidate.ref)).filter((ref) => seat(ref, available)))];
+    const refs = [...new Set(candidates.flatMap((candidate) => aliases(candidate.ref)).filter((ref) => seatForRun(ref)))];
     return [role, refs];
   })) as KilnConfig["roles"];
   const config: KilnConfig = {
@@ -326,14 +360,34 @@ export function planAdaptiveRouting(
       ? "Reallocated part of the unplanned build share to ideation within the unchanged total."
       : "Reallocated the unplanned ideation share to build within the unchanged total.");
   if (ideationPlanned && chosen.generator.model.id === chosen.prober.model.id) warnings.push("Idea islands use different lenses but the same model; the configured cheap island is not cheaper.");
+  const workloadPreferenceReport: AdaptiveRoutingReport["workloadPreference"] = !workloadPreference
+    ? {
+      policy: "prospective_user_workload_preference_v1", workload: null, requestedModelRef: null,
+      producingRoles: [], status: "not_applicable",
+      reason: "No high-signal computational-biology or virtual-cell workload term matched; normal reviewed routing remains unchanged.",
+    }
+    : preferredWorkloadSeat
+      ? {
+        ...workloadPreference, status: "applied",
+        reason: "Astra was selected for producing roles by a prospective user/workload preference for computational biology and virtual-cell work; this is not biology benchmark evidence.",
+      }
+      : {
+        ...workloadPreference, status: "unavailable",
+        reason: "The prospective user/workload preference requested " + workloadPreference.requestedModelRef
+          + ", but " + seatUnavailableReason(workloadPreference.requestedModelRef, available)
+          + ". Normal evidence-ranked/configured fallbacks were selected ("
+          + workloadPreference.producingRoles.map((role) => role + "=" + chosen[role].ref).join(", ")
+          + "); Astra was not used.",
+      };
+  if (workloadPreferenceReport.status === "unavailable") warnings.push(workloadPreferenceReport.reason);
   const unavailableRankedModels = [...new Set(snapshot.rankings.flatMap((ranking) => ranking.entries.map((entry) => entry.modelRef)))].flatMap((ref) => {
-    if (aliases(ref).some((alias) => seat(alias, available))) return [];
+    if (aliases(ref).some((alias) => seatForRun(alias))) return [];
     const connected = aliases(ref).filter((alias) => available.has(parseModelRef(alias).provider));
     const models = connected.flatMap((alias) => { const parsed = parseModelRef(alias); const model = getBundledModel(parsed.provider as GeneratedProvider, parsed.modelId); return model ? [model] : []; });
     const reason = connected.length === 0 ? "provider not connected"
       : models.length === 0 ? "model absent from installed provider catalog"
-      : models.some((model) => model.toolMode === "code_mode_only") ? "requires Code Mode; Kiln has no Code Mode execution adapter"
-      : "model does not satisfy Kiln tool, transport, or pricing requirements";
+      : models.some((model) => !isKilnToolModelSupported(model)) ? "model has no approved Kiln tool adapter"
+      : "model does not satisfy Kiln text, transport, or pricing requirements";
     warnings.push(`${ref} excluded: ${reason}.`);
     return [{ modelRef: ref, reason }];
   });
@@ -344,8 +398,12 @@ export function planAdaptiveRouting(
     const ranking = snapshot.rankings.find((entry) => entry.category === categories[role])!;
     const evidenceEntry = ranking.entries.find((entry) => aliases(entry.modelRef).includes(chosen[role].ref));
     const against = reviewTargets[role] ? chosen[reviewTargets[role]!].ref : null;
+    const selectedByWorkloadPreference = workloadPreferenceReport.status === "applied" && producingRoles.has(role)
+      && chosen[role].ref === workloadPreferenceReport.requestedModelRef;
     const reason = [
-      evidenceEntry ? `Highest-ranked eligible candidate for ${categories[role]} after provider, tool-support, and role constraints.`
+      selectedByWorkloadPreference
+        ? "Selected by the prospective user/workload preference for computational biology and virtual-cell producing roles; this preference is not biology benchmark evidence."
+        : evidenceEntry ? `Highest-ranked eligible candidate for ${categories[role]} after provider, tool-support, and role constraints.`
         : `Configured catalog fallback: no eligible ranked candidate satisfied ${categories[role]} role constraints.`,
       against ? `Distinct model from ${against}; benchmark quality takes priority, with vendor diversity breaking score ties.` : "No producer/reviewer separation required for this seat.",
       role === "prober" ? "Prober remains on the generator's vendor." : "",
@@ -355,15 +413,16 @@ export function planAdaptiveRouting(
     if (evidenceEntry?.effort && effective !== evidenceEntry.effort) warnings.push(`${role}: benchmark effort ${evidenceEntry.effort} differs from effective effort ${effective ?? "none"}; the score is not a measured result at this run's effort.`);
     return [role, { category: categories[role], metric: ranking.metric, sourceId: evidenceEntry?.sourceId ?? ranking.sourceId,
       benchmarkEffort: evidenceEntry?.effort ?? null, benchmarkConditions: evidenceEntry?.conditions ?? null,
-      score: evidenceEntry?.score ?? null, selection: evidenceEntry ? "ranked" : "configured_fallback", reviewAgainst: against, reason }];
+      score: evidenceEntry?.score ?? null, selection: selectedByWorkloadPreference ? "workload_preference" : evidenceEntry ? "ranked" : "configured_fallback", reviewAgainst: against, reason }];
   })) as AdaptiveRoutingReport["roleReasons"];
   return {
     config,
-    report: { version: 1, domain, status: "ready", selectionPolicy: "quality_first", evidence: { id: snapshot.id, asOf: snapshot.asOf, sources: snapshot.sources },
+    report: { version: 1, domain, status: "ready", selectionPolicy: preferredWorkloadSeat ? "quality_first_with_workload_preference" : "quality_first", evidence: { id: snapshot.id, asOf: snapshot.asOf, sources: snapshot.sources },
       selectedRoleRefs: Object.fromEntries(ROLES.map((role) => [role, chosen[role].ref])) as Record<Role, string>,
       roleRefs: Object.fromEntries(ROLES.map((role) => [role, [...roles[role]]])) as Record<Role, string[]>,
       unavailableRankedModels,
       effectiveEffort: Object.fromEntries(ROLES.map((role) => [role, effortFor(cfg, role, chosen[role].model) ?? null])) as Record<Role, string | null>,
+      workloadPreference: workloadPreferenceReport,
       roleReasons,
       workflow: { phases, ideationPlanned, buildPlanned },
       portfolio: {

@@ -1,15 +1,17 @@
 # Kiln
 
-Kiln is a local, terminal-first agent harness for researching ideas and delivering verified work. Open it, describe the task, and it selects a workflow and compatible models from your connected providers.
+Kiln is a local, terminal-first agent harness for researching ideas and delivering verified work. Give it a task and it chooses a workflow, assigns compatible models from your connected providers, and saves the work as an inspectable run.
 
-Its focus is two things:
+It is built around two practical problems:
 
-- **Reliable agent handoffs.** Workers receive original requirements, relevant canonical artifacts, evidence and assigned scope. Long checks and reviews remain available in full; bounded context views never replace their authoritative records.
-- **Task-appropriate orchestration.** Explicit local implementation tasks avoid competitive ideation. Research and idea searches use bounded parallel workers, evidence gathering and comparison. Work is repeated when validation or review requires it.
+- Agents lose requirements and evidence between handoffs. Kiln keeps the original request, frozen contracts, source-backed research, checks, and audits on disk.
+- Different tasks need different amounts of orchestration. A clear implementation request skips competitive ideation. An open search gets research, parallel idea generation, evidence checks, probes, and comparison before anything is selected.
 
-## Start
+Kiln is under active development. Its delivery path has small live qualifications; the full ideation path has not yet completed a live quality qualification.
 
-Requires [Bun](https://bun.sh/) 1.3.14+ and Git.
+## Quick start
+
+Kiln requires [Bun](https://bun.sh/) 1.3.14 or newer and Git.
 
 ```sh
 git clone https://github.com/vkalipat/kiln.git
@@ -19,45 +21,160 @@ bun link
 kiln
 ```
 
-Type your task and press Enter. If a provider is missing, Kiln retains the prompt while you connect a Claude or ChatGPT subscription through OAuth, or enter an API key. Launch and local greetings such as `HI` make no model requests.
+Bare `kiln` opens the TUI. Type a task and press Enter. Kiln retains the prompt while you connect a provider, so onboarding does not discard your work. Launching the TUI, opening menus, and entering local greetings do not make model requests.
 
-Fresh installations enable adaptive routing and autonomous selection. Kiln shows a one-sentence interpretation and records its workflow, model choices and resource estimates. Existing settings and frozen runs are preserved. Missing source material or authority can still require your input.
+Inside the TUI, use `/login`. Or connect a Claude or ChatGPT subscription through OAuth:
 
 ```sh
 kiln auth login anthropic
-kiln run new "Build a local CSV validation CLI with tests and usage documentation" --through reflect --autonomous --yes
+kiln auth login openai
+kiln auth status
 ```
 
-TUI: `/login` connects providers, `Ctrl+O` opens commands, `Ctrl+S` changes effort, `Esc` pauses, and `Ctrl+C` exits. See [usage and recovery](docs/usage.md).
+API keys also work through a masked prompt (`kiln auth key anthropic` or `kiln auth key openai`) or the provider environment variables.
 
-## Capabilities
+Update a source installation with `git pull --ff-only && bun install && bun link`.
 
-- **Evidence-led ideation:** independent lenses, a diversity archive, scout-owned source provenance, explicit prior-art coverage review, executable feasibility probes where appropriate, and pairwise judging in both presentation orders. Inadequate research remains unknown.
-- **Verified delivery:** a validated specification and frozen acceptance criteria, feature-scoped builders, actual executable checks, and independent audits of detached repository snapshots. Unavailable audit evidence cannot approve a feature.
-- **Inspectable context:** exact task requirements, ownership-aware review, full retained audit evidence, and source/hash references for material too large to inline.
-- **Bounded work:** portfolio sizing, affordable research units, answer-time reserves, task-specific workflows, and provider-supported reasoning/cache settings. Estimates are not guarantees.
-- **Durable operation:** file-backed runs, completed-research checkpoints, Git evidence, live steering, interrupted-work recovery, and recorded model/tool usage. Recovery does not reset spent budgets or silently replace accepted requirements.
-- **Gated improvement:** reflection proposes playbook changes; promotion requires separate evaluation and integrity checks. A suggestion is not automatically a verified lesson.
+Without a global link, use `bun run kiln`. Kiln stores its configuration and runs under `~/.kiln` by default. Set `KILN_HOME` or pass `--home DIR` to use another existing home.
 
-[Adaptive routing details](docs/adaptive-routing.md) explain model eligibility and role selection. Reviewed benchmark evidence informs routing; Kiln does not claim every selected model leads every live leaderboard.
+## Run a task
 
-### Codex and Claude Code
+The TUI shows the current phase, activity, cost, and output. `Ctrl+O` opens the command palette, `Ctrl+S` changes effort, `Alt+T` expands tool details, and `Esc` requests a saved pause.
 
-The [operator plugin](plugins/kiln/README.md) lets a coding assistant launch, monitor, pause and resume a run. Claude Code can load it with `claude --plugin-dir ./plugins/kiln`, then `/kiln:run <directive>`. Codex uses the same operator skill through its plugin system. Installation does not start provider work.
+The CLI uses the same run path:
+
+```sh
+kiln model plan "Find a practical GFP minibinder research direction" --json
+kiln run new "Find a practical GFP minibinder research direction" --through checkpoint
+kiln run new "Build a local CSV validation CLI with tests" --through reflect --yes
+kiln run show RUN_ID
+kiln run record RUN_ID
+kiln run resume RUN_ID --through reflect
+```
+
+An explicit delivery request normally runs autonomously through build and reflection. An exploration request stops at the idea checkpoint for a choice. Use `--interactive` to require human checkpoints or `--autonomous` to continue at eligible checkpoints. `--through` sets the endpoint for that invocation without rewriting the frozen workflow.
+
+## How the workflow adapts
+
+| Request | Default route | What Kiln avoids |
+| --- | --- | --- |
+| Open-ended idea search | frame, discover, ideate, checkpoint | Prematurely building the first familiar idea |
+| Supplied concept that needs investigation | frame, targeted discovery, focused ideation, checkpoint | Replacing the user's concept with an unrelated one |
+| Clear local implementation with no research need | deterministic frame, form, build, reflect | A framing model call and competitive ideation |
+| Existing artifact without readable source | bounded planning and human checkpoint | Pretending it inspected or changed the artifact |
+
+The phase chain is `frame`, `discover`, `ideate`, `checkpoint`, `form`, `build`, and `reflect`. The frozen `workflow.json` records which phases apply and why.
+
+### Research and ideation
+
+Discovery sends bounded questions to parallel scouts and records source URLs with each scout's findings. Failed searches do not prove that evidence is absent. Coverage must be assessed before prior art can be marked not falsified.
+
+Ideation uses separate lens and mutation islands, then checks retained candidates for prior art and feasible tests. Executable probes are used when the claim can be tested safely and locally. Probes receive the selector's exact assignment and must distinguish a precondition check from an end-to-end test; unavailable inputs are not permission to substitute a toy success. A refused optional probe rejects that candidate without retrying the refused request or discarding unrelated candidates. Kiln provides no wet-lab or clinical execution authority or validation.
+
+Tournament pairs are judged in both presentation orders. The comparison graph preserves a configured minimum number of comparisons per entrant before the frontier is published. Adaptive sizing reduces candidate breadth when a complete evidence and comparison round would not fit the planning allocation.
+
+### Context between agents
+
+Workers do not share hidden model state. They exchange durable artifacts and bounded handoffs:
+
+- the exact original request and frozen workflow remain authoritative;
+- research packets carry findings, provenance, fingerprints, and explicit gaps;
+- selected dossiers are included directly when they fit and referenced by path and hash when they do not;
+- full check and audit output stays on disk even when a later prompt receives a compact view.
+
+Completed compatible research can survive an interrupted reviewer or synthesis step. Resume reuses it without replaying scouts, but stale, failed, or coverage-inadequate caches cannot become approvals.
+
+### Formation, build, and audit
+
+Formation turns the selected task into `spec.md`, `features.json`, and `acceptance.lock`. An independent critic reviews the exact artifact bytes. On the optimized direct route, a clean first review can freeze them immediately; a requested correction must be applied and reviewed again.
+
+On that direct route, the builder receives the original request in a stable quoted context plus its current feature scope. Each feature has executable acceptance checks where the behavior is machine-verifiable. Kiln records Git evidence, check output, progress, and append-only state.
+
+An independent auditor reviews a detached copy of the exact repository snapshot and the complete frozen feature scope. Missing or unusable audit evidence cannot approve a feature. Resume keeps prior attempts, spending, elapsed time, and accepted artifacts.
+
+## Models, effort, and budgets
+
+Fresh homes enable adaptive routing and autonomous selection. Planning itself makes no provider request. It uses a dated, operator-reviewed benchmark snapshot, then filters candidates by connected provider, installed catalog entry, text and tool support, transport, pricing, and producer/reviewer separation.
+
+Quality rank comes before vendor diversity. Same-vendor reviewers are allowed when they are the strongest eligible independent model, and the plan records the correlated-error warning. The chosen roles, alternatives, effective effort, budget shares, ideation dimensions, and decision-tool policy are frozen in `routing.json`. Resume does not silently adopt a later leaderboard or config change.
+
+For computational biology and Virtual Cell tasks, new adaptive runs prefer `openai-codex/gpt-6-astra` for producing roles when connected; independent reviewers retain their ranked seats. This is an explicit workload preference, not a biology benchmark victory. Astra uses a tested, bounded QuickJS Code Mode adapter over the same role-specific tools, validation, context, cancellation, and journal. Missing access is disclosed; refused requests are not retried on another model.
+
+```sh
+kiln model roles
+kiln model routing adaptive
+kiln model routing manual
+kiln model benchmarks show --json
+kiln mode set auto
+kiln mode set xhigh
+```
+
+`xhigh` is displayed as `ultra` in the TUI. It requests the highest configured reasoning effort supported by each seat; it does not automatically swap a frozen run to a newer model. See [adaptive routing](docs/adaptive-routing.md) for eligibility, evidence refresh, and budget fitting.
+
+`auto` restores role-based defaults: high for planning/building/critique, medium for generation/judging/audit/reflection, and low for retrieval/probes/arbitration. Compatible measured effort settings still take precedence. Explicit effort levels apply to every role; new defaults do not rewrite existing runs.
+
+Run dollar allocations are planning targets, not hard invoice ceilings or completion guarantees: an admitted provider turn may finish above its target. Turn limits and phase deadlines remain enforced; wall limits differ by phase, with some checked at work-unit boundaries. Cost estimates depend on assumed token counts and latency. Model benchmark rank, tool availability, and Kiln's full-program quality are separate questions.
+
+## What is default and what is opt-in
+
+| Behavior | Setting |
+| --- | --- |
+| Adaptive workflow and model routing in a fresh home | Default |
+| Autonomous continuation for explicit delivery | Default; use `--interactive` to stop at checkpoints |
+| Prompt caching when the provider supports it | Default |
+| Manual model lists | Opt in with `kiln model routing manual` |
+| Bare ideation baseline | Opt in with `--bare` |
+| Persistent single-session builder experiment | Opt in with `--single-session` |
+| Paid evaluations and playbook promotion | Explicit commands, budgets, and gates required |
+| Codex or Claude Code operator plugin | Separate local installation |
+
+Reflection always writes a digest and may propose a playbook delta. It does not modify the live playbook. Promotion requires separate evaluation, integrity checks, and an eligible result. This is gated configuration improvement, not automatic self-modification.
+
+## Inspect, watch, and recover
+
+```sh
+kiln run list
+kiln run show RUN_ID
+kiln project status RUN_ID --json
+kiln project audit RUN_ID --json
+kiln build pause RUN_ID
+kiln run resume RUN_ID
+```
+
+The [Kiln operator plugin](plugins/kiln/README.md) lets Codex or Claude Code launch, watch, pause, and resume the same durable run. Stable request IDs prevent duplicate launches. It does not create worktrees, bundle credentials, or start paid work merely by being installed.
+
+Detailed recovery rules, auth variants, TUI controls, and evaluation commands are in the [usage guide](docs/usage.md). The [design index](docs/design/README.md) links the original records and later corrections.
+
+## Artifacts
+
+A run directory contains ordinary files that can be inspected without Kiln:
+
+| Artifact | Purpose |
+| --- | --- |
+| `seed.md`, `workflow.json`, `routing.json` | Original request and frozen execution choices |
+| `brief.md`, `landscape.md`, `discovery/` | Framing and source-backed research |
+| `ideas/`, `probes/`, `tournament.jsonl`, `frontier.json` | Candidate dossiers, checks, comparisons, and shortlist |
+| `features.json`, `acceptance.lock`, `state.jsonl`, `audits.jsonl` | Frozen build contract and verification history |
+| `record.jsonl`, `status.json`, `metrics.json` | Event journal, resumable state, usage, and cost |
+| `project/` and `reflect/` | Delivered repository and proposed learning digest |
 
 ## Evidence and limits
 
-A live CSV task completed with **16/16 independent behavioral checks**, 14 generated tests and a usable independent audit. Its simple tool-using baseline hit a per-call output limit without delivering. A separate CLI recovery passed 7/7 external checks and 11 generated tests. These are small development qualifications, not proof of general benchmark superiority.
+One live CSV delivery completed 16 of 16 independent behavioral checks, produced 14 generated tests, and ended with a usable independent audit at $4.47223725 recorded usage. Its simple tool-using baseline hit a per-call output limit and delivered no artifact. A separate CLI recovery completed 7 of 7 external checks with 11 generated tests.
 
-The latest live ideation recovery completed discovery and generated eight draft candidates, but its evaluation spending guard stopped it before evidence review and ranking finished. That is progress, not a validated shortlist. Completed-research persistence was fixed afterward and regression-tested; full live ideation qualification remains open. See the [development results](docs/testing/2026-09-10-completion-development.md) and [consolidation record](docs/testing/2026-09-13-consolidation.md). These examples do not establish AGI, biological-discovery or clinical reliability.
+These are small development qualifications, not broad benchmark wins. The CSV baseline's output limit is a material condition. Provider-free tests also show that direct tasks remove one framing invocation and one redundant clean-review cycle while retaining correction and re-review, but those counts are not measured provider latency or cost.
 
-Kiln is a single-operator local tool. **Shell commands are not OS-sandboxed.** Use an appropriately isolated environment for untrusted work. Shell scratch defaults are unique and run-local, but this is not filesystem isolation. Run dollar budgets are planning targets checked at turn boundaries; an admitted provider turn may finish above its target. Evaluations require explicit spending authorization.
+The September 13 live ideation continuation completed a landscape and generated eight draft candidates, then stopped at its external evaluation spending guard before evidence review, probes, tournament, frontier, or checkpoint. A separate Virtual Cell trial reached probes but failed on provider refusals; its synthetic probe was not biological validation. Neither delivered a validated shortlist. See the [consolidation record](docs/testing/2026-09-13-consolidation.md), [change evaluation](docs/testing/2026-09-13-change-evaluation.md), and [Virtual Cell readiness record](docs/testing/2026-09-14-vcc-readiness.md).
+
+Kiln does not establish AGI, general benchmark superiority, biological-discovery reliability, or clinical reliability. Independent reviewers can share model and data biases; agreement is not fact verification.
+
+Kiln is a single-operator local tool. Its shell and file tools run on the host without an OS sandbox. Use a disposable checkout or container for untrusted work, inspect generated checks, and do not grant credentials or deployment authority that the task does not require.
 
 ## Inspiration
 
-Kiln combines ideas from [oh-my-pi](https://github.com/can1357/oh-my-pi) for agent loops, providers and terminal primitives; [Amp's Neo TUI](https://ampcode.com/news/neo) for the interaction model; [Anthropic's long-running harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), [Ralph](https://ghuntley.com/ralph/) and [Fractal](https://github.com/plasma-ai/fractal) for durable, Git-native work.
+Kiln draws from [oh-my-pi](https://github.com/can1357/oh-my-pi) for agent loops, providers, and terminal primitives; [Amp's Neo TUI](https://ampcode.com/news/neo) for the interaction model; and [Anthropic's long-running harness](https://www.anthropic.com/engineering/effective-harnesses-for-long-running-agents), [Ralph](https://ghuntley.com/ralph/), and [Fractal](https://github.com/plasma-ai/fractal) for durable, Git-native work.
 
-Its search and evaluation foundations draw from [AI co-scientist](https://arxiv.org/abs/2502.18864), [FunSearch](https://doi.org/10.1038/s41586-023-06924-6), [AlphaEvolve](https://arxiv.org/abs/2506.13131), [ShinkaEvolve](https://arxiv.org/abs/2509.19349), [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954), [GEPA](https://arxiv.org/abs/2507.19457) and [ACE](https://arxiv.org/abs/2510.04618). Kiln is not affiliated with these projects. [Historical design records](docs/design/README.md) retain the original reasoning and corrections.
+Its search and evaluation design draws from [AI co-scientist](https://arxiv.org/abs/2502.18864), [FunSearch](https://doi.org/10.1038/s41586-023-06924-6), [AlphaEvolve](https://arxiv.org/abs/2506.13131), [ShinkaEvolve](https://arxiv.org/abs/2509.19349), [Darwin Gödel Machine](https://arxiv.org/abs/2505.22954), [GEPA](https://arxiv.org/abs/2507.19457), and [ACE](https://arxiv.org/abs/2510.04618). Kiln is not affiliated with these projects.
 
 ## Development
 

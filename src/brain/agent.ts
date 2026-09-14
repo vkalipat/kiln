@@ -6,13 +6,15 @@ import type { Phase, ReminderPolicy, Role } from "../core/config";
 import type { FailureStopDetails } from "../core/failure";
 import { excerpt, hashInput, type RunRecord } from "../core/record";
 import { currentRunControl, throwIfRunCancelled, type RunSourceRegistration } from "../core/run-control";
-import { clampEffort, modelCostUsd, modelFamily, type EffortName } from "../providers/models";
+import { redactText, redactValue, secretValues } from "../core/secrets";
+import { clampEffort, modelCostUsd, modelFamily, usesKilnCodeMode, type EffortName } from "../providers/models";
 import { shapingStreamFn, type ShapingOptions } from "../providers/shaping";
 import { composeAddenda, type ComposedAddenda } from "./addenda";
 import { adaptiveEvidencePrompt } from "./adaptive-evidence";
 import { contextPressure } from "./context";
 import { contractMessage, reminder, toProviderMessages } from "./history";
 import { contextInputHash, fallbackCostUsd, fallbackWasServed, toolExcerpt } from "./telemetry";
+import { createCodeModeTool, type CodeModeToolEvent } from "./code-mode";
 
 export { contextInputHash } from "./telemetry";
 
@@ -144,6 +146,23 @@ export function createBrain(o: BrainOptions) {
 
   const terminalToolNames = new Set(["exit", ...(o.terminalTools ?? [])]);
   let agent!: Agent;
+  const codeMode = usesKilnCodeMode(o.model);
+  if (codeMode && o.tools.some((tool) => tool.name === "exec")) throw new Error("exec is reserved for the Code Mode host");
+  let codeModeExit = false;
+  const toolStarted = (id: string, name: string, args: unknown) => {
+    pendingArgs.set(id, args);
+    o.onTool?.({ toolCallId: id, name, args, phase: "start" });
+    runSource?.toolStart(id, name, args);
+  };
+  const toolEnded = (id: string, name: string, result: Parameters<typeof toolExcerpt>[0], isError: boolean) => {
+    const args = pendingArgs.get(id);
+    pendingArgs.delete(id);
+    const normalizedError = loopNormalizedTerminalErrors.delete(id);
+    const ok = normalizedError ? false : !isError;
+    const resultExcerpt = toolExcerpt(result);
+    o.onTool?.({ toolCallId: id, name, args, phase: "end", ok, excerpt: resultExcerpt });
+    runSource?.toolEnd(id, name, ok, resultExcerpt);
+  };
   const guardedTools = o.tools.map((tool) => {
     if (!terminalToolNames.has(tool.name)) return tool;
     const execute = tool.execute;
@@ -159,11 +178,37 @@ export function createBrain(o: BrainOptions) {
       },
     } as AgentTool<any>;
   });
+  const execTool = codeMode ? createCodeModeTool({
+    getTools: () => agent.state.tools.filter((tool) => tool.name !== "exec"),
+    onToolStart: ({ toolCallId, name, args }) => toolStarted(toolCallId, name, args),
+    onToolEnd: ({ toolCallId, name, result, ok }) => toolEnded(toolCallId, name, result!, ok === false),
+    onAfterTool: (event) => agent.peekSteeringQueue().length === 0
+      && o.afterTool?.({ name: event.name, args: event.args, ok: event.ok === true, excerpt: toolExcerpt(event.result!) }) === true
+      && agent.peekSteeringQueue().length === 0,
+    isTerminal: (event: CodeModeToolEvent) => {
+      if (!event.ok || agent.peekSteeringQueue().length > 0 || !terminalToolNames.has(event.name)) return false;
+      if (event.name === "exit") codeModeExit = true;
+      return true;
+    },
+  }) : undefined;
+  if (execTool) {
+    const execute = execTool.execute;
+    execTool.execute = async (...args) => {
+      const started = performance.now();
+      const result = await execute.apply(execTool, args);
+      const values = secretValues();
+      const output = redactText(result.content.map((part) => "text" in part ? part.text : "").join("\n"), values);
+      o.record.append({ t: "tool.call", name: "exec", args: redactValue(args[1], values), ok: result.isError !== true,
+        durationMs: performance.now() - started, excerpt: output.slice(0, 400), resultChars: output.length, excerptTruncated: output.length > 400 });
+      return result;
+    };
+  }
+  const registeredTools = execTool ? [...guardedTools, execTool] : guardedTools;
   agent = new Agent({
     initialState: {
       systemPrompt: [...o.systemPrompt, ...(adaptiveEvidence ? [adaptiveEvidence] : []), ...(addenda.text ? [addenda.text] : []), pinnedBlock(o.pinned)],
       model: o.model,
-      tools: guardedTools,
+      tools: registeredTools,
       // `clampEffort` returns the same strings as the catalog's `Effort` const enum, which
       // structurally-identical string unions cannot be assigned to without a cast.
       thinkingLevel: effortSent as AgentState["thinkingLevel"],
@@ -178,16 +223,36 @@ export function createBrain(o: BrainOptions) {
     // full tool/result pairing and still delivers the queued steering before the next model call;
     // external cancellation uses the separate abort signal and remains immediate.
     interruptMode: "wait",
+    // Deliver all pending direction in order at the same boundary. A batching reminder must
+    // not sit behind a user correction and defer an otherwise completed terminal decision.
+    steeringMode: "all",
     transformProviderContext: (context) => {
-      pendingHash = contextInputHash(context);
+      // Keep the original tools installed for phase withdrawals and validated host dispatch,
+      // but send only the custom executor on the Code Mode wire. No JSON function tools leak.
+      const allowed = context.tools?.filter((tool) => tool.name !== "exec") ?? [];
+      const offered = codeMode && execTool ? {
+        ...context,
+        tools: allowed.length === 0 ? [] : [{
+          ...execTool,
+          description: `${execTool.description}\n\nAvailable tools (only these capabilities exist; schemas are binding; examples illustrate syntax, not task results):\n${JSON.stringify(allowed.map(({ name, description, parameters, examples }) => ({ name, description, parameters, ...(examples ? { examples } : {}) })))}\n\nAwait tools[toolName](arguments) with one of the names above. Use text(result) to retain useful output for the next model turn. Call terminal decision tools last.`,
+        }],
+      } : context;
+      pendingHash = contextInputHash(offered);
       pendingRequests += 1;
-      return context;
+      return offered;
     },
     onResponse: (response) => {
       pendingResponseStatus = response.status;
       pendingResponseId = response.requestId ?? undefined;
     },
   });
+  if (execTool) {
+    const setTools = agent.setTools.bind(agent);
+    agent.setTools = (tools) => {
+      const permitted = tools.filter((tool) => tool.name !== "exec");
+      setTools(permitted.length > 0 ? [...permitted, execTool] : []);
+    };
+  }
 
   agent.setBeforeModelCall(() => {
     if (turns >= o.turnCap) {
@@ -231,6 +296,15 @@ export function createBrain(o: BrainOptions) {
   // terminal-tool-result symbol: any other reason lets the loop open one more turn and record a
   // phantom aborted model call.
   agent.afterToolCall = (c) => {
+    if (codeMode && c.toolCall.name === "exec") {
+      const terminal = (c.result.details as { codeMode?: { terminal?: boolean } } | undefined)?.codeMode?.terminal;
+      if (terminal && !c.isError && agent.peekSteeringQueue().length === 0) {
+        if (codeModeExit) exited = true;
+        agent.abort(TERMINAL_TOOL_RESULT_ABORT_REASON);
+      }
+      codeModeExit = false;
+      return undefined;
+    }
     const abortAfterResult = agent.peekSteeringQueue().length === 0
       && o.afterTool?.({ name: c.toolCall.name, args: c.args, ok: !c.isError, excerpt: toolExcerpt(c.result) }) === true
       && agent.peekSteeringQueue().length === 0;
@@ -266,20 +340,12 @@ export function createBrain(o: BrainOptions) {
       runSource?.text(e.assistantMessageEvent.delta);
     }
     if (e.type === "tool_execution_start") {
-      pendingArgs.set(e.toolCallId, e.args);
-      o.onTool?.({ toolCallId: e.toolCallId, name: e.toolName, args: e.args, phase: "start" });
-      runSource?.toolStart(e.toolCallId, e.toolName, e.args);
+      toolStarted(e.toolCallId, e.toolName, e.args);
     }
     if (e.type === "tool_execution_end") {
       // `tool_execution_end` carries the result but not the arguments, so they are held from the
       // matching start event.
-      const args = pendingArgs.get(e.toolCallId);
-      pendingArgs.delete(e.toolCallId);
-      const normalizedError = loopNormalizedTerminalErrors.delete(e.toolCallId);
-      const ok = normalizedError ? false : !e.isError;
-      const resultExcerpt = toolExcerpt(e.result);
-      o.onTool?.({ toolCallId: e.toolCallId, name: e.toolName, args, phase: "end", ok, excerpt: resultExcerpt });
-      runSource?.toolEnd(e.toolCallId, e.toolName, ok, resultExcerpt);
+      toolEnded(e.toolCallId, e.toolName, e.result, e.isError === true);
       if (exited) return;
     }
     if (e.type === "message_end" && e.message.role === "assistant") {
@@ -398,9 +464,10 @@ export function createBrain(o: BrainOptions) {
       const before = turns;
       pendingArgs.clear();
       loopNormalizedTerminalErrors.clear();
+      codeModeExit = false;
       if (o.finalizeWithoutTools !== undefined) {
         finalizingWithoutTools = false;
-        agent.setTools(guardedTools);
+        agent.setTools(registeredTools);
       }
       // `Agent` swallows abort and provider errors into the transcript, but a bad prompt
       // (e.g. AgentBusyError) still rejects; either way the classification below is the same.

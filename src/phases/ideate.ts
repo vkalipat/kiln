@@ -24,7 +24,7 @@ import { writeMetrics } from "../ideation/metrics";
 import { trigramJaccard } from "../ideation/novelty";
 import { selectEntrants, schedulePairs } from "../ideation/pairing";
 import { collisionVerdict, retirePriorArtCheckpoint, runPriorArtScout, verifiedArtifactUrl } from "../ideation/priorart";
-import { mergeProbeEvidence, runProbeBatch } from "../ideation/probe";
+import { mergeProbeEvidence, probeAssignmentHash, runProbeBatch, type ProbeAssignment } from "../ideation/probe";
 import { latestSteering, pauseInfo, readJsonIfPresent, searchHealth } from "../ideation/runtime";
 import { fitRound, readTournament, runTournament, seedFor, TournamentVerdictError } from "../ideation/tournament";
 import { parseBrief, type PhaseDeps, type PhaseResult } from "./frame";
@@ -50,7 +50,8 @@ async function islandChoices(d: IdeateDeps): Promise<IslandModels> {
   if (d.cfg.routing?.mode === "adaptive") {
     const frozen = loadFrozenRouting(d.run);
     const report = frozen?.report;
-    const qualityFirst = report && typeof report === "object" && "selectionPolicy" in report && report.selectionPolicy === "quality_first";
+    const qualityFirst = report && typeof report === "object" && "selectionPolicy" in report
+      && (report.selectionPolicy === "quality_first" || report.selectionPolicy === "quality_first_with_workload_preference");
     const fresh = !frozen && !d.record.read().some((event) => event.t === "island.assign");
     if (qualityFirst || fresh) return { generator: [d.models("generator")], cheap: [d.models("prober")] };
   }
@@ -199,17 +200,25 @@ export async function enrichEvidence(
   const limited = await pauseInfo(d, marker);
   if (limited) return { ...state(), pause: limited };
 
-  const missingProbe = ids.filter((id) => !archive.get(id)?.evidence.probe && archive.get(id)?.evidence.status !== "rejected");
+  const assignments: Record<string, ProbeAssignment> = Object.create(null);
+  for (const event of d.record.read()) if (event.t === "probe.request") for (const request of event.ideas) assignments[request.ideaId] = { rationale: request.rationale };
+  const missingProbe = ids.filter((id) => {
+    const entry = archive.get(id);
+    if (!entry || entry.evidence.status === "rejected") return false;
+    const assignment = assignments[id];
+    return !entry.evidence.probe || (assignment !== undefined && entry.evidence.probe.assignmentHash !== probeAssignmentHash(entry.dossier, entry.evidence, assignment));
+  });
+  const unassignedProbe = missingProbe.filter((id) => !assignments[id]);
   let exit: { kind: ExitKind; reasons: string[] } | undefined;
-  let requested: { ideaId: string; rationale: string }[] = [];
+  let requested: { ideaId: string; rationale: string }[] = missingProbe.flatMap((ideaId) => assignments[ideaId] ? [{ ideaId, rationale: assignments[ideaId]!.rationale }] : []);
   let stalled: { tool: string; fingerprint: string } | undefined;
-  if (missingProbe.length > 0) {
+  if (unassignedProbe.length > 0) {
     const detector = new StallDetector();
     let abortStall = () => {};
     const ctx: ToolContext = {
       cwd: d.run.dir, roots: [d.run.dir], run: d.run, record: d.record, fetchImpl: d.fetchImpl, round,
       protectedIdeas: new Set(archive.ids()),
-      onProbeRequest: (ideas) => { requested = ideas; },
+      onProbeRequest: (ideas) => { requested = [...requested, ...ideas]; },
       onExit: (kind, reasons) => { exit = { kind, reasons }; },
     };
     const tools = brainTools(ctx, "ideate").filter((tool) => ["read", "probe_request", "note", "exit"].includes(tool.name));
@@ -239,7 +248,7 @@ export async function enrichEvidence(
     });
     abortStall = () => brain.agent.abort("kiln:stall");
     const before = latestSeq(d);
-    const result = await brain.run(probeSelectionPrompt(d.run.ideasDir, missingProbe));
+    const result = await brain.run(probeSelectionPrompt(d.run.ideasDir, unassignedProbe));
     contextPressure ||= result.contextPressure === true;
     const p = await pauseInfo(d, before);
     if (p) return { ...state(), pause: p };
@@ -258,10 +267,15 @@ export async function enrichEvidence(
   }
   if (exit || stalled) return { ...state(), exit, stalled };
   const wanted = new Set(requested.map((item) => item.ideaId).filter((id) => missingProbe.includes(id)));
+  for (const request of requested) if (wanted.has(request.ideaId)) assignments[request.ideaId] = { rationale: request.rationale };
   const requestedEntries = missingProbe.filter((id) => wanted.has(id)).map((id) => archive.get(id)!);
   const probeMarker = latestSeq(d);
-  const probeResults = await runProbeBatch(d, requestedEntries, { roundWallSeconds: d.cfg.ideation.probe.roundWallSeconds, limiter: d.limiter });
-  const probeFailure = probeResults.find((result) => result.workerFailure);
+  const probeResults = await runProbeBatch(d, requestedEntries, { roundWallSeconds: d.cfg.ideation.probe.roundWallSeconds, limiter: d.limiter, optional: true, assignments });
+  for (const result of probeResults) {
+    archive.mergeEvidence(result.ideaId, {}); // Refresh worker-written sidecars before selection.
+    if (result.optionalRefusal === true) archive.markRejected(result.ideaId, "probe_refused");
+  }
+  const probeFailure = probeResults.find((result) => result.workerFailure && result.optionalRefusal !== true);
   if (probeFailure?.workerFailure) {
     const message = probeFailure.error ?? `probe worker failed for ${probeFailure.ideaId}`;
     d.record.append({ t: "failure", class: probeFailure.workerFailure, message });

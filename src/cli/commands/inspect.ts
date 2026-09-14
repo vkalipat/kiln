@@ -1,6 +1,6 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { ROLES, loadConfig, saveConfig, type Effort, type RoutingMode } from "../../core/config";
+import { ROLES, defaultConfig, loadConfig, saveConfig, type Effort, type RoutingMode } from "../../core/config";
 import { initHome } from "../../core/home";
 import { kilnHome, writeAtomic } from "../../core/paths";
 import { RunRecord } from "../../core/record";
@@ -132,17 +132,24 @@ export function inspectCommand(cmd: string[], flags: Record<string, string | boo
   if (cmd[0] === "mode" && ["show", "set", "toggle"].includes(cmd[1] ?? "show")) {
     const action = cmd[1] ?? "show";
     const requested = cmd[2] === "ultra" ? "xhigh" : cmd[2];
-    if (action === "set" && !EFFORTS.includes(requested as Effort)) {
-      err("usage: kiln mode set low|medium|high|xhigh\n"); return 2;
+    const restoreDefaults = action === "set" && requested === "auto";
+    if (action === "set" && !restoreDefaults && !EFFORTS.includes(requested as Effort)) {
+      err("usage: kiln mode set auto|low|medium|high|xhigh\n"); return 2;
     }
     if (action !== "show") {
-      cfg.effort = action === "toggle" ? EFFORTS[(EFFORTS.indexOf(cfg.effort) + 1) % EFFORTS.length]! : requested as Effort;
-      // An explicit operator mode applies to every seat; automatic sweeps remain a separate action.
-      cfg.effortByRole = Object.fromEntries(ROLES.map((role) => [role, cfg.effort]));
+      if (restoreDefaults) {
+        const defaults = defaultConfig();
+        cfg.effort = defaults.effort;
+        cfg.effortByRole = { ...defaults.effortByRole };
+      } else {
+        cfg.effort = action === "toggle" ? EFFORTS[(EFFORTS.indexOf(cfg.effort) + 1) % EFFORTS.length]! : requested as Effort;
+        // An explicit operator mode applies to every seat; automatic sweeps remain a separate action.
+        cfg.effortByRole = Object.fromEntries(ROLES.map((role) => [role, cfg.effort]));
+      }
       saveConfig(home, cfg);
     }
     if (flags.json) printJson(io, { effort: cfg.effort, effortByRole: cfg.effortByRole });
-    else io.write(`effort: ${cfg.effort}\n`);
+    else io.write(restoreDefaults ? "effort: role defaults restored\n" : `effort: ${cfg.effort}\n`);
     return 0;
   }
   err(INSPECT_USAGE);

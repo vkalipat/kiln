@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import type { Model } from "@oh-my-pi/pi-catalog";
+import { getBundledModel, type Model } from "@oh-my-pi/pi-catalog";
 import { defaultConfig } from "../../src/core/config";
 import type { AuthStore } from "../../src/providers/auth";
-import { NoModelError, availableProviders, clampEffort, effortFor, modelFamily, otherProvider, parseModelRef, resolveRole, resolveRoleOn } from "../../src/providers/models";
+import { NoModelError, availableProviders, clampEffort, effortFor, isKilnToolModelSupported, modelFamily, otherProvider, parseModelRef, resolveRole, resolveRoleOn } from "../../src/providers/models";
 
 describe("models", () => {
   test("parseModelRef", () => {
@@ -25,12 +25,16 @@ describe("models", () => {
     expect(() => resolveRole("brain", cfg, available)).toThrow(NoModelError);
     expect(() => resolveRoleOn("brain", "fireworks", cfg, available)).toThrow(NoModelError);
   });
-  test("resolvers reject code-mode-only models until Kiln supplies a code-mode tool surface", () => {
+  test("resolvers admit the tested Astra adapter but not other Code Mode dialects", () => {
     const cfg = defaultConfig();
     cfg.roles.brain = ["openai-codex/gpt-6-astra"];
     const available = new Set(["openai-codex"]);
-    expect(() => resolveRole("brain", cfg, available)).toThrow(NoModelError);
-    expect(() => resolveRoleOn("brain", "openai-codex", cfg, available)).toThrow(NoModelError);
+    expect(resolveRole("brain", cfg, available).ref).toBe("openai-codex/gpt-6-astra");
+    expect(resolveRoleOn("brain", "openai-codex", cfg, available).ref).toBe("openai-codex/gpt-6-astra");
+    const astra = getBundledModel("openai-codex", "gpt-6-astra")!;
+    expect(isKilnToolModelSupported({ ...astra, id: "unverified-model" })).toBe(false);
+    expect(isKilnToolModelSupported({ ...astra, provider: "openai" })).toBe(false);
+    expect(isKilnToolModelSupported({ ...astra, applyPatchToolType: undefined })).toBe(false);
   });
   test("otherProvider prefers a different one", () => {
     expect(otherProvider("anthropic", new Set(["anthropic", "openai-codex"]))).toBe("openai-codex");

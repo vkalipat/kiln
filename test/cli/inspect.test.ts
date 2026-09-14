@@ -4,7 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { inspectCommand } from "../../src/cli/commands/inspect";
 import { initHome } from "../../src/core/home";
-import { loadConfig } from "../../src/core/config";
+import { defaultConfig, loadConfig, saveConfig } from "../../src/core/config";
 import { createRun } from "../../src/core/run";
 import { RunRecord } from "../../src/core/record";
 
@@ -22,12 +22,47 @@ test("disk inspection exposes all events and roles without model calls", () => {
 
 test("explicit effort changes persist, ultra is xhigh, invalid input does not write", () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-mode-")); const io = { write: () => {} };
+  for (const level of ["low", "medium", "high", "xhigh"] as const) {
+    expect(inspectCommand(["mode", "set", level], { home }, io)).toBe(0);
+    const cfg = loadConfig(home);
+    expect(cfg.effort).toBe(level);
+    expect(new Set(Object.values(cfg.effortByRole ?? {}))).toEqual(new Set([level]));
+  }
   expect(inspectCommand(["mode", "set", "ultra"], { home }, io)).toBe(0);
   expect(loadConfig(home).effort).toBe("xhigh");
   expect(inspectCommand(["mode", "set", "nonsense"], { home }, io)).toBe(2);
   expect(loadConfig(home).effort).toBe("xhigh");
   expect(inspectCommand(["mode", "toggle"], { home }, io)).toBe(0);
   expect(loadConfig(home).effort).toBe("low");
+});
+
+test("mode set auto restores role effort defaults without changing models, budgets, or other settings", () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-mode-auto-")); initHome(home);
+  const cfg = loadConfig(home);
+  cfg.effort = "xhigh";
+  cfg.effortByRole = Object.fromEntries(Object.keys(cfg.roles).map((role) => [role, "xhigh"]));
+  cfg.budgets.usd = 37;
+  cfg.routing = { mode: "adaptive" };
+  cfg.autonomous = true;
+  cfg.provider.batchNudge = false;
+  saveConfig(home, cfg);
+  const before = loadConfig(home);
+  const persistedBefore = JSON.parse(readFileSync(join(home, "config.json"), "utf8"));
+  let json = ""; const jsonIo = { write: (text: string) => { json += text; } };
+  expect(inspectCommand(["mode", "set", "auto"], { home, json: true }, jsonIo)).toBe(0);
+  const after = loadConfig(home);
+  const defaults = defaultConfig();
+  expect(after.effort).toBe(defaults.effort);
+  expect(after.effortByRole).toEqual(defaults.effortByRole);
+  expect(JSON.parse(json)).toEqual({ effort: defaults.effort, effortByRole: defaults.effortByRole });
+  const persistedAfter = JSON.parse(readFileSync(join(home, "config.json"), "utf8"));
+  persistedAfter.effort = persistedBefore.effort;
+  persistedAfter.effortByRole = persistedBefore.effortByRole;
+  expect(persistedAfter).toEqual(persistedBefore);
+
+  let text = ""; const textIo = { write: (value: string) => { text += value; } };
+  expect(inspectCommand(["mode", "set", "auto"], { home }, textIo)).toBe(0);
+  expect(text).toContain("role defaults restored");
 });
 
 test("routing mode changes persist and invalid input leaves the config untouched", () => {
