@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { frameExitAcceptance, parseBrief, runFrame, stopFailure, type PhaseDeps } from "../../src/phases/frame";
 import { shapeHash } from "../../src/phases/contracts";

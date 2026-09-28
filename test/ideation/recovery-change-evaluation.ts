@@ -4,7 +4,7 @@ import { execFileSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { defaultConfig } from "../../src/core/config";
 import { createRun } from "../../src/core/run";
 import { RunRecord } from "../../src/core/record";

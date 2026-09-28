@@ -4,7 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { RealGitRunner } from "../../src/build/git";
 import { foldState } from "../../src/build/state";

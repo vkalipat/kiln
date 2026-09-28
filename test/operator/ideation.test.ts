@@ -3,7 +3,7 @@ import { createHash } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { defaultConfig, saveConfig, type Role } from "../../src/core/config";
 import { initHome } from "../../src/core/home";
 import { RunRecord } from "../../src/core/record";

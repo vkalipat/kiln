@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { pinAudit, appendAudit, readAudits, AUDIT_CAPS_PINNED, AUDIT_CAPS_STORED, type Audit } from "../../src/build/audit-contract";
 import { AUDITOR_SCOPE_PIN_CHARS, AuditorRunError, runAuditorSession, type AuditorContext } from "../../src/build/auditor";
 import { RealGitRunner, type AuditSnapshot, type GitRunner } from "../../src/build/git";

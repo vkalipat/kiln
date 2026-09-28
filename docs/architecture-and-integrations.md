@@ -12,16 +12,17 @@ A role is a responsibility; a model is the admitted provider/model implementatio
 
 ## The current toolkit
 
-A provider-free audit instantiated both `createOmpSession` and the full `createOperatorRuntime` with a synthetic model in a temporary home. With experimental workflows disabled, it confirmed the following **19 enabled tools**; discoverable tools need not appear as individual top-level model tools.
+A provider-free native-session fixture on pinned runtime **18.4.2** confirmed eleven root tools: `read`, `bash`, `edit`, `eval`, `glob`, `grep`, `task`, `wait`, `todo`, `web_search` and `write`. Kiln registers its own tools through the operator extension. Discoverable tools need not appear as individual top-level model tools; the historical tool count from 18.1.14 is not a current inventory.
 
 | Surface | Tools | Purpose |
 | --- | --- | --- |
 | Direct filesystem | `read`, `write`, `edit`, `glob`, `grep` | Inspect, search and change scoped artifacts |
 | Direct execution | `bash`, `eval` | Shell commands and persistent code evaluation |
-| Direct coordination | `task`, `hub`, `todo` | Native workers, messages/processes, task tracking |
+| Direct coordination | `task`, `wait`, `todo`; `write` to `agent://<id>` | Native workers, waiting for owned jobs/messages, task tracking and peer messages |
 | Direct research | `web_search` | Search access subject to the configured provider/environment |
-| Discoverable native | `ast_edit`, `debug` | Structural editing and debugging |
 | Discoverable Kiln | `team`, `context_publish`, `context_query`, `route_step`, `ideate`, `ask_user` | Scoped ownership, bounded evidence sharing, routing, idea search and missing-information questions |
+
+`hub` was removed upstream. Native task results and messages are delivered automatically; agents use `write` to `agent://<id>` for peer messages and call `wait` only when blocked. This is not a one-for-one replacement for every old hub operation. Native child-session, metering and cancellation tests exercise the pinned runtime; they do not establish external provider readiness.
 
 The built-in Chromium browser capability is enabled through the `browser` API inside `eval`, not a standalone `browser` tool. The opt-in `browser_task` tool now adapts jev-ultrafast decisions to the existing native browser; ordinary native browser access remains available. Computer control is disabled. MCP and LSP are disabled in this embedded session; skill/rule/prompt/slash-command discovery is explicitly empty. Native automatic memory is off. Goal and autoresearch tools are registered but inactive in the audited ordinary session.
 
@@ -78,7 +79,7 @@ The unmodified upstream snapshot is pinned to `1231850a0bf1a0c0341fe408ef1668dbb
 
 `research_task` uses existing search/fetch with explicit HTTPS source-host scope, bounded concurrent capture, immutable source artifacts, hashes, retrieval metadata and passage locations. Jev labels evidence fields as supports/contradicts/mixed/not_stated/unknown. The parent synthesizes; receipt `truthVerified` remains false. Truncation and unavailable sources remain explicit. The registered tool does not wire its optional low-level browser fallback: dynamic fetch failures require a separate `browser_task` call. Hindsight retention remains independent and explicit. See [workflow limits and usage](optional-integrations.md#browser-execution-and-completion-discipline).
 
-Enabled workflow decisions send scoped browser observations/tasks or research passages/questions to TypeSafe. The implementation is exercised offline; no live Jev performance result is established because no TypeSafe key was configured during qualification. This avoids claiming each cheap decision displaced a frontier call without a matched baseline.
+Enabled workflow decisions send scoped browser observations/tasks or research passages/questions to TypeSafe. Offline contracts are supplemented by a [nine-request live qualification](testing/2026-09-28-jev-live-qualification.md): three synthetic fixtures passed, with 3,733 input and 487 output tokens. Adapter-price cost was calculated as $0.000156786, not verified against an invoice. This confirms those live classification/batching/reuse cases; it does not establish representative task accuracy or a frontier-model throughput advantage. A separate native form fixture subsequently produced a verified specified-check receipt with two Jev decisions, 1,328 input and 158 output tokens, after five incomplete calibration attempts. Independent DOM inspection confirmed the field and greeting; this remains one development success, not held-out qualification.
 
 ### Hindsight: explicit project memory
 

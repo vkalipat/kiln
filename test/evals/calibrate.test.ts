@@ -3,7 +3,7 @@ import { appendFileSync, existsSync, mkdtempSync, readFileSync, writeFileSync } 
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { defaultConfig, type Role } from "../../src/core/config";
 import { initHome } from "../../src/core/home";
 import { writeAtomic } from "../../src/core/paths";

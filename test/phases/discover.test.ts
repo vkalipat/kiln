@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Context } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { cachedDiscoverySynthesisWallMs, discoverySynthesisReady, parseLandscape, runDiscover, SCOUT_CHECKPOINT_POLICY_VERSION } from "../../src/phases/discover";

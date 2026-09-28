@@ -3,9 +3,23 @@ import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
-import { createMockModel, streamMock, Effort } from "@oh-my-pi/pi-ai";
+import { Effort } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { createOmpSession, switchOmpSessionModel } from "../../src/operator/session";
+
+async function nativeSetting(settings: unknown, key: string, ...value: unknown[]): Promise<unknown> {
+  const port = settings as { get?: (key: string) => unknown; set?: (key: string, value: unknown) => void };
+  if (typeof port.get === "function" && typeof port.set === "function") {
+    return value.length ? port.set(key, value[0]) : port.get(key);
+  }
+  const registryPath = "@oh-my-pi/pi-coding-agent/config/registry";
+  const registry = await import(registryPath);
+  if (typeof registry.lookup !== "function") throw new Error("Native settings registry is unavailable");
+  const setting = registry.lookup(key);
+  if (!setting || typeof setting.get !== "function" || typeof setting.set !== "function") throw new Error("Unsupported native setting: " + key);
+  return value.length ? setting.set(settings, value[0]) : setting.get(settings);
+}
 
 test("owner-aware switching changes the next root/child request and never relaxes unowned auth", async () => {
   const root = mkdtempSync(join(tmpdir(), "kiln-routing-prototype-"));
@@ -32,10 +46,10 @@ test("owner-aware switching changes the next root/child request and never relaxe
       });
     }],
     factory: async (options) => {
-      options.settings!.set("async.enabled", false);
-      options.settings!.set("modelRoles", { default: ref, smol: ref });
+      await nativeSetting(options.settings!, "async.enabled", false);
+      await nativeSetting(options.settings!, "modelRoles", { default: ref, smol: ref });
       // Native hasResolvableAuth already consults our local hasAuth inventory override.
-      expect(options.authStorage!.hasResolvableAuth(second.provider)).toBe(true);
+      expect(options.modelRegistry!.hasConfiguredAuth(second as never)).toBe(true);
       options.extensions!.push((extension) => {
         for (const candidate of candidates) extension.registerProvider(candidate.provider, {
           api: "mock", apiKey: "synthetic-registration-only", baseUrl: "https://synthetic.invalid",

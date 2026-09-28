@@ -1,6 +1,6 @@
 import { spawn } from "node:child_process";
 import { appendFileSync } from "node:fs";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { main } from "../../../src/cli/main";
 import type { Role } from "../../../src/core/config";

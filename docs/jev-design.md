@@ -1,6 +1,6 @@
 # Jev in Kiln: execution with fewer planning turns
 
-Implementation direction, 2026-09-28. The browser and research workflows are experimental and opt-in. Their live throughput, cost-per-success and semantic quality remain unqualified. See [usage and limits](optional-integrations.md) and [workflow validation](testing/2026-09-28-jev-workflows.md).
+Implementation direction, 2026-09-28. The browser and research workflows are experimental and opt-in. A [nine-request live qualification](testing/2026-09-28-jev-live-qualification.md) passed three synthetic fixtures and confirmed their batching/reuse behavior. A native form fixture then completed in two Jev decisions after five incomplete development attempts; all outcomes are retained in that report. Representative workflow throughput, cost-per-success and semantic quality remain unqualified. See [usage and limits](optional-integrations.md) and [workflow validation](testing/2026-09-28-jev-workflows.md).
 
 ## What Jev owns
 
@@ -19,7 +19,7 @@ Known deterministic action sequences can already run through native execution wi
 ## Selected improvements and boundaries
 
 - Reuse an identical in-flight or accepted decision only for the exact bounded state, questions, operation, model and confidence policy. One physical request has one accounting identity. This saves duplicate work without inventing a semantic cache match.
-- Native browser completion reports checks and their observation together. Recover from stale controls only when the executor proves no input was dispatched, within the existing decision/time allowance. Never retry an input with uncertain effects.
+- Native browser completion reports checks and their observation together. Shared task/check context guides all decision heads, already-satisfied literal fills are omitted from fresh state, and primitive code checks can trigger atomic verification without another model decision. Recover from stale controls only when the executor proves no input was dispatched, within the existing decision/time allowance. Never retry an input with uncertain effects.
 - Prepare team review evidence deterministically from declared criteria and artifact identities. Evidence organization does not accept a handoff or prove that a claimed test ran.
 
 These features avoid a broad classifier before every prompt, tool or approval. More classifications are not inherently more efficient: classification followed by unchanged generation is additional work. Deterministic caching, source identity checks, test predicates and arithmetic should remain code. Jev's [documented limitations](https://docs.typesafe.ai/model-jaggedness/jev-1.13) include numeric precision, indirection, distracting state and adversarial content; confidence cannot replace an independent verifier.

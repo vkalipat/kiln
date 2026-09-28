@@ -48,8 +48,9 @@ export function registerOperatorWorkflowTools(extension: Extension, options: Ope
     allowedActions: z.array(z.object({ kind: z.enum(["click", "fill", "select", "scroll", "wait"]), label: z.string().min(1).max(200).optional() })).max(32),
     values: z.record(z.string(), z.string().min(1).max(2000)).optional(), maxDecisions: z.number().int().min(1).max(8).optional(),
     timeoutMs: z.number().int().min(100).max(30000).optional() });
-  const decisionPayload = z.object({ nativeLease: nativeLease.optional(), task: z.string().min(1).max(4000), stateHash: z.string().min(1).max(32000), step: z.number().int().min(0).max(7),
+  const decisionPayload = z.object({ checks: z.array(browserCheck).min(1).max(8).optional(), nativeLease: nativeLease.optional(), task: z.string().min(1).max(4000), stateHash: z.string().min(1).max(32000), step: z.number().int().min(0).max(7),
     state: z.object({ url: z.string().max(2048), title: z.string().max(2000), text: z.string().max(16000),
+      fields: z.array(z.object({label:z.string().max(2000),value:z.string().max(2000)})).max(250).optional(),
       actions: z.array(z.object({ id: z.string().max(64), kind: z.enum(["click", "fill", "select", "scroll", "wait"]), label: z.string().max(2000),
         node: z.number().int().optional(), value: z.string().max(2000).optional(), delta: z.number().optional(), role: z.string().max(100).optional() })).max(250) }) });
 

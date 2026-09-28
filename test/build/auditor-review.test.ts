@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { AuditorRunError, runAuditorSession, type AuditorContext, type AuditorStage } from "../../src/build/auditor";
 import type { AuditSnapshot } from "../../src/build/git";
 import type { CheckResult } from "../../src/build/verify";

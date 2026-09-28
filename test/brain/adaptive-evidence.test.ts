@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { createBrain } from "../../src/brain/agent";
 import { adaptiveEvidencePrompt, classifyEvidenceDomain } from "../../src/brain/adaptive-evidence";
 import { defaultConfig, type Phase, type Role } from "../../src/core/config";

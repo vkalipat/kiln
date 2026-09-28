@@ -1,7 +1,7 @@
 import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { createMockModel } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { loadPlaybook, loadPrompt } from "../../src/brain/prompts";
 import { stripCounters, type PlaybookDelta } from "../../src/build/delta";
 import { buildFail, buildHonest, buildStop, buildSuccess } from "../../src/build/loop-outcomes";

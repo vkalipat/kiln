@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMockModel } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { defaultConfig } from "../../src/core/config";
 import type { StoredEvent } from "../../src/core/events";
 import { ADAPTIVE_LATENCY_SECONDS, projectedAdaptiveRound, projectedRoundCost, remainingIdeateUsd } from "../../src/ideation/budget";

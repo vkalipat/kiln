@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { askUserTool } from "../../src/brain/tools/ask-user";
 import { brainTools, type ToolContext } from "../../src/brain/tools";

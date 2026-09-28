@@ -5,12 +5,14 @@ import { resolve } from "node:path";
 const ROOT = resolve(import.meta.dir, "../..");
 const sha256 = (text: string) => createHash("sha256").update(text).digest("hex");
 
+// 2026-09-28 native18.4 compatibility: these three files changed only their mock import
+// to the supported providers/mock subpath. Every behavioral assertion is unchanged.
 const ASSERTION_FILES = [
-  { path: "test/cli/run-workflow.test.ts", sha256: "48e6b8ddccfc0439b63aa1f8e8af083e3caf0f34a656a83dd1b9b3857278dc18" },
-  { path: "test/phases/form.test.ts", sha256: "d4d1406c2313f31ae7ac200ea76f5f51dc1058f24de573eab596d0010e0bd8c2" },
+  { path: "test/cli/run-workflow.test.ts", sha256: "e4c20efcceb9ad45a4bf0c91e26d955d8b90a4aaf2a2a1139d4b8cedbd9fa4ca" },
+  { path: "test/phases/form.test.ts", sha256: "c285bedd4ee9874097bfe4915dc7c1beab45532f7a296894cfb77daa4d84795d" },
   // 2026-09-28: fixtures now freeze every feature; integrity cases cover short and long
   // oracles. The exact-seed case and all seven evaluated behavioral assertions are retained.
-  { path: "test/build/builder.test.ts", sha256: "f9a4788920e27cbd6f7c06eca258ad18e0343a4884a4b29ccfedf1fee16ad774" },
+  { path: "test/build/builder.test.ts", sha256: "0535f01fc383f984c2a139e1f1fa11607936c085f198987711dd32fed2f533c7" },
 ] as const;
 
 const CASES = [
