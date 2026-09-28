@@ -7,20 +7,27 @@ import { createOperatorRuntime, type OperatorEvent } from "../../src/operator/ru
 import { createOmpSession, type OmpSessionHandle } from "../../src/operator/session";
 import { AuthStore } from "../../src/providers/auth";
 import { initHome } from "../../src/core/home";
+import { loadConfig } from "../../src/core/config";
 import { readStatus } from "../../src/core/run";
+import { prepareStepRouting } from "../../src/operator/routing";
+import { parseModelRef } from "../../src/providers/models";
 
 const usage = { input: 20, output: 10 };
 function fixture() {
   const home = mkdtempSync(join(tmpdir(), "kiln-operator-runtime-")); initHome(home, { plugAndPlay: true });
   const auth = new AuthStore(join(home, "auth.json")); auth.setApiKey("anthropic", "synthetic-test-key");
-  return { home, auth };
+  // These fixtures exercise general-task runtime behavior. Ranking tests separately
+  // assert the selected identity; the native session still rejects any mismatch.
+  const prepared = prepareStepRouting(loadConfig(home), new Set(["anthropic"]), "General task");
+  const { modelId } = parseModelRef(prepared.selectedRoleRefs.brain);
+  return { home, auth, modelId };
 }
 
 test("real native operator runs tools, retains shared context and follows up in one session", async () => {
-  const { home, auth } = fixture(); const events: OperatorEvent[] = [];
+  const { home, auth, modelId } = fixture(); const events: OperatorEvent[] = [];
   let liveUsageMatched = false;
   writeFileSync(join(home, "input.txt"), "native evidence");
-  const model = createMockModel({ id: "claude-fable-5-1", provider: "anthropic", responses: [
+  const model = createMockModel({ id: modelId, provider: "anthropic", responses: [
     { content: [{ type: "toolCall", name: "read", arguments: { path: "input.txt" } }], usage },
     { content: [{ type: "toolCall", name: "context_publish", arguments: { id: "finding", kind: "fact", text: "native evidence was read" } }], usage },
     { content: [{ type: "toolCall", name: "write", arguments: { path: "answer.txt", content: "checked" } }], usage },
@@ -59,9 +66,9 @@ test("real native operator runs tools, retains shared context and follows up in 
 }, 30_000);
 
 test("startup steering is retained while native SDK initialization is still pending", async () => {
-  const { home, auth } = fixture(); let release!: () => void, initializing!: () => void;
+  const { home, auth, modelId } = fixture(); let release!: () => void, initializing!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; }); const started = new Promise<void>(resolve => { initializing = resolve; });
-  const model = createMockModel({ id: "claude-fable-5-1", provider: "anthropic", responses: [{ content: ["Revised task handled."], usage }] as never });
+  const model = createMockModel({ id: modelId, provider: "anthropic", responses: [{ content: ["Revised task handled."], usage }] as never });
   const runtime = await createOperatorRuntime({ jev: { enabled: false }, home, cwd: home, seed: "Inspect the local task.", auth,
     createSession: async options => { initializing(); await gate; return createOmpSession({ ...options, model: model as never, streamFn: streamMock as never, contextFiles: [] }); } });
   try {
@@ -78,9 +85,9 @@ test("startup steering is retained while native SDK initialization is still pend
 }, 30_000);
 
 test("cancellation during native startup makes no provider call and preserves the acknowledged direction", async () => {
-  const { home, auth } = fixture(); let release!: () => void, initializing!: () => void;
+  const { home, auth, modelId } = fixture(); let release!: () => void, initializing!: () => void;
   const gate = new Promise<void>(resolve => { release = resolve; }); const started = new Promise<void>(resolve => { initializing = resolve; });
-  const model = createMockModel({ id: "claude-fable-5-1", provider: "anthropic", responses: [{ content: ["must not run"], usage }] as never });
+  const model = createMockModel({ id: modelId, provider: "anthropic", responses: [{ content: ["must not run"], usage }] as never });
   const runtime = await createOperatorRuntime({ jev: { enabled: false }, home, cwd: home, seed: "Inspect the local task.", auth,
     createSession: async options => { initializing(); await gate; return createOmpSession({ ...options, model: model as never, streamFn: streamMock as never, contextFiles: [] }); } });
   try {

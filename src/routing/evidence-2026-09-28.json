@@ -1,0 +1,449 @@
+{
+  "version": 1,
+  "id": "quality-first-2026-09-28",
+  "asOf": "2026-09-28",
+  "maxAgeDays": 30,
+  "verification": {
+    "status": "verified",
+    "verifiedAt": "2026-09-28",
+    "method": "manual-primary-source-check"
+  },
+  "sources": [
+    {
+      "id": "aa-index-v4-3-2",
+      "url": "https://artificialanalysis.ai/leaderboards/models",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-claude-opus-5-xhigh",
+      "url": "https://artificialanalysis.ai/models/claude-opus-5-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-gpt-5-6-sol-xhigh",
+      "url": "https://artificialanalysis.ai/models/gpt-5-6-sol-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-briefcase-v1-1",
+      "url": "https://artificialanalysis.ai/evaluations/aa-briefcase",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-hle",
+      "url": "https://artificialanalysis.ai/evaluations/humanitys-last-exam",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-gpt-6-astra-xhigh",
+      "url": "https://artificialanalysis.ai/models/gpt-6-astra-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-claude-opus-5-5-xhigh",
+      "url": "https://artificialanalysis.ai/models/claude-opus-5-5-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-claude-fable-5-1-xhigh",
+      "url": "https://artificialanalysis.ai/models/claude-fable-5-1-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-gpt-6-sol-xhigh",
+      "url": "https://artificialanalysis.ai/models/gpt-6-sol-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-gpt-6-luna-xhigh",
+      "url": "https://artificialanalysis.ai/models/gpt-6-luna-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-claude-sonnet-5-5-xhigh",
+      "url": "https://artificialanalysis.ai/models/claude-sonnet-5-5-xhigh",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-gemini-3-8-flash",
+      "url": "https://artificialanalysis.ai/models/gemini-3-8-flash",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-scicode-v1-0-1",
+      "url": "https://artificialanalysis.ai/evaluations/scicode",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "terminal-bench-4-current",
+      "url": "https://www.tbench.ai/",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-omniscience-current",
+      "url": "https://artificialanalysis.ai/evaluations/omniscience",
+      "observedAt": "2026-09-28"
+    },
+    {
+      "id": "aa-model-gpt-5-5",
+      "url": "https://artificialanalysis.ai/models/gpt-5-5",
+      "observedAt": "2026-09-28"
+    }
+  ],
+  "rankings": [
+    {
+      "category": "general_reasoning",
+      "sourceId": "aa-index-v4-3-2",
+      "metric": "Artificial Analysis Intelligence Index v4.3.2 (rounded displayed scores)",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-opus-5-5",
+          "score": 56,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; adaptive reasoning; default fallback enabled"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 53,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; adaptive reasoning; default fallback enabled"
+        },
+        {
+          "modelRef": "anthropic/claude-sonnet-5-5",
+          "score": 52,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; adaptive reasoning; default fallback enabled"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 52,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; reasoning effort xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 50,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; reasoning effort xhigh",
+          "sourceId": "aa-model-claude-opus-5-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-sol",
+          "score": 44,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; reasoning effort xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 44,
+          "effort": "xhigh",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; reasoning effort xhigh",
+          "sourceId": "aa-model-gpt-5-6-sol-xhigh"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 41,
+          "effort": "high",
+          "conditions": "AA Intelligence Index v4.3.2; displayed rounded score; reasoning effort high"
+        }
+      ]
+    },
+    {
+      "category": "expert_knowledge",
+      "sourceId": "aa-hle",
+      "metric": "AA HLE text-only pass@1 (%)",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 58.7117701575533,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: Claude Fable 5.1 (Adaptive Reasoning, Xhigh Effort, Default Fallback).",
+          "sourceId": "aa-model-claude-fable-5-1-xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5-5",
+          "score": 57.5069508804449,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback).",
+          "sourceId": "aa-model-claude-opus-5-5-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 54.5875810936052,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: GPT-6 Astra (xhigh).",
+          "sourceId": "aa-model-gpt-6-astra-xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 54.4022242817424,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: Claude Opus 5 (Adaptive Reasoning, Xhigh Effort).",
+          "sourceId": "aa-model-claude-opus-5-xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-sonnet-5-5",
+          "score": 50.0,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: Claude Sonnet 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback).",
+          "sourceId": "aa-model-claude-sonnet-5-5-xhigh"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 47.8220574606117,
+          "effort": "high",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: Gemini 3.8 Flash (high).",
+          "sourceId": "aa-model-gemini-3-8-flash"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 47.3123262279889,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: GPT-5.6 Sol (xhigh).",
+          "sourceId": "aa-model-gpt-5-6-sol-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-sol",
+          "score": 46.2928637627433,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: GPT-6 Sol (xhigh).",
+          "sourceId": "aa-model-gpt-6-sol-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-luna",
+          "score": 34.3373493975904,
+          "effort": "xhigh",
+          "conditions": "AA HLE 2158 text-only questions, May2025 revision; 1 repeat; pass@1; GPT-5.6 Luna medium equality checker; no tools. Not full multimodal HLE. Variant: GPT-6 Luna (xhigh).",
+          "sourceId": "aa-model-gpt-6-luna-xhigh"
+        }
+      ]
+    },
+    {
+      "category": "business",
+      "sourceId": "aa-briefcase-v1-1",
+      "metric": "AA-Briefcase v1.1 Elo",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-opus-5-5",
+          "score": 1780,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; default fallback enabled; published 95% CI -11 / +11 Elo"
+        },
+        {
+          "modelRef": "anthropic/claude-sonnet-5-5",
+          "score": 1746,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; default fallback enabled; published 95% CI -10 / +10 Elo"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 1669,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; default fallback enabled; published 95% CI -9 / +10 Elo"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 1649,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; no fallback specified in variant label; published 95% CI -9 / +10 Elo"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 1544,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; no fallback specified in variant label; published 95% CI -10 / +11 Elo"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 1443,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; no fallback specified in variant label; published 95% CI -10 / +11 Elo"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-sol",
+          "score": 1364,
+          "effort": "xhigh",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; no fallback specified in variant label; published 95% CI -10 / +10 Elo"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 1202,
+          "effort": "high",
+          "conditions": "AA-Briefcase v1.1; 91 tasks across four scenarios; independent task runs; no fallback specified in variant label; published 95% CI -9 / +10 Elo"
+        }
+      ]
+    },
+    {
+      "category": "scientific_coding",
+      "sourceId": "aa-scicode-v1-0-1",
+      "metric": "AA SciCode v1.0.1 subproblem pass@1 (%)",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "anthropic/claude-opus-5-5",
+          "score": 65.0462962962963,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback).",
+          "sourceId": "aa-model-claude-opus-5-5-xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 60.8796296296296,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: Claude Fable 5.1 (Adaptive Reasoning, Xhigh Effort, Default Fallback).",
+          "sourceId": "aa-model-claude-fable-5-1-xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-sonnet-5-5",
+          "score": 57.2916666666667,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: Claude Sonnet 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback).",
+          "sourceId": "aa-model-claude-sonnet-5-5-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 57.0601851851852,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: GPT-5.6 Sol (xhigh).",
+          "sourceId": "aa-model-gpt-5-6-sol-xhigh"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 56.5972222222222,
+          "effort": "high",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: Gemini 3.8 Flash (high).",
+          "sourceId": "aa-model-gemini-3-8-flash"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 55.6712962962963,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: GPT-6 Astra (xhigh).",
+          "sourceId": "aa-model-gpt-6-astra-xhigh"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 55.6712962962963,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: Claude Opus 5 (Adaptive Reasoning, Xhigh Effort).",
+          "sourceId": "aa-model-claude-opus-5-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-sol",
+          "score": 55.0925925925926,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: GPT-6 Sol (xhigh).",
+          "sourceId": "aa-model-gpt-6-sol-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-6-luna",
+          "score": 51.7361111111111,
+          "effort": "xhigh",
+          "conditions": "AA SciCode v1.0.1; 288 test subproblems, 3 repeats; pass@1; scientist-annotated background; code execution all tests pass; isolated executors, 300s grading timeout. Variant: GPT-6 Luna (xhigh).",
+          "sourceId": "aa-model-gpt-6-luna-xhigh"
+        }
+      ]
+    },
+    {
+      "category": "tool_execution",
+      "sourceId": "terminal-bench-4-current",
+      "metric": "Official Terminal-Bench 4.0 resolution rate (%)",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 57.88,
+          "effort": "xhigh",
+          "conditions": "Codex harness; 330 trials; 95% CI +/-2.72 percentage points; submitted 2026-09-03; model-plus-harness result, not isolated model quality; Astra and Fable have equal displayed xhigh scores and overlapping intervals; no unique leader"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 57.88,
+          "effort": "xhigh",
+          "conditions": "Claude Code harness; 330 trials; 95% CI +/-3.36 percentage points; submitted 2026-09-01; model-plus-harness result, not isolated model quality; Astra and Fable have equal displayed xhigh scores and overlapping intervals; no unique leader"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 53.94,
+          "effort": "xhigh",
+          "conditions": "Claude Code harness; 330 trials; 95% CI +/-3.17 percentage points; submitted 2026-07-24; model-plus-harness result, not isolated model quality"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 37.27,
+          "effort": "max",
+          "conditions": "Codex harness; 330 trials; 95% CI +/-3.78 percentage points; submitted 2026-06-26; model-plus-harness result, not isolated model quality; no official xhigh row observed, max retained as an explicitly mismatched fallback reference"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 19.09,
+          "effort": "high",
+          "conditions": "mini-SWE-agent harness; 330 trials; 95% CI +/-3.36 percentage points; submitted 2026-09-02; model-plus-harness result, not isolated model quality"
+        }
+      ]
+    },
+    {
+      "category": "knowledge_calibration",
+      "sourceId": "aa-omniscience-current",
+      "metric": "AA-Omniscience Index (calibration proxy, not judge validation)",
+      "higherIsBetter": true,
+      "entries": [
+        {
+          "modelRef": "openai-codex/gpt-6-astra",
+          "score": 43.4166666666667,
+          "effort": "xhigh",
+          "conditions": "GPT-6 Astra (xhigh); 6000 questions,1repeat,no tools; no per-model CI/evaluation date exposed"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5-5",
+          "score": 42.65,
+          "effort": "xhigh",
+          "conditions": "Claude Opus 5.5 (Adaptive Reasoning, Xhigh Effort, Default Fallback); 6000 questions, 1 repeat, no tools; calibration proxy not judge validation; no per-model CI or evaluation date exposed"
+        },
+        {
+          "modelRef": "anthropic/claude-fable-5-1",
+          "score": 42.3833333333333,
+          "effort": "xhigh",
+          "conditions": "Claude Fable 5.1 (Adaptive Reasoning, Xhigh Effort, Default Fallback); 6000 questions, 1 repeat, no tools; calibration proxy not judge validation; no per-model CI or evaluation date exposed"
+        },
+        {
+          "modelRef": "anthropic/claude-opus-5",
+          "score": 35.38333333333333,
+          "effort": "xhigh",
+          "conditions": "Re-observed individual model page 2026-09-28; 6000-question abstention-aware index; no per-model CI/evaluation date exposed",
+          "sourceId": "aa-model-claude-opus-5-xhigh"
+        },
+        {
+          "modelRef": "google/gemini-3.8-flash",
+          "score": 29.55,
+          "effort": "high",
+          "conditions": "Gemini 3.8 Flash (high); 6000 questions, 1 repeat, no tools; calibration proxy not judge validation; no per-model CI or evaluation date exposed"
+        },
+        {
+          "modelRef": "anthropic/claude-sonnet-5-5",
+          "score": 23.5,
+          "effort": "xhigh",
+          "conditions": "Re-observed individual model page 2026-09-28; 6000-question abstention-aware index; no per-model CI/evaluation date exposed",
+          "sourceId": "aa-model-claude-sonnet-5-5-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.6-sol",
+          "score": 20.983333333333334,
+          "effort": "xhigh",
+          "conditions": "GPT-5.6 Sol (xhigh); reobserved individual model page2026-09-28; no per-model CI/evaluation date exposed",
+          "sourceId": "aa-model-gpt-5-6-sol-xhigh"
+        },
+        {
+          "modelRef": "openai-codex/gpt-5.5",
+          "score": 20.516666666666666,
+          "effort": "xhigh",
+          "conditions": "Re-observed individual model page 2026-09-28; 6000-question abstention-aware index; no per-model CI/evaluation date exposed; historical/deprecated",
+          "sourceId": "aa-model-gpt-5-5"
+        }
+      ]
+    }
+  ]
+}

@@ -3,16 +3,29 @@ import { getBundledModel, type GeneratedProvider } from "@oh-my-pi/pi-catalog";
 import { defaultConfig, ROLES } from "../../src/core/config";
 import { isKilnToolModelSupported, resolveRoleOn, otherProvider } from "../../src/providers/models";
 import { registerRuntimeEffort } from "../../src/providers/effort-runtime";
-import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting, validateEvidenceSnapshot } from "../../src/routing/adaptive";
+import { DEFAULT_EVIDENCE_SNAPSHOT, planAdaptiveRouting as planCurrentRouting, validateEvidenceSnapshot } from "../../src/routing/adaptive";
 import { workloadPreferenceFor } from "../../src/routing/workloads";
 import { applyWorkflowProfile } from "../../src/workflow/profile";
 import { compileWorkflow, planWorkflow } from "../../src/workflow/plan";
 
+import historicalSnapshot from "../../src/routing/evidence-2026-09-09.json";
+
 const now = new Date("2026-09-09T12:00:00Z");
 const providers = new Set(["anthropic", "openai-codex"]);
-const snapshot = () => structuredClone(DEFAULT_EVIDENCE_SNAPSHOT) as any;
+const snapshot = () => structuredClone(historicalSnapshot) as any;
+
+const planAdaptiveRouting: typeof planCurrentRouting = (cfg, available, seed, clock = now, evidence = snapshot(), options) =>
+  planCurrentRouting(cfg, available, seed, clock, evidence, options);
 
 describe("adaptive routing planner", () => {
+  test("equal producer scores disclose deterministic order without inventing a winner margin", () => {
+    const { report } = planAdaptiveRouting(defaultConfig(), providers, "Write a clear essay", now);
+    expect(report.selectedRoleRefs.generator).toBe("anthropic/claude-fable-5-1");
+    expect(report.roleReasons.generator.reason).toContain("Published point-score tie");
+    expect(report.roleReasons.generator.reason).toContain("deterministic evidence order");
+    expect(report.roleReasons.generator.reason).not.toContain("reviewer vendor preference");
+  });
+
   test("records role-specific selection evidence and independence rather than opaque model names", () => {
     const { report } = planAdaptiveRouting(defaultConfig(), providers, "Find a business idea", now);
     for (const role of ROLES) {
@@ -243,7 +256,10 @@ describe("adaptive routing planner", () => {
     const opus = entries.find((entry: any) => entry.modelRef === "anthropic/claude-opus-5");
     entries.find((entry: any) => entry.modelRef === "openai-codex/gpt-6-astra").score = 0;
     entries.find((entry: any) => entry.modelRef === "openai-codex/gpt-5.5").score = opus.score;
-    expect(planAdaptiveRouting(defaultConfig(), providers, "business", now, evidence).report.selectedRoleRefs.judge).toBe("openai-codex/gpt-5.5");
+    const { report } = planAdaptiveRouting(defaultConfig(), providers, "business", now, evidence);
+    expect(report.selectedRoleRefs.judge).toBe("openai-codex/gpt-5.5");
+    expect(report.roleReasons.judge.reason).toContain("Published point-score tie");
+    expect(report.roleReasons.judge.reason).toContain("reviewer vendor preference");
   });
 
   test("fails before execution when budget or provider constraints cannot be met", () => {
@@ -337,6 +353,34 @@ describe("benchmark evidence validation", () => {
     for (const url of ["http://example.com", "https://user:secret@example.com/"]) {
       const evidence = snapshot(); evidence.sources[0].url = url;
       expect(() => validateEvidenceSnapshot(evidence, now)).toThrow("credential-free HTTPS");
+    }
+  });
+});
+
+describe("current reviewed benchmark bundle", () => {
+  test("refreshes all six categories together and routes from the September 28 evidence", () => {
+    const clock = new Date("2026-09-28T12:00:00Z");
+    const evidence = validateEvidenceSnapshot(DEFAULT_EVIDENCE_SNAPSHOT, clock);
+    expect(evidence.asOf).toBe("2026-09-28");
+    expect(evidence.rankings).toHaveLength(6);
+    for (const ranking of evidence.rankings) {
+      const leaders = [...ranking.entries].sort((a, b) => ranking.higherIsBetter ? b.score - a.score : a.score - b.score);
+      const leader = ranking.category === "tool_execution" || ranking.category === "knowledge_calibration"
+        ? "openai-codex/gpt-6-astra" : ranking.category === "expert_knowledge"
+        ? "anthropic/claude-fable-5-1" : "anthropic/claude-opus-5-5";
+      expect(leaders[0]!.modelRef).toBe(leader);
+      expect(evidence.sources.some((source) => source.id === ranking.sourceId)).toBe(true);
+    }
+    for (const seed of ["Write a clear essay", "Investigate physics research", "Find a business idea"]) {
+      const { report } = planCurrentRouting(defaultConfig(), providers, seed, clock);
+      expect(report.evidence.asOf).toBe(evidence.asOf);
+      expect(report.selectedRoleRefs.generator).toBe(seed.includes("physics") ? "anthropic/claude-fable-5-1" : "anthropic/claude-opus-5-5");
+      expect(report.selectedRoleRefs.builder).toBe("openai-codex/gpt-6-astra");
+      expect(report.selectedRoleRefs.auditor).toBe("anthropic/claude-opus-5-5");
+      expect(report.selectedRoleRefs.reflector).toBe("openai-codex/gpt-6-astra");
+      expect(report.roleReasons.builder.reason).toContain("Published point-score tie");
+      expect(report.roleReasons.builder.reason).toContain("deterministic evidence order");
+      expect(report.selectedRoleRefs.judge).not.toBe(report.selectedRoleRefs.generator);
     }
   });
 });
