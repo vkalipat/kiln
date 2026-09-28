@@ -2,6 +2,8 @@
 
 Kiln can discover new native harness releases automatically and prepare a tested draft pull request. It does not silently change a running harness or automatically merge dependency updates. The automation is source code in this checkout; scheduling starts only after the workflow is merged to the repository's default branch, Actions is enabled, and repository policy allows GitHub Actions to create pull requests.
 
+This workflow updates dependencies and catalog compatibility, not model rankings. Benchmark selection uses a separately reviewed, dated snapshot. See the [September 28 ranking refresh](model-routing-2026-09-28.md) and [benchmark import instructions](adaptive-routing.md#refreshing-benchmark-evidence).
+
 ## Scheduling and manual checks
 
 [The workflow](../.github/workflows/frontier-update.yml) polls at minute 17 every six hours in UTC and supports **Run workflow** on the default branch. GitHub scheduling can be delayed; this is a recurring poll, not an immediate release webhook or an availability guarantee. Manual dispatches from other branches are skipped. Runs are serialized.

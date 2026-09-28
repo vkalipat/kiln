@@ -9,7 +9,7 @@ describe("operator step routing", () => {
   test("routes each VCC step from one prepared admitted plan with task-appropriate effort and a stable context record", () => {
     const cfg = defaultConfig();
     const seed = "Develop a VirtualCell Perturb-seq model for single-cell transcriptomics";
-    const prepared = prepareStepRouting(cfg, providers, seed, new Date("2026-09-14T12:00:00Z"));
+    const prepared = prepareStepRouting(cfg, providers, seed, new Date("2026-09-28T12:00:00Z"));
     const research = resolveStep("research", cfg, providers, seed, { prepared });
     const ideate = resolveStep("ideate", cfg, providers, seed, { prepared });
     const implement = resolveStep("implement", cfg, providers, seed, { prepared });
@@ -33,7 +33,7 @@ describe("operator step routing", () => {
   test("review routing excludes the actual producer inside an explicit admitted model pool", () => {
     const cfg = defaultConfig();
     const seed = "Find a business idea";
-    const prepared = prepareStepRouting(cfg, providers, seed, new Date("2026-09-14T12:00:00Z"));
+    const prepared = prepareStepRouting(cfg, providers, seed, new Date("2026-09-28T12:00:00Z"));
     const producer = resolveStep("ideate", cfg, providers, seed, { prepared });
     const ordinary = resolveStep("review", cfg, providers, seed, {
       prepared, currentStep: "ideate", producerRef: producer.modelRef,
@@ -54,7 +54,7 @@ describe("operator step routing", () => {
   test("rejects unsupported pools and stale or tampered prepared routing instead of inventing a fallback", () => {
     const cfg = defaultConfig();
     const seed = "Implement a parser";
-    const prepared = prepareStepRouting(cfg, providers, seed, new Date("2026-09-14T12:00:00Z"));
+    const prepared = prepareStepRouting(cfg, providers, seed, new Date("2026-09-28T12:00:00Z"));
     expect(() => resolveStep("implement", cfg, providers, seed, {
       prepared, modelPool: ["anthropic/not-a-real-model"],
     })).toThrow("unsupported");

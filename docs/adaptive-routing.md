@@ -42,7 +42,7 @@ Resuming, forming, building, or judging that run uses the frozen routing instead
 
 ## Refreshing benchmark evidence
 
-Ordinary runs use cached structured evidence. The bundled snapshot records the sources inspected for the [September 9 quality-first review](model-routing-2026-09-09.md). Entries preserve benchmark effort and conditions, and plans explicitly disclose excluded models, Code Mode models without the exact supported adapter, and effort mismatches. A fresh rank is not inferred from a model name or release date.
+Ordinary runs use cached structured evidence. The bundled snapshot records the sources inspected for the [September 28 review of all six categories](model-routing-2026-09-28.md). The comparison prefers xhigh variants and labels exceptions. Entries preserve benchmark effort and conditions, and plans explicitly disclose tied point scores, excluded models, Code Mode models without the exact supported adapter, and effort mismatches. A fresh rank is not inferred from a model name or release date.
 
 ```sh
 kiln model benchmarks show --json
@@ -50,6 +50,8 @@ kiln model benchmarks import ./reviewed-benchmarks.json --reviewed
 ```
 
 Import requires a reviewed structured snapshot with source URLs, dates, and supported categories. Validation checks data shape and admissibility, not whether a website's score is truthful. Check source pages and benchmark settings before acknowledging review. New snapshots affect new plans; they do not mutate running sessions. Stale evidence is disclosed and cannot silently select a supposedly current winner.
+
+A home-imported snapshot overrides the bundle for CLI workflow planning, so updating source code alone does not refresh that override. Import the reviewed snapshot to update it. Native operator planning uses the bundled evidence. Restart and begin a new session after updating the bundle; frozen runs preserve their prior routing. The six-hour dependency updater does not refresh benchmark rankings.
 
 Expired evidence stops new adaptive plans with a refresh/manual-mode instruction. The snapshot declares its maximum age (bounded to 90 days); ordinary runs do not claim to have rechecked its sources.
 

@@ -10,7 +10,7 @@ import {
   COMPUTATIONAL_BIOLOGY_ASTRA_MODEL,
   workloadPreferenceFor,
 } from "./workloads";
-import bundled from "./evidence-2026-09-09.json";
+import bundled from "./evidence-2026-09-28.json";
 
 export const CATEGORIES = ["general_reasoning", "expert_knowledge", "business", "scientific_coding", "tool_execution", "knowledge_calibration"] as const;
 type Category = typeof CATEGORIES[number];
@@ -209,6 +209,7 @@ export function planAdaptiveRouting(
     });
   };
   const chosen = {} as Record<Role, Seat>;
+  const tieReasons: Partial<Record<Role, string>> = {};
   const pick = (role: Role, category: Category, producer?: Seat, requiredVendor?: string): Seat => {
     let candidates = pool(category, role).filter((candidate) => (!producer || candidate.model.id !== producer.model.id)
       && (!requiredVendor || vendor(String(candidate.model.provider)) === requiredVendor));
@@ -218,6 +219,17 @@ export function planAdaptiveRouting(
       candidates = [preferredWorkloadSeat, ...candidates.filter((candidate) =>
         !(candidate.model.id === preferredWorkloadSeat.model.id
           && vendor(String(candidate.model.provider)) === vendor(String(preferredWorkloadSeat.model.provider))))];
+    }
+    const pointRanking = snapshot.rankings.find((entry) => entry.category === category)!;
+    const firstScore = candidates[0] ? pointRanking.entries.find((entry) => aliases(entry.modelRef).includes(candidates[0]!.ref))?.score : undefined;
+    const tied = firstScore === undefined ? [] : candidates.filter((candidate) =>
+      pointRanking.entries.find((entry) => aliases(entry.modelRef).includes(candidate.ref))?.score === firstScore);
+    const tiedIdentities = new Set(tied.map((candidate) => `${vendor(String(candidate.model.provider))}/${candidate.model.id}`));
+    if (tiedIdentities.size > 1) {
+      const crossVendor = producer && tied.some((candidate) => vendor(String(candidate.model.provider)) !== vendor(String(producer.model.provider)));
+      tieReasons[role] = `Published point-score tie among ${tiedIdentities.size} eligible model identities at ${firstScore}; `
+        + (crossVendor ? "reviewer vendor preference breaks the tie, then deterministic evidence order." : "deterministic evidence order breaks the tie.")
+        + " Equal reported scores do not establish equal underlying quality.";
     }
     if (producer) {
       const ranking = snapshot.rankings.find((entry) => entry.category === category)!;
@@ -405,6 +417,7 @@ export function planAdaptiveRouting(
         ? "Selected by the prospective user/workload preference for computational biology and virtual-cell producing roles; this preference is not biology benchmark evidence."
         : evidenceEntry ? `Highest-ranked eligible candidate for ${categories[role]} after provider, tool-support, and role constraints.`
         : `Configured catalog fallback: no eligible ranked candidate satisfied ${categories[role]} role constraints.`,
+      selectedByWorkloadPreference ? "" : tieReasons[role] ?? "",
       against ? `Distinct model from ${against}; benchmark quality takes priority, with vendor diversity breaking score ties.` : "No producer/reviewer separation required for this seat.",
       role === "prober" ? "Prober remains on the generator's vendor." : "",
       "Effort follows the configured role setting and supported model levels; benchmark scores do not establish quality at that effort.",
