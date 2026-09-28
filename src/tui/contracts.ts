@@ -68,6 +68,8 @@ export interface TuiCheckpointSnapshot {
 }
 
 export interface TuiSnapshot {
+  /** Operator conversations accept idle followups; legacy runs keep explicit resume semantics. */
+  mode?: "operator";
   runId?: string;
   phase: TuiPhase;
   state: TuiRunState;
@@ -77,6 +79,8 @@ export interface TuiSnapshot {
   branch?: string;
   effort: TuiEffort;
   transcript: readonly TuiTranscriptEntry[];
+  /** Selected operator route; worker recommendations do not change this selection. */
+  routing?: { kind: string; modelRef: string; effort?: string };
   checkpoint?: TuiCheckpointSnapshot;
   /** Local credential state only; computing it never refreshes a token or contacts a provider. */
   auth?: { required: boolean; configured: readonly string[] };

@@ -8,7 +8,9 @@ const sha256 = (text: string) => createHash("sha256").update(text).digest("hex")
 const ASSERTION_FILES = [
   { path: "test/cli/run-workflow.test.ts", sha256: "48e6b8ddccfc0439b63aa1f8e8af083e3caf0f34a656a83dd1b9b3857278dc18" },
   { path: "test/phases/form.test.ts", sha256: "d4d1406c2313f31ae7ac200ea76f5f51dc1058f24de573eab596d0010e0bd8c2" },
-  { path: "test/build/builder.test.ts", sha256: "8dd740b98a70438490b28e075a36fde33c7df3459ee14f45d694761822b1aa42" },
+  // 2026-09-28: fixtures now freeze every feature; integrity cases cover short and long
+  // oracles. The exact-seed case and all seven evaluated behavioral assertions are retained.
+  { path: "test/build/builder.test.ts", sha256: "f9a4788920e27cbd6f7c06eca258ad18e0343a4884a4b29ccfedf1fee16ad774" },
 ] as const;
 
 const CASES = [

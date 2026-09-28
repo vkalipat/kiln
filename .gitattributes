@@ -1,0 +1,2 @@
+# Unified diff context contains a required prefix before upstream tabs and blank lines.
+patches/*.patch -whitespace

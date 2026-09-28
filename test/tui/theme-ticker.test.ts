@@ -8,7 +8,7 @@ describe("TUI theme and ticker", () => {
     for (const style of Object.values(PHASE_STYLE)) expect(style("x")).toMatch(/^\x1b\[38;2;/);
   });
 
-  test("one injected 200ms timer drives every subscriber and stops after the last", () => {
+  test("one injected 100ms timer drives every subscriber and stops after the last", () => {
     let callback: (() => void) | undefined;
     const intervals: number[] = [];
     const cleared: unknown[] = [];
@@ -20,7 +20,7 @@ describe("TUI theme and ticker", () => {
     let first = 0; let second = 0;
     const offFirst = ticker.subscribe(() => { first += 1; });
     const offSecond = ticker.subscribe(() => { second += 1; });
-    expect(intervals).toEqual([200]);
+    expect(intervals).toEqual([100]);
     callback?.();
     expect([ticker.frame, first, second]).toEqual([1, 1, 1]);
     offFirst(); expect(cleared).toHaveLength(0);

@@ -63,8 +63,8 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
     void this.#run(Promise.resolve().then(() => this.#shuttingDown ? undefined : this.options.controller.start(input))); }
 
   submit(text: string): void {
-    const value = text.trim();
-    if (!value || this.#disposed || this.#shuttingDown) return;
+    const value = this.#snapshot.mode === "operator" ? text : text.trim();
+    if (!value.trim() || this.#disposed || this.#shuttingDown) return;
     const shortcut = authShortcut(value);
     if (shortcut) {
       this.prompt.setText("");
@@ -82,7 +82,7 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
       this.#openOnboarding();
       return;
     }
-    if (!seed && this.#snapshot.state !== "running") {
+    if (!seed && this.#snapshot.state !== "running" && this.#snapshot.mode !== "operator") {
       this.prompt.setText(text);
       this.#notice(`Run is ${this.#snapshot.state}; resume it before sending`);
       return;
@@ -226,15 +226,15 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
   #syncStatus(): void {
     this.prompt.setStatus(this.#promptStatus());
     this.#syncSubmitState();
-    const title = `${this.#snapshot.state === "running" ? "∼ " : ""}kiln · ${this.#snapshot.phase}`
+    const title = `${this.#snapshot.state === "running" ? "∼ " : ""}kiln · ${this.#snapshot.mode === "operator" ? "operator" : this.#snapshot.phase}`
       .replace(/[\x00-\x1f\x7f]/g, " ");
     this.options.terminal.setTitle(title);
     this.options.terminal.setProgress(this.#snapshot.state === "running");
   }
 
   #promptStatus() { return {
-    phase: this.#snapshot.phase, state: this.#snapshot.state, costUsd: this.#snapshot.costUsd,
-    effort: this.#snapshot.effort, activity: this.#snapshot.activity,
+    phase: this.#snapshot.phase, mode: this.#snapshot.mode, state: this.#snapshot.state, costUsd: this.#snapshot.costUsd,
+    effort: this.#snapshot.effort, activity: this.#snapshot.activity, routing: this.#snapshot.routing,
     directory: this.#snapshot.directory, branch: this.#snapshot.branch,
   }; }
   #syncQueue(): void {
@@ -244,7 +244,7 @@ export class KilnTuiApp implements Component, OverlayFocusOwner {
 
   #syncSubmitState(): void {
     this.prompt.editor.disableSubmit = this.#pending.some((item) => item.seed)
-      || Boolean(this.#snapshot.runId && this.#snapshot.state !== "running");
+      || Boolean(this.#snapshot.runId && this.#snapshot.state !== "running" && this.#snapshot.mode !== "operator");
   }
 
   async #settlePrompt(id: number, work: Promise<void | TuiSendResult>): Promise<void> {

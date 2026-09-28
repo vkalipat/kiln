@@ -6,6 +6,7 @@ import { authCommand } from "./commands/auth";
 import { ideasCommand, judgeCommand } from "./commands/ideas";
 import { runCommand } from "./commands/run";
 import { projectCommand } from "./commands/project";
+import { catalogCommand } from "./commands/catalog";
 import { inspectCommand } from "./commands/inspect";
 import { controlledCommand } from "./controlled-command";
 import { pauseCommand } from "./commands/pause";
@@ -25,6 +26,10 @@ import type { runCheckpoint } from "../phases/checkpoint";
 import type { AuthStore } from "../providers/auth";
 import { initHome } from "../core/home";
 import { kilnHome } from "../core/paths";
+import { taskCommand } from "./commands/task";
+import { memoryCommand } from "./commands/memory";
+import { routeSuggestCommand } from "./commands/route-suggest";
+import type { createOperatorRuntime } from "../operator/runtime";
 
 export interface CliIo {
   write: (s: string) => void;
@@ -36,6 +41,8 @@ export interface CliIo {
 
 /** Test/embedding seams: skip network auth and role resolution, and never block on real stdin. */
 export interface CliDeps {
+  /** Same operator entry used by the TUI; injected only for provider-free tests. */
+  createOperatorRuntime?: typeof createOperatorRuntime;
   /** Staged evaluators disable this because their per-seat effort table is already frozen. */
   runtimeEffort?: { enabled?: boolean; profile?: string; frozen?: Partial<Record<Role, string | null>> };
   /** Exercise task-adaptive orchestration with injected provider models in offline integrations. */
@@ -79,7 +86,7 @@ export interface CliDeps {
 
 export const VERSION = "0.1.0";
 
-const USAGE = 'usage: kiln [tui] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
+const USAGE = 'usage: kiln [tui] | kiln task [resume RUN_ID] <prompt> ... | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
 
 /** `--k v` and `--k=v` set string flags; a bare `--k` sets `true`. Everything else is a command word. */
 export function parseArgs(argv: string[]): { cmd: string[]; flags: Record<string, string | boolean> } {
@@ -115,10 +122,15 @@ export async function main(
     return 0;
   }
   const { cmd, flags } = parseArgs(argv);
+  if (cmd[0] === "model" && cmd[1] === "catalog") return catalogCommand(cmd.slice(2), flags, io, deps);
+  // Explicit memory operations do not initialize a model home or provider session.
+  if (cmd[0] === "memory") return memoryCommand(cmd.slice(1), flags, io, deps);
   if (cmd[0] !== "evals" && cmd[0] !== "evolve") {
     initHome(typeof flags.home === "string" ? flags.home : kilnHome(), { plugAndPlay: true });
   }
   if (cmd.length === 0 || cmd[0] === "tui") return tuiCommand(flags, io, deps);
+  if (cmd[0] === "model" && cmd[1] === "suggest") return routeSuggestCommand(cmd.slice(2), flags, io, deps);
+  if (cmd[0] === "task") return controlledCommand(deps, (scoped) => taskCommand(cmd.slice(1), flags, io, scoped));
   if (cmd[0] === "evals") return evalsCommand(cmd.slice(1), flags, io, { ...(deps.evals ?? {}), cli: deps.evals?.cli ?? deps });
   if (cmd[0] === "evolve") return evolveCommand(cmd.slice(1), flags, io, { ...(deps.evolve ?? {}), cli: deps.evolve?.cli ?? deps });
   if (cmd[0] === "build" && cmd[1] === "pause") return pauseCommand(cmd[2], flags, io);

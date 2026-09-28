@@ -24,7 +24,41 @@ Without a global link, run `bun run kiln` in the repository.
 
 Bare `kiln` opens an editable prompt. Type a task and press Enter; if unauthenticated, the provider chooser opens then and retains the task for submission after connection. No model request is made before submission. Fresh homes enable adaptive routing and autonomous selection; existing configuration choices are preserved.
 
-### Automatic workflows and context
+### Persistent operator conversations
+
+Bare `kiln` and `kiln task` use the native OMP operator. The operator keeps one session across follow-ups, delegates bounded work to native task workers, and invokes the research/ideation module when useful. Messages during a running turn steer that turn; messages after it finishes start a follow-up in the same session.
+
+```sh
+kiln task "Implement the requested feature and check it" --cwd . --budget 10
+kiln task resume RUN_ID "Continue with the remaining checks"
+kiln --run RUN_ID
+```
+
+`--budget` and `--wall-seconds` set a new task's allocations. Resume preserves the saved working directory and allocations. A completed operator turn is not an independent quality approval. Inspect its artifacts, checks, and unresolved work before calling the task complete.
+
+The TUI displays work type, selected model and routed effort. Worker routes and pending reviewer recommendations appear in the transcript without replacing the main operator's model display. A failed switch does not publish an applied route.
+
+When `TYPESAFE_API_KEY` is configured, new operator runs use Jev for explicit `route_step auto` handoffs; ordinary prompts make no routing request. Resumed runs preserve their saved routing behavior. Kiln selects the model from its admitted pool and meters classification against the same allocation. Set `KILN_JEV_ENABLED=0` for local routing only. See [integration behavior and limits](optional-integrations.md).
+
+The welcome screen uses large amber-white lettering and a rotating wireframe core with orbital trails, with smaller layouts for narrow terminals. `NO_ANIMATION=1` keeps a static frame. Once a conversation starts, its layout stays stable.
+
+### Current native toolkit
+
+The instantiated operator exposes file reading/writing/editing, shell execution, JavaScript evaluation, glob/grep search, web search, todos, and native `task`/`hub` delegation. Discoverable tools also include AST editing, debugging, and Kiln's `team`, `context_publish`, `context_query`, `route_step`, `ideate`, and `ask_user`. Browser control is available through the `browser` API inside `eval`; it is not the separate Jev ultrafast browser agent.
+
+MCP, LSP, computer control, automatic memory and skill discovery are currently disabled in this embedded session. Available platform tools and connected provider access still depend on the local installation. Kiln's explicit Hindsight CLI is separate from native automatic memory.
+
+### Scoped feature teams
+
+For parallel implementation, the operator plans independently useful features with the `team` tool, then delegates through native `task` workers. Each plan includes an objective, literal relative file/directory paths (no globs), dependencies and acceptance criteria. Workers query the current ledger revision, claim their feature, and hand off artifact hashes plus check reports. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
+
+Only the actual root operator session can plan, accept or reopen features. Worker reports remain `unverified_claim`; acceptance records `parent_reviewed` after rechecking artifact identity and the parent's criterion assessment. Dependency artifact hashes are checked recursively before downstream claims and acceptance. Hashes establish which bytes were reviewed; they do not establish that a reported command ran or that a scientific conclusion is valid.
+
+Use parent `reopen` with a reason when a worker fails or a handoff needs repair. The prior ownership, handoff and review are archived before another worker claims the feature. Reopening a dependency must wait for or resolve active dependent work. The durable ledger is `<run>/team.json`; its statuses are historical, and current artifact checks still matter. Path claims coordinate collaborators without isolating native shell/file tools. Keep the root responsible for integration checks and unresolved requirements.
+
+### Explicit phase workflows and context
+
+`kiln run new` uses the durable phase pipeline described below. Opening a saved phase-pipeline run in the TUI preserves that workflow's resume and checkpoint behavior.
 
 - A newly planned, explicit local implementation task requiring no research preserves the original request in deterministic intake. It does not spend a model call paraphrasing that request or run competitive ideation.
 - Formation mechanically validates the plan and obtains independent review. A coherent approval freezes the exact reviewed artifacts; corrections trigger bounded repair and re-review. Builds still require executable checks and usable independent auditing.
@@ -46,7 +80,7 @@ kiln auth login anthropic
 kiln auth login openai
 ```
 
-The login callback normally completes in the browser. Kiln also accepts the pasted redirect or code when a callback is unavailable.
+The local login callback uses Kiln's branded browser page and terminal prompts. The page acknowledges receipt; the terminal confirms connection only after token exchange succeeds. Provider-hosted consent continues to show the registered OAuth application's actual identity. Kiln also accepts the pasted redirect or code when a callback is unavailable.
 
 Enter an API key through the masked prompt:
 
@@ -96,7 +130,7 @@ Use `--home DIR` to select a separate Kiln home. Otherwise Kiln uses `KILN_HOME`
 
 ## Terminal controls
 
-The prompt border shows cost, phase, current activity, and directory.
+The prompt border shows cost, work type or phase, current activity, and directory. Operator sessions also show the selected model and routed effort. The effort control is separate from model selection; a change during work is queued for the next turn.
 
 | Key | Action |
 | --- | --- |
@@ -107,6 +141,10 @@ The prompt border shows cost, phase, current activity, and directory.
 | `Ctrl+C` | Exit |
 
 Set `NO_ANIMATION=1` to disable animation. The display label `ultra` maps to the stored effort level `xhigh`.
+
+## Optional integration commands
+
+`kiln model suggest "task summary" --step implement --json` inspects a local step/model suggestion. Add `--jev` to explicitly request TypeSafe classification using `TYPESAFE_API_KEY`; the response remains advisory. `kiln memory status`, `retain`, and `recall` provide explicit project-scoped Hindsight access. See [configuration, examples and limits](optional-integrations.md).
 
 ## Durability and recovery
 

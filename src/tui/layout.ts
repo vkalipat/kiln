@@ -2,6 +2,7 @@ import { Ellipsis, truncateToWidth, visibleWidth } from "@oh-my-pi/pi-tui";
 import type { TuiSnapshot } from "./contracts";
 import { PromptBox } from "./promptbox";
 import { ansi, EFFORT_STYLE } from "./theme";
+import { renderKilnBrand } from "./brand";
 import { TranscriptView } from "./transcript";
 
 function fit(line: string, width: number): string {
@@ -22,14 +23,14 @@ export function renderWelcome(width: number, height: number, snapshot: Readonly<
   if (width === 0 || height === 0) return [];
 
   const accent = EFFORT_STYLE[snapshot.effort];
-  const embers = ["· : • ● • : ·", ": • ● • : · ·", "• ● • : · · :", "● • : · · : •", "• : · · : • ●", ": · · : • ● •", "· · : • ● • :"];
   const content = [
-    accent(embers[Math.abs(Math.trunc(frame)) % embers.length]!),
+    ...renderKilnBrand(width, height, frame),
     ansi.bold("Welcome to Kiln"),
-    "Shape an idea into a durable build.",
-    "",
-    snapshot.auth?.required ? "Type a prompt; connect a provider when you send" : "Type a prompt and press Enter",
-    `${accent(snapshot.effort)} · Ctrl+S effort · Ctrl+O commands · ? help`,
+    ...(height >= 8 ? [ansi.dim("Shape an idea into a durable build."), ""] : []),
+    snapshot.auth?.required
+      ? width >= 55 ? "Type a prompt; connect a provider when you send" : "Type a task · connect on send"
+      : "Type a task and press Enter",
+    width >= 55 ? `${accent(snapshot.effort)} · Ctrl+S effort · Ctrl+O commands · ? help` : "Ctrl+O commands · ? help",
   ];
   const visible = content.slice(0, height);
   const before = Math.max(0, Math.floor((height - visible.length) / 2));

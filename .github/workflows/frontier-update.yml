@@ -1,0 +1,72 @@
+name: Review frontier dependency updates
+
+on:
+  schedule:
+    - cron: '17 */6 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: frontier-update
+  cancel-in-progress: false
+
+jobs:
+  verify:
+    # Manual dispatch on a topic branch must not run a write-capable publication job.
+    if: github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      changed: ${{ steps.update.outputs.changed }}
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - name: Create disposable verification branch
+        run: git checkout -b "automation/frontier-run-${GITHUB_RUN_ID}"
+      - name: Discover, preserve patch, install and verify
+        id: update
+        env:
+          KILN_FRONTIER_DISPOSABLE: '1'
+        run: bun scripts/frontier-update.ts --apply --artifacts "$RUNNER_TEMP/frontier-update"
+      - name: Upload exact verified files and advisory catalog audit
+        if: steps.update.outputs.changed == 'true'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: frontier-update-${{ github.run_id }}
+          path: ${{ runner.temp }}/frontier-update/
+          if-no-files-found: error
+          retention-days: 14
+
+  draft:
+    needs: verify
+    if: needs.verify.outputs.changed == 'true' && github.ref == format('refs/heads/{0}', github.event.repository.default_branch)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    steps:
+      # Fresh runner, trusted base, no dependency install: upgraded code never sees this token.
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          ref: ${{ github.sha }}
+          persist-credentials: false
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2
+        with:
+          bun-version: 1.4.0
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: frontier-update-${{ github.run_id }}
+          path: ${{ runner.temp }}/frontier-update
+      - name: Validate dependency-only delta and open draft review
+        env:
+          GH_TOKEN: ${{ github.token }}
+          KILN_FRONTIER_PUBLISH: '1'
+        run: bun scripts/frontier-update.ts --publish --artifacts "$RUNNER_TEMP/frontier-update"

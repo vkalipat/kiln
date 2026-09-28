@@ -24,28 +24,28 @@ export const PROVIDER_ONBOARDING_CHOICES: readonly ProviderOnboardingChoice[] = 
   {
     id: "anthropic-subscription",
     label: "Anthropic subscription",
-    description: "Sign in with Anthropic OAuth",
+    description: "Connect Claude to Kiln",
     commandId: "auth: login anthropic",
     args: ["--method", "oauth"],
   },
   {
     id: "chatgpt-subscription",
     label: "ChatGPT subscription",
-    description: "Sign in with ChatGPT OAuth",
+    description: "Connect ChatGPT to Kiln",
     commandId: "auth: login openai",
     args: ["--method", "oauth"],
   },
   {
     id: "anthropic-api-key",
     label: "Anthropic API key",
-    description: "Enter a key for Anthropic",
+    description: "Use Anthropic API billing",
     commandId: "auth: login anthropic",
     args: ["--method", "api-key"],
   },
   {
     id: "openai-api-key",
     label: "OpenAI API key",
-    description: "Enter a key for OpenAI",
+    description: "Use OpenAI API billing",
     commandId: "auth: login openai",
     args: ["--method", "api-key"],
   },
@@ -63,6 +63,9 @@ class OnboardingBody implements Component {
 
   render(width: number): readonly string[] {
     return [
+      fitLine("Choose how Kiln connects to your models.", width),
+      fitLine("Subscription sign-in opens your provider's login.", width),
+      fitLine("", width),
       fitLine("Environment credentials are detected automatically.", width),
       fitLine("ANTHROPIC_API_KEY · OPENAI_API_KEY", width),
       fitLine("", width),
@@ -111,7 +114,7 @@ export class ProviderOnboarding implements Component {
     };
     this.list.onCancel = () => this.onCancel?.();
     this.overlay = new RoundedOverlay(new OnboardingBody(this.list), {
-      title: "Connect a provider",
+      title: "Welcome to Kiln",
       footer: "Enter connect · Esc cancel",
     });
   }

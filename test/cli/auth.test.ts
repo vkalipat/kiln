@@ -39,6 +39,9 @@ describe("auth command", () => {
     expect(f.store.get("openai-codex")).toMatchObject({ type: "oauth", email: "person@example.com" });
     expect(f.out.join("")).not.toContain("manual-secret");
     expect(f.out.join("")).not.toContain("access-secret");
+    expect(f.out.join("")).toContain("Kiln · Connect OpenAI");
+    expect(f.out.join("")).toContain("Continue with ChatGPT in your browser");
+    expect(f.out.join("")).toContain("Connected OpenAI to Kiln as person@example.com");
   });
 
   test("supports device login and stores the SDK alias", async () => {
@@ -91,6 +94,7 @@ describe("auth command", () => {
     expect(prompted).toBe(false);
     expect(f.store.get("openai")).toMatchObject({ type: "api_key", key: "sk-from-stdin" });
     expect(f.out.join("")).not.toContain("sk-from-stdin");
+    expect(f.out.join("")).toContain("Saved OpenAI API key for Kiln");
   });
 
   test("redacts submitted OAuth values from provider errors", async () => {

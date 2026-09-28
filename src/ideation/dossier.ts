@@ -94,7 +94,8 @@ function parseProbability(text: string): number | undefined {
 
 function parseAxes(text: string): Record<string, string> {
   const out: Record<string, string> = {};
-  for (const line of bullets(text)) {
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.replace(/^\s*-\s+/, "").trim();
     const i = line.indexOf(":");
     if (i <= 0) continue;
     const name = line.slice(0, i).replace(/\s+/g, " ").trim();

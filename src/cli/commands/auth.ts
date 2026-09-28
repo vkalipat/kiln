@@ -28,7 +28,7 @@ function createStore(home: string, deps: CliDeps): AuthStore {
 }
 
 async function chooseProvider(io: CliIo, deps: CliDeps): Promise<(typeof PROVIDER_CHOICES)[number] | undefined> {
-  io.write("Connect a provider\n  1) Anthropic · Claude Pro/Max\n  2) OpenAI · ChatGPT Plus/Pro\n");
+  io.write("Welcome to Kiln\nConnect your models\n  1) Anthropic · Claude Pro/Max\n  2) OpenAI · ChatGPT Plus/Pro\n");
   const answer = (await askText("Provider [1]: ", io, deps)).trim();
   if (!answer || answer === "1") return PROVIDER_CHOICES[0];
   if (answer === "2") return PROVIDER_CHOICES[1];
@@ -58,6 +58,7 @@ async function login(
     return value;
   };
   try {
+    io.write(`Kiln · Connect ${choice.name}\nContinue with ${choice.id === "openai" ? "ChatGPT" : "Anthropic"} in your browser, then return to Kiln.\n`);
     const credential = await auth.login(provider, {
       signal,
       onAuth: (info) => {
@@ -71,7 +72,7 @@ async function login(
       onProgress: (message) => io.write(`${message}\n`),
     });
     const who = credential.type === "oauth" ? credential.email ?? credential.accountId : undefined;
-    io.write(`Connected ${choice.name}${who ? ` as ${who}` : ""}.\n`);
+    io.write(`Connected ${choice.name} to Kiln${who ? ` as ${who}` : ""}.\nContinue in Kiln.\n`);
     return 0;
   } catch (error) {
     const raw = error instanceof Error ? error.message : String(error);
@@ -79,7 +80,7 @@ async function login(
     const fallback = choice.id === "openai" && provider !== "openai-codex-device"
       ? " Try `kiln auth login openai --device` for headless or blocked callback environments."
       : "";
-    (io.error ?? io.write)(`Login failed: ${message}${fallback}\n`);
+    (io.error ?? io.write)(`Kiln could not connect ${choice.name}: ${message}${fallback}\n`);
     return 1;
   } finally { if (localController) process.off("SIGINT", onSigint); }
 }
@@ -88,12 +89,12 @@ async function setKey(provider: string | undefined, flags: Record<string, string
   const choice = providerChoice(provider);
   if (!choice) { (io.error ?? io.write)(AUTH_USAGE); return 2; }
   let key: string;
-  try { key = (await (flags["api-key-stdin"] === true ? readSecretStdin(deps) : askSecret("API key: ", io, deps))).trim(); }
+  try { key = (await (flags["api-key-stdin"] === true ? readSecretStdin(deps) : askSecret(`Kiln · ${choice.name} API key: `, io, deps))).trim(); }
   catch { (io.error ?? io.write)("API key input cancelled.\n"); return 1; }
   if (!key) { (io.error ?? io.write)("API key cannot be empty.\n"); return 2; }
   if (auth.get(choice.apiKey)) io.write(`Replacing the stored ${choice.name} credential.\n`);
   auth.setApiKey(choice.apiKey, key);
-  io.write(`Connected ${choice.name} with an API key.\n`);
+  io.write(`Saved ${choice.name} API key for Kiln.\n`);
   return 0;
 }
 
