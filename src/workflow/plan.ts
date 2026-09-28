@@ -112,10 +112,12 @@ export function planWorkflow(seed: string, options: { adaptive?: boolean } = {})
       : "The seed asks for exploration, so the default route ends at the idea checkpoint.");
 
   // Test-runner subcommands describe verification, not a request for idea discovery.
-  const strategyText = seed.replace(/\bunittest\s+discover\b/gi, "test discovery");
+  const strategyText = seed.replace(/\bunittest\s+discover\b/gi, "test discovery")
+    // Explicitly declined search is not a request to run it; keep positive requests elsewhere.
+    .replace(/\b(?:no|without|skip|do not|don['’]t)\s+(?:any\s+)?(?:ideation|ideate|brainstorm(?:ing)?|alternatives?)(?:\s*(?:,|or|and)\s*(?:ideation|ideate|brainstorm(?:ing)?|alternatives?))*/gi, "");
   const directTask = intent === "supplied_concept" && goal === "deliver"
     && /\b(cli|script|utility|function|parser|converter|calculator|command.line|unit tests?|csv|json|markdown|directory|files?)\b/i.test(seed)
-    && !/\b(ideas?|brainstorm|alternatives?|explore|discover|novel)\b/i.test(strategyText);
+    && !/\b(ideas?|ideation|ideate|brainstorm(?:ing)?|alternatives?|explore|discover|novel)\b/i.test(strategyText);
   const researchText = seed.replace(/\b(?:no|without|do not|don['’]t)\s+(?:external\s+|web\s+|online\s+)?research\b/gi, "");
   const researchDeclined = /\b(?:no|without|do not|don['’]t)\s+(?:external\s+|web\s+|online\s+)?(?:research|browsing|web search)\b/i.test(seed);
   const needsExternalFacts = !researchDeclined && /\b(research|market|customers?|biology|medicine|medical|clinical|protein|scientific|api|integration|online|web service|pricing)\b|\b(?:latest|current)\s+(?:papers?|prices?|versions?|releases?|news|guidelines|regulations|trends)\b/i.test(researchText);

@@ -320,7 +320,10 @@ export function createBuilderDriver(deps: PhaseDeps, options: BuilderDriverOptio
           acceptanceArtifact: deps.run.features,
           auditArtifact: deps.run.audits,
         });
-        const acceptanceContext = contract.acceptanceReference ? verifiedAcceptanceContext(deps, feature) : "";
+        // Every handoff revalidates the immutable oracle, regardless of its prompt size.
+        // Keep the full JSON transport only for contracts that cannot fit in the pin.
+        const verifiedContext = verifiedAcceptanceContext(deps, feature);
+        const acceptanceContext = contract.acceptanceReference ? verifiedContext : "";
         brain.pushContract(contract.text);
         const before = await options.git.revParseHead(options.project.repo);
         const result = await brain.run(`Implement exactly ${feature.id}: ${feature.title}. Use the supplied feature contract and finish the repository work now.${acceptanceContext}`);

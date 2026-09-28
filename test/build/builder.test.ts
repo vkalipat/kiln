@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
@@ -24,8 +24,8 @@ const shellFeature = (id = "f01", command = "printf ok"): Feature => ({ id, titl
 const oracleItems = Array.from({ length: 60 }, (_, id) => ({ id, label: `case ${id}: café $value`, enabled: id % 2 === 0 }));
 const longCommand = `bun -e 'const assert = require("node:assert/strict");\nconst actual = await Bun.file("result.json").json();\n${oracleItems.map((item, i) => `assert.deepEqual(actual.items[${i}], ${JSON.stringify(item)});`).join("\n")}\nassert.equal(actual.items.length, ${oracleItems.length});\nconsole.log("verified")'`;
 
-function freezeAcceptance(s: ReturnType<typeof setup>, feature: Feature) {
-  const file = { version: 1 as const, init: { needs: [] }, features: [feature] };
+function freezeAcceptance(s: { run: ReturnType<typeof createRun> }, ...features: Feature[]) {
+  const file = { version: 1 as const, init: { needs: [] }, features };
   writeFileSync(s.run.features, JSON.stringify(file));
   writeFileSync(s.run.acceptanceLock, JSON.stringify(writeAcceptanceLock(file, "spec-hash")));
 }
@@ -42,6 +42,8 @@ function setup(model: unknown) {
     home, run, record, cfg: defaultConfig(), models: () => ({ model: model as never, ref: "mock/builder" }),
     apiKeyFor: async () => "key", effort: "medium", streamFn: streamMock as never, limiter: new Limiter(1),
   };
+  // Production formation freezes the full feature plan before any builder starts.
+  freezeAcceptance({ run }, ...Array.from({ length: 5 }, (_, i) => shellFeature(`f0${i + 1}`)));
   return { home, run, project, record, git, deps, model: model as any };
 }
 
@@ -190,27 +192,29 @@ describe("runBuilderSession", () => {
   });
 
   test("missing or tampered frozen acceptance prevents dispatch and is revalidated on reused drivers", async () => {
-    const feature = shellFeature("f01", longCommand);
-    for (const defect of ["missing features", "missing lock", "changed artifact", "changed lock", "changed argument", "missing feature"] as const) {
-      const model = createMockModel({ responses: [{ content: ["done"] }] as never });
-      const s = setup(model);
-      const driver = createBuilderDriver(s.deps, { project: s.project, git: s.git, turnCap: 10, usdCap: 10 });
-      if (defect === "missing features") {
-        writeFileSync(s.run.acceptanceLock, "{}");
-      } else if (defect === "missing lock") {
-        writeFileSync(s.run.features, JSON.stringify({ version: 1, init: { needs: [] }, features: [feature] }));
-      } else {
-        freezeAcceptance(s, feature);
-        // A prior successful feature must not cache authorization for the next attempt.
-        expect((await driver.runFeature(feature, { attempt: 1 })).stopped).toBe("done");
-        if (defect === "changed artifact") writeFileSync(s.run.features, readFileSync(s.run.features, "utf8").replace("case 0", "forged"));
-        if (defect === "changed lock") writeFileSync(s.run.acceptanceLock, "{}");
-        if (defect === "missing feature") freezeAcceptance(s, { ...feature, id: "f02" });
+    for (const command of ["printf verified-short-oracle", longCommand]) {
+      const feature = shellFeature("f01", command);
+      for (const defect of ["missing features", "missing lock", "changed artifact", "changed lock", "changed argument", "missing feature"] as const) {
+        const model = createMockModel({ responses: [{ content: ["done"] }] as never });
+        const s = setup(model);
+        const driver = createBuilderDriver(s.deps, { project: s.project, git: s.git, turnCap: 10, usdCap: 10 });
+        if (defect === "missing features") {
+          unlinkSync(s.run.features);
+        } else if (defect === "missing lock") {
+          unlinkSync(s.run.acceptanceLock);
+        } else {
+          freezeAcceptance(s, feature);
+          // A prior successful feature must not cache authorization for the next attempt.
+          expect((await driver.runFeature(feature, { attempt: 1 })).stopped).toBe("done");
+          if (defect === "changed artifact") writeFileSync(s.run.features, readFileSync(s.run.features, "utf8").replace(command === longCommand ? "case 0" : "verified-short-oracle", "forged"));
+          if (defect === "changed lock") writeFileSync(s.run.acceptanceLock, "{}");
+          if (defect === "missing feature") freezeAcceptance(s, { ...feature, id: "f02" });
+        }
+        const calls = s.model.calls.length;
+        const supplied = defect === "changed argument" ? shellFeature("f01", command + "\n# changed") : feature;
+        await expect(driver.runFeature(supplied, { attempt: 2 })).rejects.toThrow("integrity: cannot hand off frozen builder acceptance");
+        expect(s.model.calls).toHaveLength(calls);
       }
-      const calls = s.model.calls.length;
-      const supplied = defect === "changed argument" ? shellFeature("f01", longCommand + "\n# changed") : feature;
-      await expect(driver.runFeature(supplied, { attempt: 2 })).rejects.toThrow("integrity: cannot hand off frozen builder acceptance");
-      expect(s.model.calls).toHaveLength(calls);
     }
   });
   test("a long frozen oracle reaches the first native model context intact and still executes", async () => {

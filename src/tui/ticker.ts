@@ -23,7 +23,7 @@ export class TuiTicker implements TickSource {
 
   constructor(options: TickerOptions = {}) {
     this.animations = options.animations ?? process.env.NO_ANIMATION !== "1";
-    this.intervalMs = options.intervalMs ?? 200;
+    this.intervalMs = options.intervalMs ?? 100;
     this.#setInterval = options.setIntervalFn ?? setInterval;
     this.#clearInterval = options.clearIntervalFn ?? clearInterval;
   }

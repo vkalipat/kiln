@@ -17,6 +17,8 @@ import type { TickSource } from "./ticker";
 import { STATIC_TICKER } from "./ticker";
 
 export interface PromptBoxStatus {
+  mode?: "operator";
+  routing?: { kind: string; modelRef: string; effort?: string };
   phase: TuiPhase;
   state: TuiRunState;
   costUsd: number;
@@ -94,8 +96,10 @@ export function renderPromptBottom(width: number, status: PromptBoxStatus, frame
 
 export function renderPromptTop(width: number, status: PromptBoxStatus): { content: string; width: number } {
   const cost = ansi.dim(` $${status.costUsd.toFixed(2)} `);
-  const phase = PHASE_STYLE[status.phase](` ${status.phase} `);
-  const content = truncateToWidth(cost + phase, Math.max(0, width), Ellipsis.Unicode);
+  const phase = PHASE_STYLE[status.phase](` ${status.mode === "operator" ? status.routing?.kind ?? "work" : status.phase} `);
+  const route = status.mode === "operator" && status.routing
+    ? ansi.dim(` ${status.routing.modelRef}${status.routing.effort ? ` · ${status.routing.effort}` : ""} `) : "";
+  const content = truncateToWidth(cost + phase + route, Math.max(0, width), Ellipsis.Unicode);
   return { content, width: visibleWidth(content) };
 }
 
@@ -118,6 +122,9 @@ export class PromptBox implements Component {
   #queue: readonly QueuedPrompt[] = [];
   #showHelp = false;
   #disposeStyle: () => void;
+  #onSubmit?: Editor["onSubmit"];
+  #expandedText = "";
+  #beforeClear = "";
 
   constructor(options: PromptBoxOptions) {
     this.#status = options.status;
@@ -129,6 +136,17 @@ export class PromptBox implements Component {
     });
     this.#disposeStyle = registerComposerStyle(style);
     this.editor = new Editor(editorTheme);
+    // Native Editor trims submissions and clears its paste table before onSubmit. Retain the
+    // expanded buffer at that boundary for operator requests, without changing legacy input.
+    this.editor.onChange = () => {
+      const next = this.editor.getExpandedText();
+      this.#beforeClear = this.#expandedText;
+      this.#expandedText = next;
+    };
+    this.editor.onSubmit = (text) => {
+      const raw = this.#status.mode === "operator" && this.#beforeClear.trim() === text ? this.#beforeClear : text;
+      this.#onSubmit?.(raw);
+    };
     this.editor.setBorderStyle(id);
     this.editor.setPaddingX(1);
     this.editor.setScrollbarVisible(true);
@@ -139,8 +157,8 @@ export class PromptBox implements Component {
   get focused(): boolean { return this.editor.focused; }
   set focused(value: boolean) { this.editor.focused = value; }
   get debugChildren(): readonly Component[] { return [this.editor]; }
-  get onSubmit(): Editor["onSubmit"] { return this.editor.onSubmit; }
-  set onSubmit(value: Editor["onSubmit"]) { this.editor.onSubmit = value; }
+  get onSubmit(): Editor["onSubmit"] { return this.#onSubmit; }
+  set onSubmit(value: Editor["onSubmit"]) { this.#onSubmit = value; }
 
   setStatus(status: PromptBoxStatus): void { this.#status = status; }
   setQueue(queue: readonly QueuedPrompt[]): void { this.#queue = [...queue]; }

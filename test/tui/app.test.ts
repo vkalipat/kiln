@@ -129,9 +129,10 @@ describe("kiln TUI app", () => {
       },
     });
     try {
-      const welcome = lifecycle.app.render(72).map(plain).find((line) => line.includes("●"));
+      const welcome = lifecycle.app.render(72).find((line) => plain(line).includes("██"));
       advance!();
-      expect(lifecycle.app.render(72).map(plain).find((line) => line.includes("●"))).not.toBe(welcome);
+      expect(welcome).toBeDefined();
+      expect(lifecycle.app.render(72).find((line) => plain(line).includes("██"))).not.toBe(welcome);
       controller.setSnapshot({ state: "running", activity: "Thinking" });
       await eventually(() => terminal.writes.join("").includes("Thinking"));
       const first = terminal.writes.length;

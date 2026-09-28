@@ -35,7 +35,9 @@ describe("provider onboarding", () => {
       for (const line of lines) expect(visibleWidth(line)).toBeLessThanOrEqual(width);
     }
     const rendered = onboarding.render(80).join("\n");
-    expect(rendered).toContain("Connect a provider");
+    expect(rendered).toContain("Welcome to Kiln");
+    expect(rendered).toContain("Choose how Kiln connects to your models.");
+    expect(rendered).toContain("provider's login");
     expect(rendered).toContain("Environment credentials are detected automatically.");
     expect(rendered).toContain("ANTHROPIC_API_KEY · OPENAI_API_KEY");
   });

@@ -1,4 +1,4 @@
-import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync } from "node:fs";
+import { existsSync, lstatSync, readFileSync, readlinkSync, realpathSync, statSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
 import type { CheckPhase } from "../core/events";
@@ -151,6 +151,8 @@ export async function runCheck(acceptance: Acceptance, o: RunCheckOptions): Prom
           full = `refused file path outside repo: ${displayPath}\n`;
         } else if (!existsSync(lexical)) {
           full = `file not found: ${displayPath}\n`;
+        } else if (!statSync(lexical).isFile()) {
+          full = `not a regular file: ${displayPath}\n`;
         } else if (acceptance.contains === undefined) {
           ok = true;
           full = `file exists: ${displayPath}\n`;
@@ -180,7 +182,8 @@ export async function runCheck(acceptance: Acceptance, o: RunCheckOptions): Prom
   throwIfRunCancelled();
   const full = processResult.stdout + processResult.stderr;
   const predicateMatched = acceptance.expect === undefined ? undefined : predicateMatches(acceptance.expect, full);
-  const ok = processResult.exitCode === 0 && predicateMatched !== false;
+  // A successful termination handler is not successful acceptance after the deadline.
+  const ok = !processResult.timedOut && processResult.exitCode === 0 && predicateMatched !== false;
   writeAtomic(outputPath, full);
   return recordResult(o, {
     checkId,

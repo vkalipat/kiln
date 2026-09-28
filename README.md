@@ -2,6 +2,8 @@
 
 Kiln is a local, terminal-first agent harness for researching ideas and delivering verified work. Give it a task and it chooses a workflow, assigns compatible models from your connected providers, and saves the work as an inspectable run.
 
+Start with the [user manual](docs/user-manual.md) or its [Word copy](docs/Kiln-User-Manual.docx). The [architecture and integrations guide](docs/architecture-and-integrations.md) explains the native toolkit, Jev, Hindsight, and the contributions of the four reference projects. [Frontier maintenance](docs/frontier-updates.md) covers recurring, tested dependency updates. [Jev design](docs/jev-design.md) explains the experimental execution architecture and evaluation limits.
+
 It is built around two practical problems:
 
 - Agents lose requirements and evidence between handoffs. Kiln keeps the original request, frozen contracts, source-backed research, checks, and audits on disk.
@@ -39,9 +41,19 @@ Without a global link, use `bun run kiln`. Kiln stores its configuration and run
 
 ## Run a task
 
-The TUI shows the current phase, activity, cost, and output. `Ctrl+O` opens the command palette, `Ctrl+S` changes effort, `Alt+T` expands tool details, and `Esc` requests a saved pause.
+The TUI opens a persistent native operator conversation. It shows the selected model, work type, reasoning effort, activity, and recorded cost. Follow-up messages continue the session; messages sent during work steer it. A reviewer recommendation appears as a pending handoff and does not change the operator's displayed model. `Ctrl+O` opens the command palette, `Ctrl+S` changes effort, `Alt+T` expands tool details, and `Esc` requests a saved pause.
 
-The CLI uses the same run path:
+Use `task` for the same operator from a script:
+
+```sh
+kiln task "Build a local CSV validation CLI with tests" --cwd . --budget 10
+kiln task resume RUN_ID "Run the checks and explain any remaining gaps"
+kiln --run RUN_ID
+```
+
+The operator uses native tasks for parallel work and can invoke Kiln's research and ideation pipeline when the request needs it. A settled operator turn means the conversation finished its work for that turn; it does not certify the deliverable. Check artifacts and verification evidence.
+
+The explicit phase pipeline remains available through `run`:
 
 ```sh
 kiln model plan "Find a practical GFP minibinder research direction" --json
@@ -81,6 +93,8 @@ Workers do not share hidden model state. They exchange durable artifacts and bou
 - research packets carry findings, provenance, fingerprints, and explicit gaps;
 - selected dossiers are included directly when they fit and referenced by path and hash when they do not;
 - full check and audit output stays on disk even when a later prompt receives a compact view.
+
+For parallel implementation, the native operator's `team` tool records feature objectives, owned paths, dependencies, acceptance criteria and handoffs in `team.json`. Workers claim disjoint scopes; the parent reviews exact artifact evidence before acceptance. Dependency evidence is rechecked before downstream work proceeds. Failed or abandoned assignments can be reopened with their prior reports retained. This coordinates agents; it is not an OS filesystem sandbox. Parent acceptance records a review, not independent proof that every reported command ran. The deterministic `team` tool action `review_packet` organizes every criterion with declared artifact/check mappings and current identities; it neither accepts the feature nor establishes completeness.
 
 Completed compatible research can survive an interrupted reviewer or synthesis step. Resume reuses it without replaying scouts, but stale, failed, or coverage-inadequate caches cannot become approvals.
 
@@ -132,6 +146,10 @@ Run dollar allocations are planning targets, not hard invoice ceilings or comple
 
 Reflection always writes a digest and may propose a playbook delta. It does not modify the live playbook. Promotion requires separate evaluation, integrity checks, and an eligible result. This is gated configuration improvement, not automatic self-modification.
 
+With `TYPESAFE_API_KEY` configured, [Jev](docs/optional-integrations.md) classifies explicit `route_step auto` handoffs before Kiln selects an admitted model and effort. New runs use boundary routing: ordinary prompts make no routing request. Resume preserves saved routing behavior. Usage shares the run budget, repeated decisions are cached, and uncertain decisions preserve the current route. Set `KILN_JEV_ENABLED=0` to disable it. `kiln model suggest` also supports explicit suggestions; Hindsight project memory remains explicitly invoked through `kiln memory`.
+
+Start a new run with `KILN_JEV_WORKFLOWS=1 kiln` to enable experimental `browser_task` and `research_task` tools. The browser tool adapts a pinned jev-ultrafast snapshot and batched action decisions to an existing owned native tab; the research tool captures bounded HTTPS evidence with citations, contradictions and unknowns. Neither a passed browser assertion nor a passage label proves the full user goal. No separate Python agent or Chrome process is launched. Identical decisions share transport or accepted in-memory results; browser recovery only retries proven pre-input stale observations. See [design rationale](docs/jev-design.md), [usage and limits](docs/optional-integrations.md#browser-execution-and-completion-discipline) and the [2026-09-28 validation record](docs/testing/2026-09-28-jev-workflows.md). Live Jev performance remains unqualified; no TypeSafe key was available for that evaluation.
+
 ## Inspect, watch, and recover
 
 ```sh
@@ -158,6 +176,7 @@ A run directory contains ordinary files that can be inspected without Kiln:
 | `ideas/`, `probes/`, `tournament.jsonl`, `frontier.json` | Candidate dossiers, checks, comparisons, and shortlist |
 | `features.json`, `acceptance.lock`, `state.jsonl`, `audits.jsonl` | Frozen build contract and verification history |
 | `record.jsonl`, `status.json`, `metrics.json` | Event journal, resumable state, usage, and cost |
+| `operator.json`, `operator-context.json`, `team.json` | Native session state, shared evidence, and scoped feature handoffs |
 | `project/` and `reflect/` | Delivered repository and proposed learning digest |
 
 ## Evidence and limits

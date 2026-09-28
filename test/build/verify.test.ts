@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { classifyCheck, runCheck, type RunCheckOptions } from "../../src/build/verify";
@@ -73,6 +73,18 @@ describe("runCheck shell", () => {
     expect(event).toMatchObject({ timedOut: true, overrunMs: s.result.overrunMs });
   });
 
+  test("a deadline remains failed when a signal handler exits successfully", async () => {
+    const s = await check({
+      type: "shell",
+      command: "trap 'printf cleanup-complete; exit 0' TERM; while :; do sleep 0.02; done",
+      expect: { type: "substring", value: "cleanup-complete" },
+      timeoutSeconds: 0.2,
+    });
+    expect(s.result).toMatchObject({ ok: false, exitCode: 0, timedOut: true, predicateMatched: true });
+    expect(classifyCheck(s.result)).toBe("deadline");
+    expect(s.record.read().find((event) => event.t === "check")).toMatchObject({ ok: false, timedOut: true });
+  });
+
   test("retains five MiB under the default cap while returning a 1000-character excerpt", async () => {
     const s = await check({ type: "shell", command: "yes x | head -c 5242880" }, { timeoutMs: 10_000 });
     expect(s.result.ok).toBe(true);
@@ -100,6 +112,25 @@ describe("runCheck file", () => {
     const misses = await runCheck({ type: "file", path: "artifact.txt", contains: "gamma" }, { ...s.options, checkId: "check-3" });
     expect(misses.ok).toBe(false);
     expect(classifyCheck(misses)).toBe("verify");
+  });
+
+  test("requires a regular file while allowing in-repo symlinks to files", async () => {
+    const s = setup();
+    mkdirSync(join(s.cwd, "artifact"));
+    writeFileSync(join(s.cwd, "actual.txt"), "verified");
+    symlinkSync("artifact", join(s.cwd, "directory-link"));
+    symlinkSync("actual.txt", join(s.cwd, "file-link"));
+    for (const [index, path] of [".", "artifact", "directory-link"].entries()) {
+      const result = await runCheck({ type: "file", path }, { ...s.options, checkId: `non-file-${index}` });
+      expect(result.ok).toBe(false);
+      expect(result.output).toContain("not a regular file");
+      expect(classifyCheck(result)).toBe("verify");
+      expect(readFileSync(result.outputPath, "utf8")).toContain("not a regular file");
+    }
+    const linked = await runCheck({ type: "file", path: "file-link", contains: "verified" }, { ...s.options, checkId: "linked-file" });
+    expect(linked.ok).toBe(true);
+    const events = s.record.read().filter((event) => event.t === "check");
+    expect(events.map((event) => event.ok)).toEqual([false, false, false, true]);
   });
 
   test("refuses absolute, escaping and physical symlink escapes", async () => {

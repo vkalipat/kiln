@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { getEnvApiKey, getOAuthApiKey, getProviderDefinition, refreshOAuthToken } from "@oh-my-pi/pi-ai";
 import type { OAuthCredentials, OAuthLoginCallbacks } from "@oh-my-pi/pi-ai";
 import { writeAtomic } from "../core/paths";
+import { renderKilnCallbackPage } from "../onboarding/callback-page";
 
 export type StoredCredential =
   | ({ type: "oauth"; provider: string } & OAuthCredentials)
@@ -191,6 +192,7 @@ export class AuthStore {
     const active = () => { if (ui.signal?.aborted) throw abortError(); };
     active();
     const result = await abortable(def.login({
+      renderCallbackPage: renderKilnCallbackPage,
       onAuth: (info) => { active(); ui.onAuth(info); },
       onPrompt: (p) => { active(); return ui.onPrompt(p.message, { placeholder: p.placeholder, allowEmpty: p.allowEmpty }); },
       onManualCodeInput: ui.onManualCodeInput ? () => { active(); return ui.onManualCodeInput!(); } : undefined,
