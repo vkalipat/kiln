@@ -61,7 +61,7 @@ describe('Kiln local callback page', () => {
   });
   test('default upstream page remains available when hook omitted', async () => {
     const f = await fixture();
-    try { const response = await fetch(`${f.redirect}?code=synthetic&state=state-private`); expect(await response.text()).toContain('oh my pi'); await f.running; }
+    try { const response = await fetch(`${f.redirect}?code=synthetic&state=state-private`); const html = await response.text(); expect(response.status).toBe(200); expect(html).toMatch(/<title>omp · authentication<\/title>/); expect(html).not.toContain('Kiln'); await f.running; }
     finally { f.ctrl.abort(); await f.running.catch(() => {}); }
   });
   test('receipt remains pending while token exchange is unfinished', async () => {

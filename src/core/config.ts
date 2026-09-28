@@ -164,17 +164,20 @@ function validateBudgetShare(share: Record<Phase, number>): void {
 }
 
 const STRONG = ["anthropic/claude-opus-4-8", "openai-codex/gpt-5.5", "openai/gpt-5.5"];
-// Each provider has a second strong tier before the generator's model. That keeps judge and
-// generator independent even when only one provider is authenticated (record §2).
+// Prefer a distinct judge model on each provider before the generator fallback.
+// Different models within one vendor do not establish independent evidence.
 const STRONG_OTHER = [
   "openai-codex/gpt-5.4",
+  "openai-codex/gpt-6-astra",
   "anthropic/claude-sonnet-5",
   "openai/gpt-5.4",
   "openai-codex/gpt-5.5",
   "anthropic/claude-opus-4-8",
   "openai/gpt-5.5",
 ];
-const CHEAP = ["anthropic/claude-haiku-4-5", "openai-codex/gpt-5.4-mini", "openai/gpt-5.4-mini"];
+// Prefer economical models; the Codex frontier fallback preserves admission when
+// older mini models leave the catalog. It can cost more and remains budget-metered.
+const EFFICIENT = ["anthropic/claude-haiku-4-5", "openai-codex/gpt-5.4-mini", "openai/gpt-5.4-mini", "openai-codex/gpt-5.5"];
 
 export function defaultIdeation(): IdeationConfig {
   return {
@@ -228,15 +231,15 @@ export function defaultBuild(): BuildConfig {
 export function defaultConfig(): KilnConfig {
   const roles: Record<Role, string[]> = {
     brain: [...STRONG],
-    scout: [...CHEAP],
+    scout: [...EFFICIENT],
     judge: [...STRONG_OTHER],
     builder: [...STRONG],
     auditor: [...STRONG_OTHER],
     critic: [...STRONG_OTHER],
     reflector: [...STRONG],
     generator: [...STRONG],
-    prober: [...CHEAP],
-    arbiter: [...CHEAP],
+    prober: [...EFFICIENT],
+    arbiter: [...EFFICIENT],
   };
   return {
     roles,
@@ -281,7 +284,7 @@ export function defaultConfig(): KilnConfig {
           brain: ["anthropic/claude-fable-5-1"], builder: ["anthropic/claude-fable-5-1"],
           reflector: ["anthropic/claude-fable-5-1"], generator: ["anthropic/claude-fable-5-1"],
           judge: ["anthropic/claude-opus-5"], auditor: ["anthropic/claude-opus-5"], critic: ["anthropic/claude-opus-5"],
-          scout: [...CHEAP], prober: [...CHEAP], arbiter: [...CHEAP],
+          scout: [...EFFICIENT], prober: [...EFFICIENT], arbiter: [...EFFICIENT],
         },
         caps: { builderUsdCap: 2.512, auditorUsdCap: 0.6654, expectedAttemptUsd: 2.069, maxFeatures: 4 },
       },

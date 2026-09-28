@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { createOperatorRuntime, type OperatorEvent } from "../../src/operator/runtime";
 import { createOmpSession, type OmpSessionHandle } from "../../src/operator/session";
 import { AuthStore } from "../../src/providers/auth";

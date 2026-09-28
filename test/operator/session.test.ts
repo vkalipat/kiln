@@ -2,11 +2,45 @@ import { describe, expect, test } from "bun:test";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
 import { createOmpSession } from "../../src/operator/session";
 
+async function nativeSetting(settings: unknown, key: string, ...value: unknown[]): Promise<unknown> {
+  const port = settings as { get?: (key: string) => unknown; set?: (key: string, value: unknown) => void };
+  if (typeof port.get === "function" && typeof port.set === "function") {
+    return value.length ? port.set(key, value[0]) : port.get(key);
+  }
+  const registryPath = "@oh-my-pi/pi-coding-agent/config/registry";
+  const registry = await import(registryPath);
+  if (typeof registry.lookup !== "function") throw new Error("Native settings registry is unavailable");
+  const setting = registry.lookup(key);
+  if (!setting || typeof setting.get !== "function" || typeof setting.set !== "function") throw new Error("Unsupported native setting: " + key);
+  return value.length ? setting.set(settings, value[0]) : setting.get(settings);
+}
+
 describe("native OMP session adapter", () => {
+  test("credential resolution rejects cancellation after the host promise settles", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kiln-omp-auth-cancel-"));
+    const model = createMockModel({ id: "omp-auth-cancel" });
+    let resolveKey!: (key: string) => void;
+    const key = new Promise<string>((resolve) => { resolveKey = resolve; });
+    let registry!: NonNullable<NonNullable<Parameters<typeof createAgentSession>[0]>["modelRegistry"]>;
+    const handle = await createOmpSession({ cwd: root, stateDir: join(root, "state"), modelRef: `${model.provider}/${model.id}`, model: model as never, effort: "low", connectedProviders: [model.provider],
+      auth: { apiKeyFor: () => key, configuredProviders: (providers) => [...providers] }, streamFn: streamMock as never, contextFiles: [],
+      factory: async (options) => { registry = options.modelRegistry!; return createAgentSession(options); },
+    });
+    try {
+      const cancellation = new AbortController();
+      const pending = registry.getApiKeyForProvider(model.provider, handle.session.sessionManager.getSessionId(), { signal: cancellation.signal });
+      resolveKey("synthetic-host-key");
+      // Resolve Promise.race first, then abort before its finally/await continuation.
+      queueMicrotask(() => cancellation.abort(new Error("credential owner cancelled")));
+      await expect(pending).rejects.toThrow("credential owner cancelled");
+      expect(model.calls).toHaveLength(0);
+    } finally { await handle.dispose(); }
+  });
+
   test("startup failure releases admission and rejects task aliases from project personas", async () => {
     const root = mkdtempSync(join(tmpdir(), "kiln-omp-shadow-"));
     mkdirSync(join(root, ".omp", "agents"), { recursive: true });
@@ -42,9 +76,9 @@ describe("native OMP session adapter", () => {
       onModelMessage: (event, ctx) => { if (event.message.role === "assistant") observed.add(ctx.sessionManager.getSessionId()); },
       onBeforeModelCall: (ctx) => { guardedSessions.add(ctx.sessionManager.getSessionId()); return allowed; },
       factory: async (options) => {
-        options.settings!.set("async.enabled", false);
-        options.settings!.set("task.prewalk", false);
-        options.settings!.set("modelRoles", { default: `${model.provider}/${model.id}`, smol: `${model.provider}/${model.id}` });
+        await nativeSetting(options.settings!, "async.enabled", false);
+        await nativeSetting(options.settings!, "task.prewalk", false);
+        await nativeSetting(options.settings!, "modelRoles", { default: `${model.provider}/${model.id}`, smol: `${model.provider}/${model.id}` });
         options.extensions!.push((extension) => extension.registerProvider(model.provider, { api: "mock", apiKey: "synthetic-test-only", baseUrl: "https://synthetic.invalid", models: [{ id: model.id, name: "Synthetic", input: ["text"], contextWindow: 32000, maxTokens: 2000 }],
           streamSimple: (_model: unknown, context: Parameters<typeof streamMock>[1], opts: Parameters<typeof streamMock>[2]) => streamMock(model, context, opts),
         } as never));
@@ -58,9 +92,13 @@ describe("native OMP session adapter", () => {
       expect((result.details as { results: { exitCode: number; output: string }[] }).results[0]).toMatchObject({ exitCode: 0 });
       expect((result.details as { results: { output: string }[] }).results[0]!.output).toContain("NATIVE_CHILD_VERIFIED");
       expect(observed.size).toBe(2);
-      const hub = handle.session.agent.state.tools.find((t) => t.name === "hub")!;
-      const listed = await hub.execute("hub-contract", { op: "list" });
-      expect(listed.isError).not.toBe(true);
+      const hub = handle.session.agent.state.tools.find((t) => t.name === "hub");
+      if (hub) {
+        const listed = await hub.execute("hub-contract", { op: "list" });
+        expect(listed.isError).not.toBe(true);
+      } else {
+        expect(handle.session.agent.state.tools.some((t) => t.name === "wait")).toBe(true);
+      }
       const beforeDenied = model.calls.length;
       allowed = false;
       await task.execute("guard-contract", { context: "Synthetic guard only", tasks: [{ agent: "task", name: "Guarded", task: "Must not dispatch" }] });
@@ -85,20 +123,20 @@ describe("native OMP session adapter", () => {
       auth: { apiKeyFor: async () => "test-runtime-only-key", configuredProviders: (providers: readonly string[]) => [...providers] }, streamFn: streamMock as never, contextFiles: [],
       modelRoles: { default: `${model.provider}/${model.id}`, smol: `${model.provider}/${model.id}`, slow: `${model.provider}/${model.id}` },
       factory: async (sdkOptions: Parameters<typeof createAgentSession>[0]) => {
-        expect(sdkOptions!.settings!.get("edit.autoRepair.enabled")).toBe(false);
-        expect(sdkOptions!.settings!.get("features.unexpectedStopDetection")).toBe("mechanical");
-        expect(sdkOptions!.settings!.get("speech.enhanced")).toBe(false);
-        expect(sdkOptions!.settings!.get("defaultThinkingLevel")).not.toBe("auto");
-        expect(sdkOptions!.settings!.get("task.enableEffort")).toBe(true);
-        expect(sdkOptions!.settings!.get("modelRoles")).toEqual(options.modelRoles);
-        expect(sdkOptions!.settings!.get("compaction.enabled")).toBe(true);
+        expect(await nativeSetting(sdkOptions!.settings!, "edit.autoRepair.enabled")).toBe(false);
+        expect(await nativeSetting(sdkOptions!.settings!, "features.unexpectedStopDetection")).toBe("mechanical");
+        expect(await nativeSetting(sdkOptions!.settings!, "speech.enhanced")).toBe(false);
+        expect(await nativeSetting(sdkOptions!.settings!, "defaultThinkingLevel")).not.toBe("auto");
+        expect(await nativeSetting(sdkOptions!.settings!, "task.enableEffort")).toBe(true);
+        expect(await nativeSetting(sdkOptions!.settings!, "modelRoles")).toEqual(options.modelRoles);
+        expect(await nativeSetting(sdkOptions!.settings!, "compaction.enabled")).toBe(true);
         return createAgentSession(sdkOptions);
       },
     };
     const handle = await createOmpSession(options);
     const names = handle.session.getActiveToolNames();
     expect(names).toContain("task");
-    expect(names).toContain("hub");
+    expect(names.includes("hub") || names.includes("wait")).toBe(true);
     expect(names).not.toContain("ask");
     expect(typeof handle.session.compact).toBe("function");
     expect(typeof handle.session.steer).toBe("function");

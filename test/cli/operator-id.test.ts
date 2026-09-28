@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { main } from "../../src/cli/main";
 import { initHome } from "../../src/core/home";
 import { createRun, runPaths } from "../../src/core/run";
-import { createMockModel } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 
 const homes: string[] = [];
 afterEach(() => { for (const home of homes.splice(0)) rmSync(home, { recursive: true, force: true }); });

@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { createMockModel } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { CONTEXT_THRESHOLD_PERCENT, KEEP_RECENT_TOKENS, compactionSettings, contextPressure } from "../../src/brain/context";
 

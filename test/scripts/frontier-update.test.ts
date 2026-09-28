@@ -7,8 +7,8 @@ import { PACKAGES, AUTH_PATCH_SHA256, GATES, selectUpdate, migrateManifest, regi
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-const current = "18.1.14", target = "18.2.0", base = "a".repeat(40);
-const patchPath = "patches/@oh-my-pi%2Fpi-ai@18.1.14.patch";
+const current = "18.4.2", target = "18.5.0", base = "a".repeat(40);
+const patchPath = "patches/@oh-my-pi%2Fpi-ai@18.4.2.patch";
 const originalPatch = await readFile(join(import.meta.dir, "../../", patchPath), "utf8");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
 const manifest = (): Manifest => ({ name: "fixture", scripts: { test: "bun test" }, dependencies: Object.fromEntries(PACKAGES.map(name => [name, current])), patchedDependencies: { [`@oh-my-pi/pi-ai@${current}`]: patchPath } });
@@ -36,8 +36,8 @@ async function fixture() {
       await writeFile(join(cwd, "bun.lock"), "verified new lock\n");
       for (const section of originalPatch.split("diff --git ").slice(1)) {
         const path = /^a\/([^ ]+) b\//.exec(section)![1]!;
-        const inserted = section.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n");
-        const destination = join(cwd, "node_modules/@oh-my-pi/pi-ai", path); await mkdir(join(destination, ".."), { recursive: true }); await writeFile(destination, inserted);
+        const installed = section.split(/^@@ .* @@.*\n/m).slice(1).map(hunk => hunk.split("\n").filter(line => line.startsWith("+") || line.startsWith(" ")).map(line => line.slice(1)).join("\n")).join("\n");
+        const destination = join(cwd, "node_modules/@oh-my-pi/pi-ai", path); await mkdir(join(destination, ".."), { recursive: true }); await writeFile(destination, installed);
       }
     }
     return args.includes("catalog") ? '{"advisory":true,"runtimeAdmissionChanged":false}' : "";
@@ -122,6 +122,21 @@ test("installed patch omission fails closed even when install claims success", a
     return output;
   } })).rejects.toThrow("not installed exactly once");
   expect(f.commands.some(args => args[1] === "test")).toBe(false);
+});
+
+test("hook text in the wrong interface fails before typecheck or publication", async () => {
+  const f = await fixture();
+  await expect(applyUpdate({ ...f, fetchImpl: fetchFixture, run: async (args, cwd, capture) => {
+    const output = await f.run(args, cwd, capture);
+    if (args[1] === "install") {
+      const path = join(cwd, "node_modules/@oh-my-pi/pi-ai/src/registry/oauth/types.ts");
+      // Identical hook text exists once, but belongs to another interface.
+      await writeFile(path, (await readFile(path, "utf8")).replace("export interface OAuthController {", "export interface WrongController {"));
+    }
+    return output;
+  } })).rejects.toThrow("hook context differs");
+  expect(f.commands.some(args => args[1] === "run" || args[1] === "test")).toBe(false);
+  await expect(readFile(join(f.artifacts, "receipt.json"))).rejects.toThrow();
 });
 
 test("publisher rejects tampered scripts despite matching attacker-controlled receipt hashes", async () => {

@@ -52,6 +52,52 @@ export interface OmpSessionHandle {
   dispose(): Promise<void>;
 }
 
+type OperatorKeyResolver = (provider: string, sessionId?: string, signal?: AbortSignal) => Promise<string | undefined>;
+type KeyRequest = { signal?: AbortSignal };
+
+/**
+ * AuthStorage 18.1 flat API and 18.4 KeysApi share the same host-owned resolver.
+ * Availability is metadata only; discovery never receives a bearer. This adapter
+ * never installs runtime keys, OAuth rows, or fabricated stored credential IDs.
+ */
+export function installOperatorAuthStorage(storage: unknown, providers: readonly string[], resolve: OperatorKeyResolver): "flat" | "namespaced" {
+  if (!storage || typeof storage !== "object") throw new Error("Unsupported native auth storage");
+  const target = storage as Record<string, unknown>;
+  const admitted = new Set(providers);
+  const get = (provider: string, sessionId?: string, request?: KeyRequest) => {
+    if (!admitted.has(provider) || !sessionId) return Promise.resolve(undefined);
+    request?.signal?.throwIfAborted();
+    return resolve(provider, sessionId, request?.signal);
+  };
+  const getWithCredential = async (provider: string, sessionId?: string, request?: KeyRequest) => {
+    const apiKey = await get(provider, sessionId, request);
+    request?.signal?.throwIfAborted();
+    return apiKey === undefined ? undefined : { apiKey };
+  };
+  const keys = target.keys;
+  if (keys !== undefined) {
+    if (!keys || typeof keys !== "object") throw new Error("Unsupported native auth keys namespace");
+    const port = keys as Record<string, unknown>;
+    for (const method of ["get", "getWithCredential", "peek", "source", "keyless"]) {
+      if (typeof port[method] !== "function") throw new Error(`Native auth keys is missing ${method}`);
+    }
+    port.get = get;
+    port.getWithCredential = getWithCredential;
+    port.peek = async () => undefined;
+    port.source = (provider: string) => admitted.has(provider) ? { kind: "runtime", concrete: true } : undefined;
+    port.keyless = () => false;
+    if (typeof target.getApiKey === "function") target.getApiKey = get;
+    return "namespaced";
+  }
+  for (const method of ["hasAuth", "hasResolvableAuth", "hasConcreteAuth", "getApiKey", "peekApiKey"]) {
+    if (typeof target[method] !== "function") throw new Error(`Native auth storage is missing ${method}`);
+  }
+  target.hasAuth = target.hasResolvableAuth = target.hasConcreteAuth = (provider: string) => admitted.has(provider);
+  target.getApiKey = get;
+  target.peekApiKey = async () => undefined;
+  return "flat";
+}
+
 let active = false;
 /** Switch the calling native session without weakening credential ownership for auxiliary work. */
 export async function switchOmpSessionModel(ctx: ExtensionContext, model: Model, effort?: string): Promise<void> {
@@ -63,7 +109,7 @@ export async function switchOmpSessionModel(ctx: ExtensionContext, model: Model,
   if (effort !== undefined) session.setThinkingLevel(clampEffort(model, effort) as CreateAgentSessionOptions["thinkingLevel"]);
 }
 
-/** Native task/hub share a process-global registry: admit one operator tree per process. */
+/** Native agents share a process-global registry: admit one operator tree per process. */
 export async function createOmpSession(options: OmpSessionOptions): Promise<OmpSessionHandle> {
   if (active) throw new Error("An operator session is already active in this process; dispose it before opening another");
   active = true;
@@ -112,13 +158,17 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
     // Auxiliary label/discovery requests have no owning native session. Do not grant them
     // credentials outside the root/child dispatch guards and accounting hooks.
     if (!connectedProviders.includes(name) || !sessionId || !AgentRegistry.global().list().some((ref) => ref.session?.sessionManager.getSessionId() === sessionId)) return undefined;
-    signal?.throwIfAborted();
-    return raceWithSignal(options.auth.apiKeyFor(name), signal);
+    const scoped = options.signal && signal ? AbortSignal.any([options.signal, signal]) : options.signal ?? signal;
+    scoped?.throwIfAborted();
+    const key = await raceWithSignal(options.auth.apiKeyFor(name), scoped);
+    scoped?.throwIfAborted();
+    // A session that disappeared while host OAuth refreshed no longer owns dispatch.
+    return AgentRegistry.global().list().some((ref) => ref.session?.sessionManager.getSessionId() === sessionId) ? key : undefined;
   };
   // Native root/child/compaction resolvers all use this same store. Do not import Kiln's OAuth
   // rows into another database or snapshot access tokens that would later become stale.
-  authStorage.hasAuth = (name) => connectedProviders.includes(name);
-  authStorage.getApiKey = (name, sessionId, request) => resolveKey(name, sessionId, request?.signal);
+  try { installOperatorAuthStorage(authStorage, connectedProviders, resolveKey); }
+  catch (error) { authStorage.close(); throw error; }
   let registry: ModelRegistry;
   try {
     registry = new ModelRegistry(authStorage, join(stateDir, "models.yml"), {
@@ -128,6 +178,16 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
   } catch (error) { authStorage.close(); throw error; }
   registry.getApiKey = (model, sessionId, request) => resolveKey(model.provider, sessionId, request?.signal);
   registry.getApiKeyForProvider = (provider, sessionId, request) => resolveKey(provider, sessionId, request?.signal);
+  // 18.4 retries can resolve credentials through this richer facade directly.
+  if ("getApiKeyWithCredentialForProvider" in registry) {
+    if (typeof registry.getApiKeyWithCredentialForProvider !== "function") { authStorage.close(); throw new Error("Unsupported native credential resolver"); }
+    registry.getApiKeyWithCredentialForProvider = async (provider: string, sessionId?: string, request?: KeyRequest) => {
+      const apiKey = await resolveKey(provider, sessionId, request?.signal);
+      options.signal?.throwIfAborted();
+      request?.signal?.throwIfAborted();
+      return apiKey === undefined ? undefined : { apiKey };
+    };
+  }
   const hooks: NonNullable<CreateAgentSessionOptions["extensions"]>[number] = (extension) => {
     let abortListener: (() => void) | undefined;
     let removeGate: (() => void) | undefined;

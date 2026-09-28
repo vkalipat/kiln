@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 import { getBundledModel, type Model } from "@oh-my-pi/pi-catalog";
-import { defaultConfig } from "../../src/core/config";
+import { defaultConfig, ROLES } from "../../src/core/config";
 import type { AuthStore } from "../../src/providers/auth";
 import { NoModelError, availableProviders, clampEffort, effortFor, isKilnToolModelSupported, modelFamily, otherProvider, parseModelRef, resolveRole, resolveRoleOn } from "../../src/providers/models";
 
@@ -120,6 +120,22 @@ describe("resolveRoleOn", () => {
     expect(resolveRoleOn("prober", "anthropic", cfg, new Set(["anthropic"])).ref).toBe("anthropic/claude-haiku-4-5");
     expect(resolveRoleOn("arbiter", "anthropic", cfg, new Set(["anthropic"])).ref).toBe("anthropic/claude-haiku-4-5");
   });
+  test("every default role has an admitted model on each supported single-provider path", () => {
+    const cfg = defaultConfig();
+    for (const provider of ["anthropic", "openai-codex", "openai"]) {
+      for (const role of ROLES) {
+        const selected = resolveRoleOn(role, provider, cfg, new Set([provider]));
+        expect(selected.model.provider).toBe(provider);
+        expect(cfg.roles[role]).toContain(selected.ref);
+        expect(isKilnToolModelSupported(selected.model)).toBe(true);
+      }
+    }
+  });
+  test("explicit pinned roles never gain a default fallback", () => {
+    const cfg = defaultConfig();
+    cfg.roles.scout = ["openai-codex/retired-mini-not-in-catalog"];
+    expect(() => resolveRoleOn("scout", "openai-codex", cfg, new Set(["openai-codex"]))).toThrow(NoModelError);
+  });
   test("the default judge and generator are different tiers on every single-provider path", () => {
     const cfg = defaultConfig();
     for (const provider of ["anthropic", "openai-codex", "openai"]) {
@@ -162,9 +178,10 @@ describe("resolveRoleOn", () => {
   });
   test("exclusion follows model identity across OpenAI transport aliases", () => {
     const cfg = defaultConfig();
-    cfg.roles.critic = ["openai-codex/gpt-5.5", "openai-codex/gpt-5.4"];
+    cfg.roles.critic = ["openai-codex/gpt-5.5", "openai-codex/gpt-6-astra"];
     const alternative = resolveRoleOn("critic", "openai-codex", cfg, new Set(["openai", "openai-codex"]), "openai/gpt-5.5");
-    expect(alternative.ref).toBe("openai-codex/gpt-5.4");
+    expect(alternative.ref).toBe("openai-codex/gpt-6-astra");
+    expect(isKilnToolModelSupported(alternative.model)).toBe(true);
   });
   test("fails typed when exclusion leaves no admitted alternative", () => {
     const cfg = defaultConfig();

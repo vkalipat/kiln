@@ -1,0 +1,56 @@
+{
+  "schema": "kiln-native-jev-live-summary-v1",
+  "date": "2026-09-28",
+  "model": "jev-1.13.0",
+  "fixture": "local owned form: fill Name with Fixture and click Preview",
+  "qualification": "development calibration; not held-out",
+  "usage": {
+    "attempts": 2,
+    "inputTokens": 1328,
+    "outputTokens": 158,
+    "reservedInputTokens": 0,
+    "unknownInputTokens": 0
+  },
+  "calculatedCostUsd": 5.5776e-05,
+  "costBasis": "reported input usage at adapter price; not invoice",
+  "result": {
+    "status": "verified",
+    "quality": "specified_checks_only",
+    "taskQualityValidated": false,
+    "task": "Fill Name with Fixture and preview greeting",
+    "decisions": 2,
+    "actions": 2,
+    "reason": "Fresh specified checks assessed a completion candidate; parent must assess task coverage",
+    "checks": [
+      {
+        "index": 0,
+        "passed": true,
+        "kind": "text_includes"
+      }
+    ],
+    "finalObservation": {
+      "title": "Kiln owned fixture",
+      "text": "Name\nPreview\nHello Fixture"
+    }
+  },
+  "independentDom": [
+    {
+      "value": "Fixture",
+      "result": "Hello Fixture"
+    }
+  ],
+  "frontierModelCalls": 0,
+  "invalidLease": {
+    "status": "unsupported",
+    "observed": false,
+    "value": ""
+  },
+  "cancellation": "cancelled",
+  "cleanup": "owned-tab-closed",
+  "atomicCompletion": {
+    "verificationCalls": 1,
+    "extraObservationCalls": 0,
+    "evidence": "controller source assertion"
+  },
+  "sanitization": "ephemeral URLs, session identifiers and raw decision diagnostics omitted"
+}

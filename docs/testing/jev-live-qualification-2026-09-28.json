@@ -1,0 +1,416 @@
+{
+  "schema": "kiln-jev-live-qualification-v1",
+  "model": "jev-1.13.0",
+  "checkedAt": "2026-09-28T21:36:49.718Z",
+  "dispatches": 9,
+  "limits": {
+    "maxRequests": 9,
+    "estimatedMaximumReservedUsd": 0.024192,
+    "reservationTokensPerRequest": 64000,
+    "timeoutMsPerRequest": 30000
+  },
+  "usage": {
+    "inputTokens": 3733,
+    "outputTokens": 487,
+    "totalTokens": 4220,
+    "unknownRequests": 0,
+    "complete": true
+  },
+  "cost": {
+    "knownUsd": 0.000156786,
+    "unknownExposureUsd": 0,
+    "priceUsdPerMillionInput": 0.042,
+    "outputPrice": 0
+  },
+  "taskSuccess": true,
+  "rows": [
+    {
+      "fixture": "browser-before-input",
+      "arm": "sequential",
+      "latencyMs": 659.877917,
+      "success": true,
+      "labels": {
+        "target": {
+          "choice": "preview",
+          "accepted": true
+        },
+        "operation": {
+          "choice": "click",
+          "accepted": true
+        },
+        "complete": {
+          "choice": "no",
+          "accepted": true
+        }
+      },
+      "decisions": [
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "target": {
+              "choice": "preview",
+              "confidence": 1,
+              "probabilities": {
+                "submit": 0,
+                "preview": 1,
+                "none": 0
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 400,
+            "output_tokens": 38
+          },
+          "latencyMs": 329
+        },
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "operation": {
+              "choice": "click",
+              "confidence": 0.98,
+              "probabilities": {
+                "done": 0.01,
+                "stop": 0.01,
+                "click": 0.98
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 406,
+            "output_tokens": 38
+          },
+          "latencyMs": 169
+        },
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "complete": {
+              "choice": "no",
+              "confidence": 1,
+              "probabilities": {
+                "no": 1,
+                "yes": 0
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 383,
+            "output_tokens": 31
+          },
+          "latencyMs": 162
+        }
+      ]
+    },
+    {
+      "fixture": "browser-before-input",
+      "arm": "batch",
+      "latencyMs": 191.248833,
+      "success": true,
+      "labels": {
+        "target": {
+          "choice": "preview",
+          "accepted": true
+        },
+        "operation": {
+          "choice": "click",
+          "accepted": true
+        },
+        "complete": {
+          "choice": "no",
+          "accepted": true
+        }
+      },
+      "decisions": [
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "target": {
+              "choice": "preview",
+              "confidence": 1,
+              "probabilities": {
+                "none": 0,
+                "preview": 1,
+                "submit": 0
+              },
+              "accepted": true
+            },
+            "operation": {
+              "choice": "click",
+              "confidence": 0.98,
+              "probabilities": {
+                "stop": 0.01,
+                "done": 0.01,
+                "click": 0.98
+              },
+              "accepted": true
+            },
+            "complete": {
+              "choice": "no",
+              "confidence": 1,
+              "probabilities": {
+                "yes": 0,
+                "no": 1
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 517,
+            "output_tokens": 101
+          },
+          "latencyMs": 191
+        }
+      ]
+    },
+    {
+      "fixture": "research-contradiction",
+      "arm": "batch",
+      "latencyMs": 193.56987500000002,
+      "success": true,
+      "labels": {
+        "relevant": {
+          "choice": "yes",
+          "accepted": true
+        },
+        "contradiction": {
+          "choice": "yes",
+          "accepted": true
+        },
+        "complete": {
+          "choice": "yes",
+          "accepted": true
+        }
+      },
+      "decisions": [
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "relevant": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "no": 0,
+                "yes": 1
+              },
+              "accepted": true
+            },
+            "contradiction": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "no": 0,
+                "yes": 1
+              },
+              "accepted": true
+            },
+            "complete": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "no": 0,
+                "yes": 1
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 484,
+            "output_tokens": 91
+          },
+          "latencyMs": 194
+        }
+      ]
+    },
+    {
+      "fixture": "research-contradiction",
+      "arm": "sequential",
+      "latencyMs": 542.2609580000001,
+      "success": true,
+      "labels": {
+        "relevant": {
+          "choice": "yes",
+          "accepted": true
+        },
+        "contradiction": {
+          "choice": "yes",
+          "accepted": true
+        },
+        "complete": {
+          "choice": "yes",
+          "accepted": true
+        }
+      },
+      "decisions": [
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "relevant": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "no": 0,
+                "yes": 1
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 341,
+            "output_tokens": 33
+          },
+          "latencyMs": 172
+        },
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "contradiction": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "no": 0,
+                "yes": 1
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 353,
+            "output_tokens": 33
+          },
+          "latencyMs": 190
+        },
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "complete": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "yes": 1,
+                "no": 0
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 366,
+            "output_tokens": 31
+          },
+          "latencyMs": 180
+        }
+      ]
+    },
+    {
+      "fixture": "research-missing-evidence",
+      "arm": "exact-state-reuse",
+      "latencyMs": 158.28483399999982,
+      "success": true,
+      "labels": {
+        "relevant": {
+          "choice": "yes",
+          "accepted": true
+        },
+        "contradiction": {
+          "choice": "no",
+          "accepted": true
+        },
+        "complete": {
+          "choice": "no",
+          "accepted": true
+        }
+      },
+      "decisions": [
+        {
+          "source": "jev",
+          "reason": "accepted",
+          "requestedModel": "jev-1.13.0",
+          "returnedModel": "jev-1.13.0",
+          "answers": {
+            "relevant": {
+              "choice": "yes",
+              "confidence": 1,
+              "probabilities": {
+                "no": 0,
+                "yes": 1
+              },
+              "accepted": true
+            },
+            "contradiction": {
+              "choice": "no",
+              "confidence": 1,
+              "probabilities": {
+                "no": 1,
+                "yes": 0
+              },
+              "accepted": true
+            },
+            "complete": {
+              "choice": "no",
+              "confidence": 1,
+              "probabilities": {
+                "no": 1,
+                "yes": 0
+              },
+              "accepted": true
+            }
+          },
+          "usage": {
+            "input_tokens": 483,
+            "output_tokens": 91
+          },
+          "latencyMs": 157,
+          "stateHash": "970b11ceb9bb781dd9129d72991a7398245d1b69c27c277264ad3b70a58f1cea",
+          "dispatched": true,
+          "reuse": {
+            "kind": "origin",
+            "requestId": "236cb7b3-f92c-4d76-818e-1dbcc27fb21c"
+          },
+          "costUsd": 2.0286000000000002e-05
+        }
+      ]
+    }
+  ],
+  "reuse": {
+    "requests": 1,
+    "concurrent": "inflight",
+    "cached": "cache",
+    "success": true
+  },
+  "caveats": [
+    "Three synthetic labeled fixtures; not a representative accuracy benchmark.",
+    "64k-token reservation follows current service accounting; it is not an enforced provider billing guarantee.",
+    "Browser labels do not execute or verify browser actions.",
+    "Research labels do not verify source truth.",
+    "Sequential-versus-batched latency has one observation per fixture, not a universal speedup.",
+    "Reuse is application cache/singleflight, not provider prompt caching.",
+    "No frontier baseline or paid frontier task completion is measured."
+  ]
+}

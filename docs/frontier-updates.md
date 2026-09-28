@@ -31,7 +31,7 @@ It requires `GITHUB_ACTIONS=true`, `KILN_FRONTIER_DISPOSABLE=1`, a clean checkou
 The read-only job updates exact pins and runs these gates in order:
 
 1. `bun install --ignore-scripts --registry https://registry.npmjs.org`.
-2. Verify the reviewed callback hook is present exactly once in source, declaration, and callback-server files.
+2. Verify the reviewed callback hook and every surrounding patch context are present exactly once in source, declaration, and callback-server files. Identical hook text inserted into the wrong interface is rejected.
 3. `bun run typecheck` and the complete `bun test` suite.
 4. `bun bin/kiln.ts evals verify --home . --json`.
 5. `bun bin/kiln.ts evals leakcheck --home . --json`.
@@ -48,7 +48,9 @@ Upgraded dependencies execute only in the first job with read-only repository pe
 
 ## OAuth patch compatibility
 
-The reviewed patch `patches/@oh-my-pi%2Fpi-ai@18.1.14.patch` remains byte-for-byte unchanged. The updater changes its `patchedDependencies` key to the new exact native version while retaining that original patch path. A pinned SHA-256 in the updater identifies the reviewed baseline. Bun applies the same patch during installation; its added hook bodies are checked afterward.
+The current reviewed baseline is native version **18.4.2**, with `patches/@oh-my-pi%2Fpi-ai@18.4.2.patch`. The earlier 18.1.14 patch remains unchanged for history. The updater changes the active patch's `patchedDependencies` key to the candidate exact native version while retaining its reviewed path. A pinned SHA-256 identifies the baseline. Bun applies the same patch during installation; both its added hook bodies and complete surrounding contexts are checked afterward. Line-number shifts are allowed; changed interface or handler context requires review.
+
+The first manual dispatch of the scheduled workflow rejected 18.4.2 during type checking. Upstream moved mock runtime exports to a supported subpath, replaced flat authentication methods with a keys namespace, changed settings access, and inserted a new OAuth type before the callback controller. Kiln's compatibility repair keeps credential resolution inside owned native sessions and regenerates the callback patch against the official 18.4.2 package. This is why a discovered release must pass the compatibility gates before promotion.
 
 The optional receipt-page hook receives only a safe status, never authorization codes, state, credentials, or raw provider errors. This property must survive upgrades. If upstream changes the relevant files, incorporates a similar hook, or rejects the patch, the updater fails closed. It never guesses that a similarly named upstream hook is compatible and never skips, weakens, rewrites, or double-applies the patch automatically. A maintainer must review the upstream implementation, test the callback boundary, and deliberately update the patch and reviewed digest if needed.
 

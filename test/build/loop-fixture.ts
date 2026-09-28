@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { appendAudit, type Audit } from "../../src/build/audit-contract";
 import type { AuditorSessionResult } from "../../src/build/auditor";
 import type { BuilderSessionResult } from "../../src/build/builder";

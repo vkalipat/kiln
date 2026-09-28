@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test";
 import { basename, join } from "node:path";
 import { existsSync, mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { createMockModel, streamMock } from "@oh-my-pi/pi-ai";
+import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import type { Model } from "@oh-my-pi/pi-catalog";
 import { runReflect as reflectPhase } from "../../src/phases/reflect";
 import { main } from "../../src/cli/main";

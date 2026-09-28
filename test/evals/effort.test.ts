@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createMockModel } from "@oh-my-pi/pi-ai";
+import { createMockModel } from "@oh-my-pi/pi-ai/providers/mock";
 import { defaultConfig } from "../../src/core/config";
 import { initHome } from "../../src/core/home";
 import { RealGitRunner, type GitCommitOptions } from "../../src/build/git";

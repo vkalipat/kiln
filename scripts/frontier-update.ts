@@ -5,7 +5,7 @@ import { readFile, writeFile, mkdir, realpath, lstat, readdir } from "node:fs/pr
 import { resolve, relative, isAbsolute, join } from "node:path";
 
 export const PACKAGES = ["pi-agent-core", "pi-ai", "pi-catalog", "pi-coding-agent", "pi-tui", "pi-utils"].map(name => `@oh-my-pi/${name}`);
-export const AUTH_PATCH_SHA256 = "e5023be3a019584de508cb996bcf8ffe30fd27e823bd1b118d106bb157b1802f";
+export const AUTH_PATCH_SHA256 = "7e1df3ff73a91df1482a5f7af68724b926ef33a24b2ef168e9f1eb1288bbd036";
 export const GATES = [
   ["bun", "install", "--ignore-scripts", "--registry", "https://registry.npmjs.org"],
   ["bun", "run", "typecheck"], ["bun", "test"],
@@ -84,13 +84,25 @@ async function assertPatch(cwd: string, manifest: Manifest, current: string): Pr
 }
 export async function assertInstalledPatch(cwd: string, manifest: Manifest, version: string): Promise<void> {
   const patch = await readFile(join(cwd, manifest.patchedDependencies![`@oh-my-pi/pi-ai@${version}`]!), "utf8");
+  const expected = new Set(["src/registry/oauth/types.ts", "dist/types/registry/oauth/types.d.ts", "src/registry/oauth/callback-server.ts"]);
   for (const section of patch.split("diff --git ").slice(1)) {
     const path = /^a\/([^ ]+) b\//.exec(section)?.[1];
-    if (!path || !["src/registry/oauth/types.ts", "dist/types/registry/oauth/types.d.ts", "src/registry/oauth/callback-server.ts"].includes(path)) fail("Unexpected reviewed patch target");
+    if (!path || !expected.delete(path)) fail("Unexpected reviewed patch target");
     const inserted = section.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n").trim();
     const installed = await readFile(join(cwd, "node_modules/@oh-my-pi/pi-ai", path), "utf8");
     if (!inserted || installed.split(inserted).length !== 2) fail("Reviewed callback hook was not installed exactly once; manual compatibility review required");
+    // Bun can accept a patch with shifted/fuzzy context. Text presence alone cannot
+    // establish which interface or handler received the hook. Require every reviewed
+    // post-image, including its surrounding context, exactly once at any line offset.
+    const hunks = section.split(/^@@ .* @@.*\n/m).slice(1);
+    if (!hunks.length) fail("Missing reviewed patch context");
+    for (const hunk of hunks) {
+      const lines = hunk.split("\n").filter(line => line.startsWith(" ") || line.startsWith("+"));
+      const postimage = lines.map(line => line.slice(1)).join("\n");
+      if (!postimage || installed.split(postimage).length !== 2) fail("Reviewed callback hook context differs; manual compatibility review required");
+    }
   }
+  if (expected.size) fail("Missing reviewed patch target");
 }
 async function assertClean(cwd: string, run: Runner): Promise<void> {
   if (await run(["git", "status", "--porcelain", "--untracked-files=all"], cwd, true)) fail("Update requires a clean disposable checkout");
