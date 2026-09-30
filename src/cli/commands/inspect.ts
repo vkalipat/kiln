@@ -14,6 +14,7 @@ import type { CliIo } from "../main";
 import { printJson, table } from "../output";
 import { compileWorkflow, planWorkflow } from "../../workflow/plan";
 import { applyWorkflowProfile } from "../../workflow/profile";
+import { buildResourceCatalog } from "../../operator/resource-routing";
 
 const EFFORTS: readonly Effort[] = ["low", "medium", "high", "xhigh"];
 const ROUTING_MODES: readonly RoutingMode[] = ["adaptive", "manual"];
@@ -74,12 +75,12 @@ export function inspectCommand(cmd: string[], flags: Record<string, string | boo
       err("usage: kiln model routing [adaptive|manual]\n"); return 2;
     }
     if (requested !== undefined) {
-      cfg.routing = { mode: requested as RoutingMode };
+      cfg.routing = { ...cfg.routing, mode: requested as RoutingMode, resources: requested === "adaptive" ? "jev" : "legacy" };
       saveConfig(home, cfg);
     }
     const mode = cfg.routing?.mode ?? "manual";
-    if (flags.json) printJson(io, { mode });
-    else io.write(`routing: ${mode}\n`);
+    if (flags.json) printJson(io, { mode, resources: cfg.routing?.resources ?? "legacy", effort: cfg.routing?.effort ?? "fixed" });
+    else io.write(`routing: ${mode} · model selection: ${cfg.routing?.resources ?? "legacy"} · effort: ${cfg.routing?.effort ?? "fixed"}\n`);
     return 0;
   }
   if (cmd[0] === "model" && cmd[1] === "plan") {
@@ -88,6 +89,19 @@ export function inspectCommand(cmd: string[], flags: Record<string, string | boo
     try {
       const now = new Date();
       const available = new Set<string>(localAuthState(home).configured);
+      if (cfg.routing?.resources === "jev") {
+        const models = buildResourceCatalog(available, homeEvidenceSnapshot(home, now));
+        const preview = { policy: "jev", status: "awaiting_task_decision", offline: true, liveChecked: false,
+          effortPolicy: cfg.routing.effort ?? "fixed", models,
+          message: "Jev selects task-specific responsibilities and model/effort pairs at dispatch; this is an eligible catalog, not preset assignments." };
+        if (flags.json) printJson(io, preview);
+        else {
+          io.write(preview.message + "\n");
+          table(io, [["eligible model", "supported effort", "input/output USD per million tokens"],
+            ...models.map(model => [model.modelRef, model.efforts.join(", "), `${model.cost.input}/${model.cost.output}`])]);
+        }
+        return 0;
+      }
       const workflow = planWorkflow(seed);
       const execution = compileWorkflow(workflow, { ...(cfg.autonomous ? { autonomous: true } : {}) });
       const planned = planAdaptiveRouting(applyWorkflowProfile(cfg, workflow), available, seed, now, homeEvidenceSnapshot(home, now), { phases: execution.phases });
@@ -144,15 +158,18 @@ export function inspectCommand(cmd: string[], flags: Record<string, string | boo
         const defaults = defaultConfig();
         cfg.effort = defaults.effort;
         cfg.effortByRole = { ...defaults.effortByRole };
+        cfg.routing = { ...cfg.routing, mode: cfg.routing?.mode ?? "adaptive", effort: "adaptive" };
       } else {
         cfg.effort = action === "toggle" ? EFFORTS[(EFFORTS.indexOf(cfg.effort) + 1) % EFFORTS.length]! : requested as Effort;
         // An explicit operator mode applies to every seat; automatic sweeps remain a separate action.
         cfg.effortByRole = Object.fromEntries(ROLES.map((role) => [role, cfg.effort]));
+        cfg.routing = { ...cfg.routing, mode: cfg.routing?.mode ?? "adaptive", effort: "fixed" };
       }
       saveConfig(home, cfg);
     }
-    if (flags.json) printJson(io, { effort: cfg.effort, effortByRole: cfg.effortByRole });
-    else io.write(restoreDefaults ? "effort: role defaults restored\n" : `effort: ${cfg.effort}\n`);
+    if (flags.json) printJson(io, { effort: cfg.routing?.effort === "adaptive" ? "auto" : cfg.effort, effortByRole: cfg.effortByRole,
+      effortPolicy: cfg.routing?.effort ?? "fixed", fallbackEffort: cfg.effort });
+    else io.write(cfg.routing?.effort === "adaptive" ? "effort: auto (Jev chooses per task; explicit effort pins take precedence)\n" : `effort: ${cfg.effort}\n`);
     return 0;
   }
   err(INSPECT_USAGE);

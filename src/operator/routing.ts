@@ -126,9 +126,10 @@ export function prepareStepRouting(
   available: ReadonlySet<string>,
   seed: string,
   now = new Date(),
+  evidence: unknown = DEFAULT_EVIDENCE_SNAPSHOT,
 ): PreparedStepRouting {
   const availableSet = new Set(available);
-  const planned = planAdaptiveRouting(cfg, availableSet, seed, now, DEFAULT_EVIDENCE_SNAPSHOT, { phases: ["frame"] });
+  const planned = planAdaptiveRouting(cfg, availableSet, seed, now, evidence, { phases: ["frame"] });
   const identity = inputIdentity(cfg, available, seed);
   const admittedRoleRefs = Object.fromEntries(Object.entries(planned.report.roleRefs).map(([role, refs]) => [
     role,
@@ -170,6 +171,18 @@ function validatePrepared(
     }
   }
   return value;
+}
+
+/** Catalog admission for Jev routing is independent of historical role presets. */
+export function admitResourceModels(prepared: PreparedStepRouting, cfg: KilnConfig, available: ReadonlySet<string>, refs: readonly string[]): PreparedStepRouting {
+  const admittedRoleRefs = Object.fromEntries(Object.entries(prepared.admittedRoleRefs).map(([role, entries]) => [role,
+    [...entries, ...refs.filter(ref => !entries.some(entry => entry.ref === ref)).map(ref => ({
+      ref, effort: effortFor(cfg, role as Role, modelForRef(ref, available)) ?? null,
+    }))],
+  ])) as PreparedStepRouting["admittedRoleRefs"];
+  const { fingerprint: _previous, ...body } = prepared;
+  const next = { ...body, admittedRoleRefs };
+  return { ...next, fingerprint: hashInput(next) };
 }
 
 function admittedSet(prepared: PreparedStepRouting): Set<string> {

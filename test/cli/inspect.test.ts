@@ -36,7 +36,7 @@ test("explicit effort changes persist, ultra is xhigh, invalid input does not wr
   expect(loadConfig(home).effort).toBe("low");
 });
 
-test("mode set auto restores role effort defaults without changing models, budgets, or other settings", () => {
+test("mode set auto enables Jev effort while preserving models, budgets and other policies", () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-mode-auto-")); initHome(home);
   const cfg = loadConfig(home);
   cfg.effort = "xhigh";
@@ -54,26 +54,28 @@ test("mode set auto restores role effort defaults without changing models, budge
   const defaults = defaultConfig();
   expect(after.effort).toBe(defaults.effort);
   expect(after.effortByRole).toEqual(defaults.effortByRole);
-  expect(JSON.parse(json)).toEqual({ effort: defaults.effort, effortByRole: defaults.effortByRole });
+  expect(JSON.parse(json)).toEqual({ effort: "auto", effortByRole: defaults.effortByRole, effortPolicy: "adaptive", fallbackEffort: defaults.effort });
+  expect(after.routing).toEqual({ mode: "adaptive", effort: "adaptive" });
   const persistedAfter = JSON.parse(readFileSync(join(home, "config.json"), "utf8"));
   persistedAfter.effort = persistedBefore.effort;
   persistedAfter.effortByRole = persistedBefore.effortByRole;
+  persistedAfter.routing = persistedBefore.routing;
   expect(persistedAfter).toEqual(persistedBefore);
 
   let text = ""; const textIo = { write: (value: string) => { text += value; } };
   expect(inspectCommand(["mode", "set", "auto"], { home }, textIo)).toBe(0);
-  expect(text).toContain("role defaults restored");
+  expect(text).toContain("Jev chooses per task");
 });
 
 test("routing mode changes persist and invalid input leaves the config untouched", () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-routing-mode-")); const io = { write: () => {} };
   expect(inspectCommand(["model", "routing", "adaptive"], { home }, io)).toBe(0);
-  expect(loadConfig(home).routing).toEqual({ mode: "adaptive" });
+  expect(loadConfig(home).routing).toEqual({ mode: "adaptive", resources: "jev" });
   const before = readFileSync(join(home, "config.json"), "utf8");
   expect(inspectCommand(["model", "routing", "automatic"], { home }, io)).toBe(2);
   expect(readFileSync(join(home, "config.json"), "utf8")).toBe(before);
   expect(inspectCommand(["model", "routing", "manual"], { home }, io)).toBe(0);
-  expect(loadConfig(home).routing).toEqual({ mode: "manual" });
+  expect(loadConfig(home).routing).toEqual({ mode: "manual", resources: "legacy" });
 });
 
 test("adaptive plan preview is offline and leaves config and runs untouched", () => {

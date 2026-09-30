@@ -67,6 +67,18 @@ describe("config", () => {
     expect(loaded.seating.frontier.caps).toEqual({ ...defaults.seating.frontier.caps, maxFeatures: 3 });
   });
 
+  test("resource routing policy round trips and malformed policies reject", () => {
+    const home = mkdtempSync(join(tmpdir(), "kiln-resource-config-"));
+    const cfg = defaultConfig();
+    cfg.routing = { mode: "adaptive", resources: "jev", effort: "adaptive" };
+    saveConfig(home, cfg);
+    expect(loadConfig(home).routing).toEqual(cfg.routing);
+    for (const routing of [{ mode: "adaptive", resources: "untrusted" }, { mode: "adaptive", effort: "maximum" }]) {
+      writeFileSync(join(home, "config.json"), JSON.stringify({ routing }));
+      expect(() => loadConfig(home)).toThrow(/routing\.(resources|effort)/);
+    }
+  });
+
   test("deep-merges balanced budget-share overrides and derives an allocation from the loaded dollar target", () => {
     const home = mkdtempSync(join(tmpdir(), "kiln-"));
     writeFileSync(join(home, "config.json"), JSON.stringify({ budgets: { usd: 10, share: { ideate: 0.5, build: 0.395 } } }));

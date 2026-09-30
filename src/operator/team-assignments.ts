@@ -4,21 +4,25 @@ import { writeAtomic } from "../core/paths";
 import type { TeamFeature } from "./team";
 
 export interface TeamAssignmentCandidate { modelRef: string; reason: string }
+export interface TeamAssignmentProducer { featureId: string; featureHash: string; dispatchName: string; modelRef: string }
 export interface TeamAssignmentInput {
   featureId: string;
   role: string;
   candidates: TeamAssignmentCandidate[];
   preferredModelRef: string;
   exactModelRef?: string;
+  exactEffort?: string;
+  routingRequestHash?: string;
+  reviewOf?: TeamAssignmentProducer;
 }
-export interface TeamAssignmentSelection { modelRef: string; source: "jev" | "frontier"; reason: string }
+export interface TeamAssignmentSelection { modelRef: string; source: "jev" | "frontier" | "fallback" | "explicit"; reason: string; effort?: string }
 export interface TeamAssignment extends TeamAssignmentInput, TeamAssignmentSelection {
   effort: string;
   featureHash: string;
   catalogHash: string;
   dispatchName: string;
 }
-export interface TeamAssignmentAdmission { modelRef: string; effort: string }
+export interface TeamAssignmentAdmission { modelRef: string; effort: string; efforts?: readonly string[] }
 const digest = (value: unknown) => createHash("sha256").update(JSON.stringify(value)).digest("hex");
 const bounded = (value: unknown, max: number): value is string => typeof value === "string" && !!value.trim() && value.length <= max && !/[\x00-\x1f]/.test(value);
 
@@ -31,7 +35,8 @@ export function teamAssignmentFeatureHash(feature: TeamFeature): string {
 export function validateTeamAssignment(input: TeamAssignmentInput, feature: TeamFeature, admitted: readonly TeamAssignmentAdmission[]): void {
   if (!input || input.featureId !== feature.id) throw new Error("Assignment must reference an existing feature");
   if (!bounded(input.role, 160)) throw new Error("Assignment role must be bounded descriptive text");
-  if (!Array.isArray(input.candidates) || input.candidates.length < 1 || input.candidates.length > 8) throw new Error("Assignment requires one to eight candidates");
+  const candidateCap = input.routingRequestHash ? 32 : 8;
+  if (!Array.isArray(input.candidates) || input.candidates.length < 1 || input.candidates.length > candidateCap) throw new Error(input.routingRequestHash ? "Resource assignment requires one to 32 candidates" : "Assignment requires one to eight candidates");
   const seen = new Set<string>();
   for (const candidate of input.candidates) {
     if (!candidate || !bounded(candidate.modelRef, 256) || !bounded(candidate.reason, 2048)) throw new Error("Invalid assignment candidate");
@@ -41,15 +46,22 @@ export function validateTeamAssignment(input: TeamAssignmentInput, feature: Team
   }
   if (!seen.has(input.preferredModelRef)) throw new Error("Preferred model must be a candidate");
   if (input.exactModelRef !== undefined && (!seen.has(input.exactModelRef) || input.preferredModelRef !== input.exactModelRef)) throw new Error("Exact model must be the preferred candidate");
+  if (input.exactEffort !== undefined && !["minimal", "low", "medium", "high", "xhigh", "max"].includes(input.exactEffort)) throw new Error("Invalid explicit assignment effort");
+  if (input.routingRequestHash !== undefined && !/^[a-f0-9]{64}$/.test(input.routingRequestHash)) throw new Error("Invalid routing request identity");
+  if (input.reviewOf && (!bounded(input.reviewOf.featureId, 128) || !/^[a-f0-9]{64}$/.test(input.reviewOf.featureHash)
+    || !/^assignment_[a-f0-9]{32}$/.test(input.reviewOf.dispatchName) || !admitted.some(model => model.modelRef === input.reviewOf!.modelRef))) throw new Error("Invalid review producer identity");
 }
 
 export function resolveTeamAssignmentSelection(input: TeamAssignmentInput, selection: TeamAssignmentSelection, admitted: readonly TeamAssignmentAdmission[]): TeamAssignmentSelection & { effort: string } {
-  if (!selection || !["jev", "frontier"].includes(selection.source) || !bounded(selection.reason, 2048)) throw new Error("Invalid assignment selection");
+  if (!selection || !["jev", "frontier", "fallback", "explicit"].includes(selection.source) || !bounded(selection.reason, 2048)) throw new Error("Invalid assignment selection");
   if (!input.candidates.some(candidate => candidate.modelRef === selection.modelRef)) throw new Error("Selected model must be a candidate");
   if (input.exactModelRef !== undefined && selection.modelRef !== input.exactModelRef) throw new Error("Exact model selection cannot be overridden");
   const model = admitted.find(candidate => candidate.modelRef === selection.modelRef);
   if (!model || !bounded(model.effort, 64)) throw new Error("Selected model and effort are not admitted");
-  return { ...selection, effort: model.effort };
+  const effort = selection.effort ?? model.effort;
+  if (model.efforts && !model.efforts.includes(effort)) throw new Error("Selected model does not support the selected effort");
+  if (input.exactEffort !== undefined && effort !== input.exactEffort) throw new Error("Explicit assignment effort cannot be overridden");
+  return { ...selection, effort };
 }
 
 /** The enclosing native run lock serializes writes. Dispatch identities are immutable. */
@@ -89,6 +101,9 @@ export class TeamAssignmentStore {
     const resolved = resolveTeamAssignmentSelection(input, selection, this.admitted);
     const record: TeamAssignment = { featureId: input.featureId, role: input.role, candidates: structuredClone(input.candidates),
       preferredModelRef: input.preferredModelRef, ...(input.exactModelRef === undefined ? {} : { exactModelRef: input.exactModelRef }),
+      ...(input.exactEffort === undefined ? {} : { exactEffort: input.exactEffort }),
+      ...(input.routingRequestHash === undefined ? {} : { routingRequestHash: input.routingRequestHash }),
+      ...(input.reviewOf === undefined ? {} : { reviewOf: structuredClone(input.reviewOf) }),
       ...resolved, featureHash: teamAssignmentFeatureHash(feature), catalogHash: this.catalogHash, dispatchName: "" };
     record.dispatchName = this.dispatchName(record);
     const assignments = this.load();
@@ -105,6 +120,9 @@ export class TeamAssignmentStore {
   private dispatchName(record: Omit<TeamAssignment, "dispatchName">): string {
     return `assignment_${digest({ featureId: record.featureId, role: record.role, candidates: record.candidates,
       preferredModelRef: record.preferredModelRef, exactModelRef: record.exactModelRef, modelRef: record.modelRef,
+      ...(record.exactEffort === undefined ? {} : { exactEffort: record.exactEffort }),
+      ...(record.routingRequestHash === undefined ? {} : { routingRequestHash: record.routingRequestHash }),
+      ...(record.reviewOf === undefined ? {} : { reviewOf: record.reviewOf }),
       source: record.source, reason: record.reason, effort: record.effort, featureHash: record.featureHash, catalogHash: record.catalogHash }).slice(0, 32)}`;
   }
 }
