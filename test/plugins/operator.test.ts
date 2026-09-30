@@ -30,6 +30,10 @@ if args[:2] == ["run", "new"]:
     print("start-log")
     if os.environ.get("FAKE_LARGE_LOG") == "1": print("x" * 1100000)
     print("tail-one"); print("tail-two")
+    gate=os.environ.get("FAKE_START_GATE")
+    if gate:
+        pathlib.Path(gate + ".entered").write_text("true")
+        while pathlib.Path(gate).exists(): time.sleep(0.01)
     time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
 elif args[:2] == ["run", "show"]:
     if not status_path.exists(): print("unknown run", file=sys.stderr); sys.exit(2)
@@ -56,7 +60,7 @@ else:
 function invoke(f: ReturnType<typeof fixture>, argv: string[], env: Record<string, string> = {}) {
   const result = Bun.spawnSync({
     cmd: ["python3", OPERATOR, ...argv, "--home", f.home, "--kiln-bin", f.fake],
-    env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe",
+    env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe", timeout: 10_000,
   });
   return { code: result.exitCode, out: result.stdout.toString(), err: result.stderr.toString() };
 }
@@ -187,25 +191,33 @@ describe("Kiln coding-agent operator", () => {
     expect(symlinked.code).toBe(2); expect(symlinked.err).toContain("symbolic link");
   });
 
-  test("starts once, returns immediately, and rejects changed inputs for the request", async () => {
-    const f = fixture(); const startedAt = Date.now();
-    const first = invoke(f, ["start", "--seed-file", f.seed, "--request-id", "same", "--confirm-spend"], { FAKE_SLEEP: "0.5" });
-    expect(first.code).toBe(0); expect(Date.now() - startedAt).toBeLessThan(450);
-    const one = JSON.parse(first.out); expect(one).toMatchObject({ requestId: "same", runId: "operator-same", idempotent: false });
-    const repeated = invoke(f, ["start", "--seed-file", f.seed, "--request-id", "same", "--confirm-spend"]);
-    expect(repeated.code).toBe(0); expect(JSON.parse(repeated.out)).toMatchObject({ runId: "operator-same", idempotent: true });
+  test("starts once, returns before worker completion, and rejects changed inputs for the request", async () => {
+    const f = fixture();
+    const gate = join(f.home, "start-gate"); writeFileSync(gate, "hold");
+    try {
+      // Keep the worker blocked until the command returns, independent of host startup speed.
+      const first = invoke(f, ["start", "--seed-file", f.seed, "--request-id", "same", "--confirm-spend"], { FAKE_START_GATE: gate });
+      expect(first.code).toBe(0);
+      await waitFor(`${gate}.entered`, () => true);
+      const one = JSON.parse(first.out); expect(one).toMatchObject({ requestId: "same", runId: "operator-same", idempotent: false });
+      const repeated = invoke(f, ["start", "--seed-file", f.seed, "--request-id", "same", "--confirm-spend"]);
+      expect(repeated.code).toBe(0); expect(JSON.parse(repeated.out)).toMatchObject({ runId: "operator-same", idempotent: true });
 
-    writeFileSync(f.seed, "changed\n");
-    const changed = invoke(f, ["start", "--seed-file", f.seed, "--request-id", "same", "--confirm-spend"]);
-    expect(changed.code).toBe(2); expect(changed.err).toContain("different seed or start options");
-    const job = JSON.parse(readFileSync(join(f.home, "operator/same/job.json"), "utf8"));
-    expect(JSON.stringify(job)).not.toContain("sensitive seed text");
-    expect(statSync(join(f.home, "operator/same")).mode & 0o777).toBe(0o700);
-    expect(statSync(join(f.home, "operator/same/seed.md")).mode & 0o777).toBe(0o600);
-    await waitFor(join(f.home, "operator/same/job.json"), (value) => value.state === "exited");
+      writeFileSync(f.seed, "changed\n");
+      const changed = invoke(f, ["start", "--seed-file", f.seed, "--request-id", "same", "--confirm-spend"]);
+      expect(changed.code).toBe(2); expect(changed.err).toContain("different seed or start options");
+      const job = JSON.parse(readFileSync(join(f.home, "operator/same/job.json"), "utf8"));
+      expect(job.state).toBe("running");
+      expect(JSON.stringify(job)).not.toContain("sensitive seed text");
+      expect(statSync(join(f.home, "operator/same")).mode & 0o777).toBe(0o700);
+      expect(statSync(join(f.home, "operator/same/seed.md")).mode & 0o777).toBe(0o600);
+    } finally {
+      rmSync(gate, { force: true });
+      await waitFor(join(f.home, "operator/same/job.json"), (value) => value.state === "exited");
+    }
     const calls = readFileSync(join(f.home, "fake-calls.jsonl"), "utf8").trim().split("\n").map((line) => JSON.parse(line));
     expect(calls.filter((args) => args[0] === "run" && args[1] === "new")).toHaveLength(1);
-  });
+  }, 20_000);
 
   test("reports process and durable run status separately and tails the end of large logs", async () => {
     const f = fixture();
