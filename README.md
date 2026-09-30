@@ -2,7 +2,7 @@
 
 Kiln is a local, terminal-first agent harness for researching ideas and delivering verified work. Give it a task and it chooses a workflow, assigns compatible models from your connected providers, and saves the work as an inspectable run.
 
-Start with the [user manual](docs/user-manual.md) or its [Word copy](docs/Kiln-User-Manual.docx). The [architecture and integrations guide](docs/architecture-and-integrations.md) explains the native toolkit, Jev, Hindsight, and the contributions of the four reference projects. [Frontier maintenance](docs/frontier-updates.md) covers recurring, tested dependency updates. [Jev design](docs/jev-design.md) explains the experimental execution architecture and evaluation limits.
+Start with the [documentation site](https://vkalipat.github.io/kiln/) or the complete [user manual](docs/user-manual.md). The [Word copy](docs/Kiln-User-Manual.docx) is an earlier export. The [architecture and integrations guide](docs/architecture-and-integrations.md) explains the native toolkit, Jev, Hindsight, and the contributions of the four reference projects. [Frontier maintenance](docs/frontier-updates.md) covers recurring, tested dependency updates. [Jev design](docs/jev-design.md) explains the experimental execution architecture and evaluation limits.
 
 It is built around two practical problems:
 
