@@ -1,7 +1,7 @@
 {
   "version": 1,
-  "kilnVersion": "0.1.0",
-  "generatedAt": "2026-09-05T17:35:14.640Z",
+  "kilnVersion": "0.1.1",
+  "generatedAt": "2026-09-30T17:02:36.211Z",
   "files": {
     "judge-rubric.md": "b5f94dedbec5916db7a534e51f2d56777bef46fc379f210d4e100c792cffca51",
     "README.md": "4f4008d1774b4922f08543ac94881b6c403a17741c230b0769592e3a68d80633",

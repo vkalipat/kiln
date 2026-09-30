@@ -53,11 +53,11 @@ test("field and passage chunking evaluates every supplied character within trans
   expect(result.labels).toHaveLength(12);
 });
 
-test("weak irrelevant conflict head does not suppress confident support", async () => {
+test("unresolved conflict head preserves support citation without claiming complete coverage", async () => {
   const classify = createResearchClassifier({ evaluate: async request => ({ ...reply(request, answers => { answers.f0_conflict = answer("none", false); }),
     source: "fallback", reason: "low_confidence" }) }, "session");
   const result = await classify({ question: "Assess", fields: [field], passages: [passage("real-id", "SUPPORT")] }, new AbortController().signal);
-  expect(result.labels[0]).toMatchObject({ coverage: "supports", passageIds: ["real-id"] });
+  expect(result.labels[0]).toMatchObject({ coverage: "unknown", passageIds: ["real-id"] });
 });
 
 test("fabricated passage ID causes unknown instead of a fabricated citation", async () => {
@@ -154,4 +154,69 @@ test("bounded citation list retains both sides even when contradiction arrives a
   expect(result.labels[0]!.coverage).toBe("mixed");
   expect(result.labels[0]!.passageIds).toHaveLength(12);
   expect(result.labels[0]!.passageIds).toContain("id-169");
+});
+
+test("unresolved support head preserves contradiction citation as unknown coverage", async () => {
+  const classify = createResearchClassifier({ evaluate: async request => reply(request, answers => { answers.f0_support = answer("none", false); }) }, "session");
+  const result = await classify({ question: "Assess", fields: [field], passages: [passage("conflict", "CONFLICT")] }, new AbortController().signal);
+  expect(result.labels[0]).toMatchObject({ coverage: "unknown", passageIds: ["conflict"] });
+});
+
+test("independent sources share at most three slots without extra requests or reordered labels", async () => {
+  let active = 0, peak = 0, calls = 0;
+  let release!: () => void, admitted!: () => void;
+  const gate = new Promise<void>(resolve => { release = resolve; });
+  const three = new Promise<void>(resolve => { admitted = resolve; });
+  const classify = createResearchClassifier({ evaluate: async request => {
+    calls++; active++; peak = Math.max(peak, active); if (calls === 3) admitted();
+    await gate;
+    active--; return reply(request);
+  } }, "session");
+  const passages = Array.from({ length: 7 }, (_, i) => passage(`p-${i}`, `SUPPORT source ${i}`, `source-${i}`));
+  const pending = classify({ question: "Assess", fields: [field], passages }, new AbortController().signal);
+  await three;
+  expect(calls).toBe(3); expect(active).toBe(3);
+  release(); const result = await pending;
+  expect(peak).toBe(3); expect(calls).toBe(7);
+  expect(result.labels.map(label => label.sourceId)).toEqual(passages.map(p => p.sourceId));
+  expect(result.labels.map(label => label.passageIds)).toEqual(passages.map(p => [p.id]));
+  expect(result.costUsd).toBeCloseTo(0.007);
+});
+
+test("cancellation aborts all admitted sources and never schedules remaining sources", async () => {
+  const controller = new AbortController(); let calls = 0, cancelled = 0;
+  let admitted!: () => void;
+  const three = new Promise<void>(resolve => { admitted = resolve; });
+  const classify = createResearchClassifier({ evaluate: async request => {
+    calls++; if (calls === 3) admitted();
+    await new Promise<void>((_resolve, reject) => request.signal!.addEventListener("abort", () => { cancelled++; reject(new Error("cancelled")); }, { once: true }));
+    return reply(request);
+  } }, "session");
+  const passages = Array.from({ length: 8 }, (_, i) => passage(`p-${i}`, "SUPPORT", `source-${i}`));
+  const pending = classify({ question: "Assess", fields: [field], passages }, controller.signal);
+  const checked = pending.then(() => undefined, error => error as Error);
+  await three; controller.abort(); expect((await checked)?.message).toContain("cancelled");
+  expect(calls).toBe(3); expect(cancelled).toBe(3);
+});
+
+test("first failure aborts siblings but waits for their owned cleanup before rejecting", async () => {
+  let releaseCleanup!: () => void, reportCleanup!: () => void, rejectFirst!: (error: Error) => void;
+  const cleanup = new Promise<void>(resolve => { releaseCleanup = resolve; });
+  const cleanupStarted = new Promise<void>(resolve => { reportCleanup = resolve; });
+  const original = new Error("first source failed");
+  let calls = 0, settled = false, cleaned = false;
+  const classify = createResearchClassifier({ evaluate: async request => {
+    if (++calls === 1) await new Promise<void>((_resolve, reject) => { rejectFirst = reject; });
+    else {
+      await new Promise<void>(resolve => request.signal!.addEventListener("abort", () => resolve(), { once: true }));
+      reportCleanup(); await cleanup; cleaned = true; throw new Error("sibling cancelled");
+    }
+    return reply(request);
+  } }, "session");
+  const pending = classify({ question: "Assess", fields: [field], passages: [passage("a", "SUPPORT", "a"), passage("b", "CONFLICT", "b")] }, new AbortController().signal);
+  const outcome = pending.then(() => { settled = true; return undefined; }, error => { settled = true; return error; });
+  rejectFirst(original); await cleanupStarted;
+  expect(settled).toBe(false); expect(cleaned).toBe(false);
+  releaseCleanup(); expect(await outcome).toBe(original);
+  expect(cleaned).toBe(true); expect(calls).toBe(2);
 });

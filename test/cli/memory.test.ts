@@ -36,3 +36,17 @@ describe('memory CLI', () => {
     const s = output(); expect(await memoryCommand(['recall', 'q'], flags, s.io, { env: {}, fetchImpl: mock(() => new Response('private', { status: 502 })) })).toBe(1); expect(s.out).toEqual([]); expect(s.err.join('')).toContain('502'); expect(s.err.join('')).not.toContain('private');
   });
 });
+
+test('stored Hindsight credential authenticates recall and status only reports source', async () => {
+  const { AuthStore } = await import('../../src/providers/auth');
+  const home = mkdtempSync(join(tmpdir(), 'kiln-memory-key-'));
+  const auth = new AuthStore(join(home, 'auth.json')); auth.setApiKey('hindsight', 'fake-memory-secret');
+  const s = output();
+  expect(await memoryCommand(['status'], { home, ...flags }, s.io, { env: {} })).toBe(0);
+  expect(JSON.parse(s.out.join(''))).toMatchObject({ credentialConfigured: true, credentialSource: 'stored', serviceChecked: false });
+  expect(s.out.join('')).not.toContain('fake-memory-secret');
+  expect(await memoryCommand(['recall', 'query'], { home, ...flags }, output().io, { env: {}, fetchImpl: mock(init => {
+    expect(new Headers(init.headers).get('authorization')).toBe('Bearer fake-memory-secret');
+    return Response.json({ results: [] });
+  }) })).toBe(0);
+});

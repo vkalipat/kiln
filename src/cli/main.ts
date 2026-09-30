@@ -29,6 +29,8 @@ import { kilnHome } from "../core/paths";
 import { taskCommand } from "./commands/task";
 import { memoryCommand } from "./commands/memory";
 import { routeSuggestCommand } from "./commands/route-suggest";
+import { doctorCommand } from "./commands/doctor";
+import { integrationsCommand } from "./commands/integrations";
 import type { createOperatorRuntime } from "../operator/runtime";
 
 export interface CliIo {
@@ -84,9 +86,9 @@ export interface CliDeps {
   buildDeps?: Partial<Pick<BuildDeps, "git" | "stepHook" | "now" | "runCheck" | "runBuilder" | "createDriver" | "runAuditor" | "runSweep" | "initHook">>;
 }
 
-export const VERSION = "0.1.0";
+export const VERSION = "0.1.1";
 
-const USAGE = 'usage: kiln [tui] | kiln task [resume RUN_ID] <prompt> ... | kiln task limits [--uncapped | --budget USD --wall-seconds N] | kiln task monitor RUN_ID [--json] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
+const USAGE = 'usage: kiln [tui] | kiln doctor [--require jev,hindsight] [--json] | kiln integrations jev status|enable|disable | kiln task [resume RUN_ID] <prompt> ... | kiln task limits [--uncapped | --budget USD --wall-seconds N] | kiln task monitor RUN_ID [--json] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
 
 /** `--k v` and `--k=v` set string flags; a bare `--k` sets `true`. Everything else is a command word. */
 export function parseArgs(argv: string[]): { cmd: string[]; flags: Record<string, string | boolean> } {
@@ -122,6 +124,8 @@ export async function main(
     return 0;
   }
   const { cmd, flags } = parseArgs(argv);
+  if (cmd[0] === "doctor") return doctorCommand(cmd.slice(1), flags, io);
+  if (cmd[0] === "integrations") return integrationsCommand(cmd.slice(1), flags, io);
   if (cmd[0] === "model" && cmd[1] === "catalog") return catalogCommand(cmd.slice(2), flags, io, deps);
   // Explicit memory operations do not initialize a model home or provider session.
   if (cmd[0] === "memory") return memoryCommand(cmd.slice(1), flags, io, deps);

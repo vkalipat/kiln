@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import { loadConfig } from "../../core/config";
 import { kilnHome } from "../../core/paths";
+import { resolveIntegrationCredential } from "../../integrations/credentials";
 import { AuthStore } from "../../providers/auth";
 import { parseModelRef } from "../../providers/models";
 import { resolveStep } from "../../operator/routing";
@@ -28,7 +29,7 @@ export async function routeSuggestCommand(cmd: string[], flags: Record<string, s
     const available = new Set(auth.configuredProviders(providers));
     const decision = await classifyOperatorStep(summary, {
       fallback: step as OperatorStepKind, allowedSteps: STEPS, enabled: flags.jev === true,
-      apiKey: flags.jev === true ? process.env.TYPESAFE_API_KEY : undefined, fetch: deps.fetchImpl,
+      apiKey: flags.jev === true ? resolveIntegrationCredential(auth, "typesafe") : undefined, fetch: deps.fetchImpl,
     });
     let route: { modelRef: string; effort: string | null; role: string; reason: string } | null = null;
     try {

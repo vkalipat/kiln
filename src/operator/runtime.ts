@@ -18,6 +18,8 @@ import { createOperatorContextStore, type OperatorStepKind } from "./context";
 import { invokeIdeation } from "./ideation";
 import { createOperatorMeter } from "./meter";
 import { createComputeMonitor, type ComputeNotice, type ComputeMonitorSnapshot } from "./compute-monitor";
+import { resolveIntegrationCredential } from "../integrations/credentials";
+import { resolveJevSettings } from "../integrations/settings";
 import { createJevControl, type JevControlOptions, type JevControlStats, type JevRuntimeStep } from "./jev-control";
 import { resolveJevRoutingMode, shouldClassifyJev, type JevRoutingMode } from "./jev-routing-policy";
 import { createJevWorkflowService, type JevWorkflowStats } from "./jev-service";
@@ -158,13 +160,13 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     const routingMode = resolveJevRoutingMode({ isResume: !!options.runId, savedPolicy: metadata.jev, requestedMode: options.jev?.mode });
     const uncapped = metadata.budgetUsd === null && metadata.wallSeconds === null;
     metadata.jev ??= {
-      enabled: !options.runId && (options.jev?.enabled ?? process.env.KILN_JEV_ENABLED !== "0"),
+      enabled: !options.runId && (options.jev?.enabled ?? resolveJevSettings(cfg).enabled),
       model: options.jev?.model ?? JEV_MODEL, minConfidence: options.jev?.minConfidence ?? 0.8,
       timeoutMs: options.jev?.timeoutMs ?? 1500, maxCalls: options.jev?.maxCalls !== undefined ? options.jev.maxCalls : uncapped ? null : 64,
       maxTokens: options.jev?.maxTokens !== undefined ? options.jev.maxTokens : uncapped ? null : 100000,
     };
     metadata.jev.mode = routingMode;
-    metadata.workflows ??= { version: 1, enabled: !options.runId && (options.workflows?.enabled ?? process.env.KILN_JEV_WORKFLOWS === "1"),
+    metadata.workflows ??= { version: 1, enabled: !options.runId && (options.workflows?.enabled ?? resolveJevSettings(cfg).workflows),
       maxCalls: options.workflows?.maxCalls !== undefined ? options.workflows.maxCalls : uncapped ? null : 64,
       maxInputTokens: options.workflows?.maxInputTokens !== undefined ? options.workflows.maxInputTokens : uncapped ? null : 1_000_000 };
     if (metadata.workflows.version !== 1 || typeof metadata.workflows.enabled !== "boolean"
@@ -219,7 +221,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     const jevRequests = new AsyncLocalStorage<{ ticket?: ExternalTicket; allocationRejected?: boolean }>();
     const jev = createJevControl({ ...options.jev, ...metadata.jev, initialStats: metadata.jev.stats,
       enabled: metadata.jev.enabled && options.jev?.enabled !== false && process.env.KILN_JEV_ENABLED !== "0",
-      apiKey: options.jev?.apiKey ?? process.env.TYPESAFE_API_KEY,
+      apiKey: options.jev?.apiKey ?? resolveIntegrationCredential(auth, "typesafe"),
       fetch: (async (url, init) => {
         const request = jevRequests.getStore();
         if (!request || !meter) throw new Error("Jev dispatch requires operator accounting");
@@ -253,7 +255,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     };
     const workflowsEnabled = metadata.workflows.enabled && options.workflows?.enabled !== false && process.env.KILN_JEV_WORKFLOWS !== "0";
     const workflowJev = createJevWorkflowService({ enabled: workflowsEnabled && metadata.jev.enabled && options.jev?.enabled !== false && process.env.KILN_JEV_ENABLED !== "0",
-      apiKey: options.jev?.apiKey ?? process.env.TYPESAFE_API_KEY, fetch: options.jev?.fetch,
+      apiKey: options.jev?.apiKey ?? resolveIntegrationCredential(auth, "typesafe"), fetch: options.jev?.fetch,
       timeoutMs: metadata.jev.timeoutMs, minConfidence: metadata.jev.minConfidence,
       maxCalls: metadata.workflows.maxCalls, maxInputTokens: metadata.workflows.maxInputTokens, initialStats: metadata.workflows.stats,
       signal: () => control.signal, reserve: async request => meter?.reserveExternal(request),
@@ -584,7 +586,13 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           } finally {
             if (monitorPauseReason) stopped = "paused";
             if (timer) clearTimeout(timer); nativeStarted = false; metadata.activeSeconds += (performance.now() - start) / 1000; save();
-            if (stopped !== "completed") await closeSession();
+            if (stopped !== "completed") {
+              try { await closeSession(); }
+              catch (error) {
+                stopped = "failed";
+                lastError = `Operator cleanup failed: ${error instanceof Error ? error.message : String(error)}`;
+              }
+            }
             const costUsd = spent();
             writeStatus(run, { state: stopped === "completed" ? "done" : stopped, usdSpent: costUsd,
               outcome: stopped === "completed" ? { kind: "success", message: "Operator turn settled; task quality is determined by actual artifacts and verification, not this state." }
@@ -609,7 +617,10 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       },
       async cancel() {
         if (!busy) return;
-        abortRequested = true; control.cancel("user_cancelled"); await handle?.session.abort(); await busy;
+        abortRequested = true; control.cancel("user_cancelled");
+        // Abort failure does not prove the native turn stopped. Keep ownership until
+        // its prompt and cleanup settle, then report the abort failure to the caller.
+        try { await handle?.session.abort(); } finally { await busy; }
       },
       async setEffort(effort) {
         if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Unsupported operator effort");
@@ -624,7 +635,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       },
       async dispose() {
         if (disposed) return; disposed = true;
-        try { await runtime.cancel(); await closeSession(); }
+        try { try { await runtime.cancel(); } finally { await closeSession(); } }
         finally { options.signal?.removeEventListener("abort", externalCancel); release(); }
       },
     };

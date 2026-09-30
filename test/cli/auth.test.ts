@@ -159,3 +159,15 @@ describe("auth command", () => {
     expect(f.store.get("openai")).toBeUndefined();
   });
 });
+
+test.each([['jev', 'typesafe'], ['hindsight', 'hindsight']] as const)('integration %s key is masked, source-only and removable without OAuth', async (alias, provider) => {
+  const f = fixture(); f.io.askSecret = async () => 'integration-fake-secret';
+  expect(await main(['auth', 'key', alias, '--home', f.home], f.io, { authStoreFactory: () => f.store })).toBe(0);
+  expect(f.store.get(provider)).toMatchObject({ type: 'api_key', key: 'integration-fake-secret' });
+  expect(await main(['auth', 'status', '--json', '--home', f.home], f.io, { authStoreFactory: () => f.store })).toBe(0);
+  expect(f.out.join('')).not.toContain('integration-fake-secret');
+  expect(await main(['auth', 'login', alias, '--home', f.home], f.io, { authStoreFactory: () => f.store })).toBe(2);
+  expect(f.prompts).toHaveLength(0);
+  expect(await main(['auth', 'logout', alias, '--home', f.home], f.io, { authStoreFactory: () => f.store })).toBe(0);
+  expect(f.store.get(provider)).toBeUndefined();
+});

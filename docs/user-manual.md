@@ -100,7 +100,7 @@ For independent features, describe the scope and required checks, for example:
 
 > Implement import validation and the results panel in parallel. Give each worker disjoint files, define the interface first, and have the parent recheck both handoffs before integration.
 
-Kiln's `team` tool records the plan; native `task` starts workers. In native runtime 18.4.2, agents send peer messages through `write` to `agent://<id>`. Results and messages arrive automatically; `wait` is available when blocked on an owned job or message. The removed `hub` tool is not part of this runtime. The parent defines each feature's objective, literal relative file or directory scopes, dependencies and acceptance criteria. Workers obtain a current revision, claim a ready feature, work in their assigned scope and return artifact hashes plus check reports. Mutations return compact receipts with the changed features, revision and committed ledger hash; reuse that revision, and query for other features/history or after a revision conflict. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
+Kiln's `team` tool records the plan; native `task` starts workers. In the current pinned native runtime 18.4.4, agents send peer messages through `write` to `agent://<id>`. Results and messages arrive automatically; `wait` is available when blocked on an owned job or message. The removed `hub` tool is not part of this runtime. The parent defines each feature's objective, literal relative file or directory scopes, dependencies and acceptance criteria. Workers obtain a current revision, claim a ready feature, work in their assigned scope and return artifact hashes plus check reports. Mutations return compact receipts with the changed features, revision and committed ledger hash; reuse that revision, and query for other features/history or after a revision conflict. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
 
 Only the real parent operator can plan, accept or reopen features. Handoffs remain unverified claims until parent review. Acceptance records the parent's assessment and checks artifact identity; it does not independently prove a command ran. A failed feature can be reopened with a reason, preserving the old handoff history. Dependency artifacts are checked before downstream claims and acceptance.
 
@@ -156,27 +156,33 @@ After a transient discovery outage, inspect the diagnostic and use `kiln run res
 
 ## 7. Optional integrations
 
-**Jev:** with `TYPESAFE_API_KEY` supplied through your secret manager, new operator runs can classify ambiguous work transitions through `route_step auto`. Ordinary prompts keep their current role without a routing request. Explicit roles bypass Jev. Old Jev runs retain their saved per-prompt behavior on resume; changing mode requires a new run. `KILN_JEV_ENABLED=0 kiln` disables external classification. No key means local routing.
+**Jev:** configure a key with the masked `kiln auth key jev` prompt (stored as `typesafe`), or supply `TYPESAFE_API_KEY` through your secret manager. With a key, new operator runs can classify ambiguous work transitions through `route_step auto`. Ordinary prompts keep their current role without a routing request. Explicit roles bypass Jev. Old Jev runs retain their saved per-prompt behavior on resume; changing mode requires a new run. `KILN_JEV_ENABLED=0 kiln` disables external classification. No key means local routing.
 ```sh
 kiln model suggest "Implement and test the parser" --step implement --json
 kiln model suggest "Compare candidate approaches" --step synthesize --jev --json
 ```
 
-The first is local; the second explicitly calls Jev. Neither dispatches a model or changes a live session.
+The first is local; the second explicitly calls Jev. Neither dispatches the main model or changes a live session.
 
 ### Experimental browser and research workflows
 
-With the TypeSafe key already configured externally, start a new run:
+Save the workflow policy and inspect offline readiness:
 
 ```sh
-KILN_JEV_WORKFLOWS=1 kiln
+kiln auth key jev
+kiln integrations jev enable
+kiln integrations jev status --json
+kiln doctor --require jev --json
+kiln
 ```
+
+`enable`/`disable` persist the policy for new sessions without contacting TypeSafe. Existing sessions retain their saved policy. `KILN_JEV_WORKFLOWS=1` is an invocation override; `KILN_JEV_WORKFLOWS=0` removes workflow tools even on resume, while `KILN_JEV_ENABLED=0` disables Jev decisions. Neither override erases saved policy.
 
 Ask the operator to use `browser_task` on its existing owned tab. For example: “Use the existing search tab, fill the field labeled Search with kiln, click Search, and check that the results contain kiln.” The operator calls the tool directly outside `eval`, supplying exact allowed action labels, literal field values and fresh checks. Supported actions are click, fill, select, scroll and wait. It runs at most eight decisions over 30 seconds, returning when done, unsupported, stale, ambiguous or interrupted. It does not open a second browser. Uncertain inputs are not automatically repeated. A stale target can be reobserved within the same limits only when the executor proves no input occurred; completion checks and their observation are captured together. Already-satisfied literal fills are omitted from fresh actions, and code confirms satisfied primitive checks without requiring another model verdict.
 
 A browser receipt marked `verified` means its specified URL/text/field checks passed; it still reports `taskQualityValidated: false`. Review whether the checks establish your actual objective. Authentication, recognized consequential controls and unsupported page structures need native handling.
 
-For research, ask for named evidence fields and explicit source hosts: “Use research_task to collect the context limit and pricing from https://docs.typesafe.ai/models, allowing docs.typesafe.ai; show the captured passages and unresolved fields.” The tool can search/fetch allowed HTTPS sources and return captured artifacts, citation locations, hashes, contradictions and unknowns. Labels are not verified facts. Defaults are six sources, three concurrent fetches and a 30-second deadline. Dynamic pages that fail to fetch remain gaps; browser work is a separate tool call, not an automatic fallback.
+For research, ask for named evidence fields and explicit source hosts: “Use research_task to collect the context limit and pricing from https://docs.typesafe.ai/models, allowing docs.typesafe.ai; show the captured passages and unresolved fields.” The tool can search/fetch allowed HTTPS sources and return captured artifacts, citation locations, hashes, contradictions and unknowns. Labels are not verified facts. Defaults are six sources, three concurrent fetches and a 30-second deadline. Up to three independent source-classification batches run concurrently without adding requests; unresolved opposing classification answers remain unknown with citations retained. Dynamic pages that fail to fetch remain gaps; browser work is a separate tool call, not an automatic fallback.
 
 The two tools share a maximum of four active workflows. Finite-policy new runs default to 64 Jev requests and one million input-token exposure per run; new runs with both aggregate allocations uncapped default to uncapped aggregate Jev allowances. Explicit and saved allowances remain authoritative, and per-call limits and cancellation still apply. Each request conservatively reserves 64,000 input tokens; unknown usage retains that exposure. `KILN_JEV_WORKFLOWS=0` removes these tools for the current invocation, including resume; it does not erase an enabled saved policy. Removing the override later can restore that policy. `KILN_JEV_ENABLED=0` disables Jev decisions without removing workflow tools. Old runs do not gain workflows merely by resuming with the enable flag. Identical decisions can share a request or an accepted in-memory result without another charge; usage survives resume, cached answers do not.
 
@@ -190,7 +196,9 @@ kiln memory retain --file ./verified-project-notes.md --url http://127.0.0.1:888
 kiln memory recall "Which checks caught regressions?" --url http://127.0.0.1:8888 --bank example-project --max-tokens 2048
 ```
 
-Only run `retain` with the curated file you intend to send. `status` is offline. Recall returns untrusted JSON with provenance; review it against current artifacts. `KILN_HINDSIGHT_URL` and `KILN_HINDSIGHT_BANK` replace flags; `HINDSIGHT_API_KEY` is environment-only. Full bounds and examples are in [optional integrations](optional-integrations.md).
+Only run `retain` with the curated file you intend to send. `status` is offline. Recall returns untrusted JSON with provenance; review it against current artifacts. `KILN_HINDSIGHT_URL` and `KILN_HINDSIGHT_BANK` replace flags; use the masked `kiln auth key hindsight` prompt or `HINDSIGHT_API_KEY` for authentication. Nonempty environment keys take precedence over stored keys; integration keys stay in credential storage, not config or run metadata. Full bounds and examples are in [optional integrations](optional-integrations.md).
+
+`kiln doctor --json` checks local dependencies, configured model compatibility and credentials without provider, DNS or service calls. Optional-service gaps are warnings by default; `kiln doctor --require jev,hindsight --json` makes those configuration gaps blockers. A ready result is not live authentication, quota, service health or challenge completion. Hindsight endpoint and bank remain explicit flags/environment settings; saving a key provisions neither.
 
 ## 8. Keep the installation current
 

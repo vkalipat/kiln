@@ -66,6 +66,8 @@ export interface IdeationConfig {
 }
 
 export interface KilnConfig {
+  /** Optional integration policy. Credentials are stored separately from configuration. */
+  integrations?: { jev?: { workflows?: boolean } };
   /** Native run limits: omitted fields inherit planning budgets; null means uncapped. */
   operator?: { budgetUsd?: number | null; wallSeconds?: number | null };
   roles: Record<Role, string[]>;
@@ -359,7 +361,18 @@ export function loadConfig(home: string): KilnConfig {
       }
     }
   }
+  if (raw.integrations !== undefined) {
+    const integrations = raw.integrations;
+    if (!integrations || typeof integrations !== "object" || Array.isArray(integrations)) throw new Error("integrations must be an object");
+    if (integrations.jev !== undefined) {
+      if (!integrations.jev || typeof integrations.jev !== "object" || Array.isArray(integrations.jev)
+        || (integrations.jev.workflows !== undefined && typeof integrations.jev.workflows !== "boolean")) {
+        throw new Error("integrations.jev.workflows must be a boolean");
+      }
+    }
+  }
   return {
+    ...(raw.integrations ? { integrations: { ...raw.integrations, ...(raw.integrations.jev ? { jev: { ...raw.integrations.jev } } : {}) } } : {}),
     ...(raw.operator ? { operator: { ...raw.operator } } : {}),
     roles: { ...d.roles, ...(raw.roles ?? {}) },
     effort: raw.effort ?? d.effort,

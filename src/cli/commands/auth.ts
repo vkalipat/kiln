@@ -7,11 +7,18 @@ import {
   AUTH_PROVIDERS, openUrl, providerChoice, PROVIDER_CHOICES, type LoginProvider,
 } from "../../onboarding/auth";
 import { askSecret, askText, readSecretStdin } from "../../onboarding/input";
+import { integrationCredentialSource } from "../../integrations/credentials";
 import { AuthStore } from "../../providers/auth";
 import type { CliDeps, CliIo } from "../main";
 import { printJson, table } from "../output";
 
-const AUTH_USAGE = "usage: kiln auth login [anthropic|openai] [--device|--no-browser] | kiln auth key <anthropic|openai> [--api-key-stdin] | kiln auth status [--json] | kiln auth logout <anthropic|openai|all>\n";
+const AUTH_USAGE = "usage: kiln auth login [anthropic|openai] [--device|--no-browser] | kiln auth key <anthropic|openai|jev|hindsight> [--api-key-stdin] | kiln auth status [--json] | kiln auth logout <anthropic|openai|jev|hindsight|all>\n";
+
+function integrationChoice(provider: string | undefined) {
+  if (provider === "jev" || provider === "typesafe") return { name: "Jev", apiKey: "typesafe" as const };
+  if (provider === "hindsight") return { name: "Hindsight", apiKey: "hindsight" as const };
+  return undefined;
+}
 
 function safeAuthError(raw: string, sensitiveInputs: readonly string[]): string {
   const variants = sensitiveInputs.flatMap((value) => [value, encodeURIComponent(value)]);
@@ -86,7 +93,7 @@ async function login(
 }
 
 async function setKey(provider: string | undefined, flags: Record<string, string | boolean>, auth: AuthStore, io: CliIo, deps: CliDeps): Promise<number> {
-  const choice = providerChoice(provider);
+  const choice = integrationChoice(provider) ?? providerChoice(provider);
   if (!choice) { (io.error ?? io.write)(AUTH_USAGE); return 2; }
   let key: string;
   try { key = (await (flags["api-key-stdin"] === true ? readSecretStdin(deps) : askSecret(`Kiln · ${choice.name} API key: `, io, deps))).trim(); }
@@ -99,12 +106,13 @@ async function setKey(provider: string | undefined, flags: Record<string, string
 }
 
 function status(auth: AuthStore, json: boolean, io: CliIo): number {
-  const rows = AUTH_PROVIDERS.map((provider) => {
+  const rows: Array<{ provider: string; source: string; identity: string; expires: string }> = AUTH_PROVIDERS.map((provider) => {
     const stored = auth.get(provider);
     const expires = stored?.type === "oauth" ? new Date(stored.expires).toISOString() : "";
     const identity = stored?.type === "oauth" ? stored.email ?? stored.accountId ?? "" : "";
     return { provider, source: auth.source(provider), identity, expires };
   });
+  for (const provider of ["typesafe", "hindsight"] as const) rows.push({ provider, source: integrationCredentialSource(auth, provider), identity: "", expires: "" });
   if (json) printJson(io, rows);
   else table(io, [["provider", "source", "identity", "expires"], ...rows.map((row) => [row.provider, row.source, row.identity, row.expires])]);
   return 0;
@@ -114,6 +122,13 @@ function logout(requested: string | undefined, auth: AuthStore, io: CliIo): numb
   if (requested === "all") {
     for (const provider of auth.providers()) auth.remove(provider);
     io.write("Removed all stored Kiln credentials.\n");
+    return 0;
+  }
+  const integration = integrationChoice(requested);
+  if (integration) {
+    auth.remove(integration.apiKey);
+    const env = integrationCredentialSource(auth, integration.apiKey) === "env";
+    io.write(`Removed stored ${integration.name} credentials.${env ? " Environment credentials remain active." : ""}\n`);
     return 0;
   }
   const choice = providerChoice(requested);
