@@ -63,14 +63,14 @@ describe("eval manifest", () => {
   });
 });
 
-function legacyFixture() {
+function legacyFixture(version = "0.1.0") {
   const home = mkdtempSync(join(tmpdir(), "kiln-legacy-manifest-"));
   for (const file of Object.keys(bundledManifest.files)) {
     const target = join(home, "evals", file);
     mkdirSync(join(target, ".."), { recursive: true });
     copyFileSync(new URL(`../../evals/${file}`, import.meta.url), target);
   }
-  const manifest = { ...structuredClone(bundledManifest), kilnVersion: "0.1.0" };
+  const manifest = { ...structuredClone(bundledManifest), kilnVersion: version };
   const path = join(home, "evals", "manifest.json");
   writeFileSync(path, JSON.stringify(manifest));
   return { home, manifest, path };
@@ -97,5 +97,33 @@ test("legacy compatibility rejects changed, removed, added digest mappings and u
     const { home, manifest, path } = legacyFixture(); mutate(manifest);
     writeFileSync(path, JSON.stringify(manifest));
     expect(verifyEvalsManifest(home)).toEqual({ ok: false, changed: ["manifest.json"], missing: [], extra: [] });
+  }
+});
+
+
+test("0.1.2 accepts both known unchanged home versions and the shipped corpus", () => {
+  for (const version of ["0.1.0", "0.1.1"]) {
+    const { home, path } = legacyFixture(version);
+    const before = readFileSync(path);
+    expect(verifyEvalsManifest(home).ok).toBe(true);
+    expect(readFileSync(path)).toEqual(before);
+    const manifest = JSON.parse(before.toString());
+    manifest.files["README.md"] = "0".repeat(64);
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(verifyEvalsManifest(home).ok).toBe(false);
+  }
+  expect(verifyEvalsManifest(new URL("../../", import.meta.url).pathname).ok).toBe(true);
+});
+
+test("shipped CLI and plugin release versions agree with package metadata", async () => {
+  const { default: pkg } = await import("../../package.json");
+  const { VERSION } = await import("../../src/cli/main");
+  expect(VERSION).toBe(pkg.version);
+  const site = readFileSync(new URL("../../site/index.html", import.meta.url), "utf8");
+  expect(site).toContain(`class="version">v${pkg.version}</a>`);
+  expect(site).toContain(`Documentation · v${pkg.version}`);
+  for (const kind of [".claude-plugin", ".codex-plugin"]) {
+    const plugin = JSON.parse(readFileSync(new URL(`../../plugins/kiln/${kind}/plugin.json`, import.meta.url), "utf8"));
+    expect(plugin.version).toBe(pkg.version);
   }
 });

@@ -86,7 +86,7 @@ export interface CliDeps {
   buildDeps?: Partial<Pick<BuildDeps, "git" | "stepHook" | "now" | "runCheck" | "runBuilder" | "createDriver" | "runAuditor" | "runSweep" | "initHook">>;
 }
 
-export const VERSION = "0.1.1";
+export const VERSION = "0.1.2";
 
 const USAGE = 'usage: kiln [tui] | kiln doctor [--require jev,hindsight] [--json] | kiln integrations jev status|enable|disable | kiln task [resume RUN_ID] <prompt> ... | kiln task limits [--uncapped | --budget USD --wall-seconds N] | kiln task monitor RUN_ID [--json] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
 

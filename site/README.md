@@ -2,6 +2,8 @@
 
 Static HTML, CSS and JavaScript. No build step, third-party scripts, or runtime dependencies.
 
+Run `bun run docs:check` from the repository root to validate published documentation paths, heading anchors, and site assets. CI runs the same offline check. Add `--external` to check external HTTP targets too; blocked or unavailable services are reported as unverified.
+
 Preview from the repository root:
 
 ```sh
