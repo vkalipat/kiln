@@ -112,9 +112,10 @@ export class AuthStore {
         const entries = Object.entries(parsed).filter(([provider, credential]) => validCredential(provider, credential));
         this.creds = Object.fromEntries(entries);
         if (entries.length !== Object.keys(parsed).length) this.deps.onWarn?.("kiln: ignoring invalid credential entries");
-      } catch (e) {
+      } catch {
         this.creds = {};
-        this.deps.onWarn?.(`kiln: ignoring unreadable credential file ${path}: ${(e as Error).message}`);
+        // Parser errors can quote credential bytes from malformed input.
+        this.deps.onWarn?.(`kiln: ignoring unreadable credential file ${path}`);
       }
     }
   }

@@ -37,12 +37,12 @@ describe("AuthStore", () => {
   test("a corrupt auth.json yields an empty store and one warning", () => {
     const d = mkdtempSync(join(tmpdir(), "kiln-"));
     const path = join(d, "auth.json");
-    writeFileSync(path, "{not json");
+    writeFileSync(path, "fake-credential-must-stay-private");
     const warnings: string[] = [];
     const s = new AuthStore(path, { onWarn: (m) => warnings.push(m), getEnvApiKey: () => undefined, getDefinition: () => undefined });
     expect(s.providers()).toEqual([]);
-    expect(warnings.length).toBe(1);
-    expect(warnings[0]).toContain(path);
+    expect(warnings).toEqual([`kiln: ignoring unreadable credential file ${path}`]);
+    expect(warnings.join("\n")).not.toContain("fake-credential-must-stay-private");
   });
 
   test("a corrupt auth.json does not stop a later login from rewriting the file", async () => {
