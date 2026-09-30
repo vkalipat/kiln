@@ -62,7 +62,10 @@ export function inspectCommand(cmd: string[], flags: Record<string, string | boo
   if (cmd[0] === "model" && cmd[1] === "roles") {
     const roles = ROLES.map((role) => ({ role, refs: cfg.roles[role], effort: cfg.effortByRole?.[role] ?? cfg.effort }));
     if (flags.json) printJson(io, roles);
-    else table(io, [["role", "effort", "configured models"], ...roles.map((row) => [row.role, row.effort, row.refs.join(", ")])]);
+    else {
+      io.write("Reusable model defaults for bootstrap and legacy workflows; native task teams use task-specific responsibilities and assignments.\n");
+      table(io, [["default seat", "effort", "configured models"], ...roles.map((row) => [row.role, row.effort, row.refs.join(", ")])]);
+    }
     return 0;
   }
   if (cmd[0] === "model" && cmd[1] === "routing") {

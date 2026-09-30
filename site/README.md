@@ -16,7 +16,8 @@ permission selects the command for manual copying.
 `site/` changes on `main`. Configure the repository's Pages source as GitHub Actions.
 Public URL: https://vkalipat.github.io/kiln/.
 
-Keep commands consistent with `docs/user-manual.md`. Readiness statements describe
-the release and available features; this static site never reads a visitor's local
-configuration and does not imply live service health. Keep credentials, private
-workspace paths, and run records outside this directory.
+Keep commands consistent with `docs/user-manual.md`. Use descriptive headings,
+a short explanation, and actionable steps. Keep operational limits together in
+Usage notes; keep setup prerequisites beside their commands. Avoid promotional
+copy, development-status callouts, and redundant heading labels. Keep credentials,
+private workspace paths, and run records outside this directory.
