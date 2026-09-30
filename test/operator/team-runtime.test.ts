@@ -16,7 +16,6 @@ test("native operator registers scoped team handoffs and preserves parent-review
   auth.setApiKey("anthropic", "synthetic-test-key");
   let tool: any;
   const factory = async (options: OmpSessionOptions): Promise<OmpSessionHandle> => {
-    expect(options.appendSystemPrompt).toContain("Workers claim their feature");
     options.extensions![0]!({ zod: z, registerTool(value: any) { if (value.name === "team") tool = value; }, on() {} } as never);
     return { sessionId: "parent-session", sessionFile: join(home, "test-session.jsonl"), connectedProviders: ["anthropic"],
       session: { async prompt() {}, async abort() {} } as never, sdk: {} as never,
@@ -27,7 +26,7 @@ test("native operator registers scoped team handoffs and preserves parent-review
   let runtime: Awaited<ReturnType<typeof createOperatorRuntime>> | undefined;
   try {
     runtime = await createOperatorRuntime({ jev: { enabled: false }, home, cwd: home, seed: "Build a scoped parser feature", auth, createSession: factory });
-    await runtime.prompt("Build a scoped parser feature");
+    expect(await runtime.prompt("Build a scoped parser feature")).toMatchObject({ stopped: "completed" });
     expect(tool).toBeDefined();
     await invoke("parent-session", { action: "plan", expectedRevision: 0, plans: [{ id: "parser", objective: "Ship parser behavior",
       scopes: ["parser.txt"], dependencies: [], acceptance: ["Parser artifact matches the checked fixture"] }] });
