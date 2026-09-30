@@ -174,6 +174,8 @@ kiln run resume RUN_ID
 
 The [Kiln operator plugin](plugins/kiln/README.md) lets Codex or Claude Code launch, watch, pause, and resume the same durable run. Stable request IDs prevent duplicate launches. It does not create worktrees, bundle credentials, or start paid work merely by being installed.
 
+[Model instruction policy](docs/model-instructions.md) covers concise operator prompts, task-specific skill loading, context reuse and completion boundaries. The run skill loads detailed launch, watch or resume instructions only when needed.
+
 Detailed recovery rules, auth variants, TUI controls, and evaluation commands are in the [usage guide](docs/usage.md). The [design index](docs/design/README.md) links the original records and later corrections.
 
 ## Artifacts

@@ -78,6 +78,8 @@ The status area shows activity, cost, work type, model, effort and directory. A 
 
 During a running turn, another message steers the current work. After the turn settles, another message continues the same operator session. Give concrete acceptance conditions: what should exist, how to check it, and which decisions require your input.
 
+Kiln's [model instruction policy](model-instructions.md) keeps guidance specific to the task, reuses verified context, and avoids obligatory skills or repeated checks. It continues authorized work through the requested outcome; preparation alone does not authorize launching that workload. Your model and effort settings remain authoritative.
+
 A scriptable equivalent is:
 
 ```sh
