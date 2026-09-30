@@ -66,6 +66,8 @@ export interface IdeationConfig {
 }
 
 export interface KilnConfig {
+  /** Native run limits: omitted fields inherit planning budgets; null means uncapped. */
+  operator?: { budgetUsd?: number | null; wallSeconds?: number | null };
   roles: Record<Role, string[]>;
   /** Fallback for roles absent from `effortByRole`. */
   effort: Effort;
@@ -348,7 +350,17 @@ export function loadConfig(home: string): KilnConfig {
       throw new Error('routing.mode must be "adaptive" or "manual"');
     }
   }
+  if (raw.operator !== undefined) {
+    if (!raw.operator || typeof raw.operator !== "object" || Array.isArray(raw.operator)) throw new Error("operator limits must be an object");
+    for (const key of ["budgetUsd", "wallSeconds"] as const) {
+      const value = raw.operator[key];
+      if (value !== undefined && value !== null && (typeof value !== "number" || !Number.isFinite(value) || value <= 0)) {
+        throw new Error(`operator.${key} must be null or a finite positive number`);
+      }
+    }
+  }
   return {
+    ...(raw.operator ? { operator: { ...raw.operator } } : {}),
     roles: { ...d.roles, ...(raw.roles ?? {}) },
     effort: raw.effort ?? d.effort,
     effortByRole: { ...d.effortByRole, ...(raw.effortByRole ?? {}) },

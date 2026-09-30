@@ -10,8 +10,8 @@ export class OperatorBudget {
   private active = new Map<number, number>();
   private next = 0;
   private queue: Array<{ amount: number; resolve: (ticket: OperatorTicket) => void; reject: (error: unknown) => void; cleanup: () => void }> = [];
-  constructor(readonly limitUsd: number, private settledUsd = 0) {
-    if (!Number.isFinite(limitUsd) || limitUsd <= 0 || !Number.isFinite(settledUsd) || settledUsd < 0) throw new OperatorBudgetError("Invalid operator budget");
+  constructor(readonly limitUsd: number | null, private settledUsd = 0) {
+    if ((limitUsd !== null && (!Number.isFinite(limitUsd) || limitUsd <= 0)) || !Number.isFinite(settledUsd) || settledUsd < 0) throw new OperatorBudgetError("Invalid operator budget");
   }
   get chargedUsd() { return this.settledUsd + [...this.active.values()].reduce((a, b) => a + b, 0); }
   get activeCount() { return this.active.size; }
@@ -33,7 +33,7 @@ export class OperatorBudget {
   private drain() {
     while (this.queue.length) {
       const item = this.queue[0]!;
-      if (this.chargedUsd + item.amount > this.limitUsd) {
+      if (this.limitUsd !== null && this.chargedUsd + item.amount > this.limitUsd) {
         if (this.activeCount > 0) return;
         for (const queued of this.queue.splice(0)) {
           queued.cleanup(); queued.reject(new OperatorBudgetError("Operator estimated exposure budget exhausted", {

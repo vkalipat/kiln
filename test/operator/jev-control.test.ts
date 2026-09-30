@@ -91,3 +91,24 @@ test("resume restores consumed caps and rejects malformed accounting", async () 
   expect(() => createJevControl({ initialStats: { ...first.stats(), attempts: -1 } })).toThrow("statistics");
   expect(() => createJevControl({ initialStats: { ...first.stats(), inputTokens: Infinity } })).toThrow("statistics");
 });
+
+test("null aggregate limits continue past defaults and preserve resumed unknown accounting", async () => {
+  const counter = { calls: 0 };
+  const initialStats = { attempts: 64, inputTokens: 100000, outputTokens: 0, cacheHits: 0, attemptsWithoutUsage: 3 };
+  const control = createJevControl({ enabled: true, apiKey: "offline", fetch: transport(counter), maxCalls: null, maxTokens: null, initialStats, cacheEntries: 1 });
+  for (let i = 0; i < 65; i++) expect((await control.decide(`task ${i}`, request)).reason).toBe("accepted");
+  expect(counter.calls).toBe(65);
+  expect(control.stats()).toMatchObject({ attempts: 129, inputTokens: 100650, outputTokens: 130, attemptsWithoutUsage: 3 });
+  await control.decide("task 0", request);
+  expect(counter.calls).toBe(66); // Unlimited execution does not unbound the cache.
+  const aborted = new AbortController(); aborted.abort();
+  expect((await control.decide("cancelled", { ...request, signal: aborted.signal })).reason).toBe("aborted");
+  expect(counter.calls).toBe(66);
+  expect((await createJevControl({ enabled: true, apiKey: "offline", initialStats }).decide("default", request)).reason).toBe("call_budget");
+  expect((await createJevControl({ enabled: true, apiKey: "offline", maxCalls: null, initialStats }).decide("finite tokens", request)).reason).toBe("token_budget");
+});
+
+test.each([-1, Infinity, NaN, 0.5])("invalid aggregate controller limit %s is rejected", value => {
+  expect(() => createJevControl({ maxCalls: value })).toThrow("limits");
+  expect(() => createJevControl({ maxTokens: value })).toThrow("limits");
+});

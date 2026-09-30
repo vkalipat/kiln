@@ -6,9 +6,10 @@ export const JEV_RUNTIME_STEPS = ["research", "ideate", "implement", "synthesize
 export type JevRuntimeStep = typeof JEV_RUNTIME_STEPS[number];
 export interface JevControlOptions extends JevOptions {
   initialStats?: JevControlStats;
-  maxCalls?: number;
+  /** Null removes the aggregate call cap; omission preserves the default. */
+  maxCalls?: number | null;
   /** Stop new requests after this observed token total; the last request can cross it. */
-  maxTokens?: number;
+  maxTokens?: number | null;
   cacheEntries?: number;
 }
 export interface JevControlRequest {
@@ -37,8 +38,9 @@ export interface JevControlStats {
 export function createJevControl(options: JevControlOptions = {}) {
   // A controller owns one fixed policy; mutating the caller's options must not invalidate its cache identity.
   options = { ...options };
-  const maxCalls = options.maxCalls ?? 64, maxTokens = options.maxTokens ?? 100000, capacity = options.cacheEntries ?? 128;
-  if (![maxCalls, maxTokens, capacity].every(value => Number.isSafeInteger(value) && value >= 0)
+  const maxCalls = options.maxCalls === undefined ? 64 : options.maxCalls, maxTokens = options.maxTokens === undefined ? 100000 : options.maxTokens, capacity = options.cacheEntries ?? 128;
+  if (![maxCalls, maxTokens].every(value => value === null || (Number.isSafeInteger(value) && value >= 0))
+    || !Number.isSafeInteger(capacity) || capacity < 0
     || capacity > 4096) throw new Error("Invalid Jev controller limits");
   const cache = new Map<string, JevControlDecision>();
   const emptyStats: JevControlStats = { attempts: 0, cacheHits: 0, inputTokens: 0, outputTokens: 0, attemptsWithoutUsage: 0 };
@@ -76,8 +78,8 @@ export function createJevControl(options: JevControlOptions = {}) {
         return { ...decision, choice: cached.reason === "low_confidence" ? request.fallback : cached.choice,
           latencyMs: 0, originLatencyMs: cached.latencyMs, cacheHit: true };
       }
-      if (counters.attempts >= maxCalls) return local("call_budget");
-      if (counters.inputTokens + counters.outputTokens >= maxTokens) return local("token_budget");
+      if (maxCalls !== null && counters.attempts >= maxCalls) return local("call_budget");
+      if (maxTokens !== null && counters.inputTokens + counters.outputTokens >= maxTokens) return local("token_budget");
       counters.attempts++;
       const decision = await classifyOperatorStep(summary, { ...options, signal, fallback: request.fallback, allowedSteps: allowed });
       if (decision.usage) { counters.inputTokens += decision.usage.input_tokens; counters.outputTokens += decision.usage.output_tokens; }

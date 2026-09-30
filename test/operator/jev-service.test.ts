@@ -246,3 +246,33 @@ test("new steering generation aborts old in-flight work and starts a separately 
   expect(f.service.stats()).toMatchObject({ attempts: 2, inputTokens: 100, reservedInputTokens: 0, unknownInputTokens: 64000 });
   expect(f.tickets.flatMap(value => value.settlements)).toHaveLength(2);
 });
+
+test("null aggregate workflow limits retain exposure across resume and exceed default calls", async () => {
+  const initialStats = { attempts: 64, inputTokens: 1000000, outputTokens: 5, reservedInputTokens: 64000, unknownInputTokens: 64000 };
+  const f = fixture({ maxCalls: null, maxInputTokens: null, initialStats, cacheEntries: 1 });
+  expect(f.snapshots[0]).toEqual({ ...initialStats, reservedInputTokens: 0, unknownInputTokens: 128000 });
+  for (let i = 0; i < 65; i++) expect((await f.service.evaluate({ ...request, state: `task ${i}` })).reason).toBe("accepted");
+  expect(f.fetches()).toBe(65); expect(f.reservations).toHaveLength(65);
+  expect(f.service.stats()).toEqual({ attempts: 129, inputTokens: 1006500, outputTokens: 330, reservedInputTokens: 0, unknownInputTokens: 128000 });
+  expect(f.tickets.every(t => t.settlements.length === 1)).toBe(true);
+  await f.service.evaluate({ ...request, state: "task 0" }); expect(f.fetches()).toBe(66);
+  f.controller.abort(); expect((await f.service.evaluate(request)).reason).toBe("aborted"); expect(f.fetches()).toBe(66);
+  expect((await fixture({ initialStats }).service.evaluate(request)).reason).toBe("call_budget");
+  expect((await fixture({ initialStats, maxCalls: null }).service.evaluate(request)).reason).toBe("token_budget");
+});
+
+test("unlimited aggregate workflow still bounds each timeout and accounts unknown usage", async () => {
+  const f = fixture({ maxCalls: null, maxInputTokens: null, timeoutMs: 5, fetch: (() => new Promise(() => {})) as unknown as typeof fetch });
+  expect((await f.service.evaluate(request)).reason).toBe("timeout");
+  const resumed = fixture({ maxCalls: null, maxInputTokens: null, initialStats: f.service.stats() });
+  expect((await resumed.service.evaluate(request)).reason).toBe("accepted");
+  expect(resumed.service.stats()).toMatchObject({ attempts: 2, inputTokens: 100, unknownInputTokens: 64000, reservedInputTokens: 0 });
+  expect(f.tickets[0]!.settlements[0]!.costUsd).toBeUndefined();
+  expect((await resumed.service.evaluate({ ...request, state: "x".repeat(70000) })).reason).toBe("invalid_input");
+  expect(resumed.fetches()).toBe(1);
+});
+
+test.each([-1, Infinity, NaN, 0.5])("invalid aggregate workflow limit %s is rejected", value => {
+  expect(() => fixture({ maxCalls: value })).toThrow("limits");
+  expect(() => fixture({ maxInputTokens: value })).toThrow("limits");
+});

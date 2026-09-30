@@ -1,6 +1,6 @@
 # Kiln user manual
 
-Generated from the working implementation on **2026-09-28**.
+Updated from the working implementation on **2026-09-30**.
 
 Kiln is a local terminal workspace for building, researching and comparing ideas with an AI operator. One operator conversation can use tools, delegate scoped work, review returned artifacts and continue after interruption. The operator's final message is a report: inspect its checks and remaining work before treating the task as verified.
 
@@ -90,19 +90,23 @@ Copy `RUN_ID` from the run output. `kiln task resume RUN_ID` without a message r
 
 Budget is an allocation, not an absolute invoice cap: an admitted in-flight request can finish after crossing its target. Paid provider work consumes API budget or subscription allowance. A resumed task preserves recorded spending. Do not describe an agent turn ending as proof that all acceptance conditions passed.
 
+To keep working without an aggregate dollar or active-time allocation, run `kiln task limits --uncapped` for future native sessions, or `kiln task "Finish the task and its checks" --uncapped` for one new run. `null` allocations mean uncapped; usage accounting remains active. Restore finite defaults with `kiln task limits --budget 100 --wall-seconds 28800`. Existing runs retain their saved allocations. Provider, tool and concurrency limits still apply; legacy ideation batches retain finite planning targets. Work can stop for completion, a concrete blocker, cancellation or a detected loop.
+
+`kiln task monitor RUN_ID --json` reads local accounting and repetition/context-growth diagnostics without a model call. Identical failures warn at three and pause at six; identical successful calls/results warn at four and pause at eight. Recognized polling only warns. Missing usage and limited fingerprint coverage stay visible; this monitor does not judge task quality. See [compute limits and monitoring](compute-limits.md) for policy, thresholds and coverage details. No model or selected `xhigh` effort is lowered.
+
 ## 4. Ask for parallel feature work
 
 For independent features, describe the scope and required checks, for example:
 
 > Implement import validation and the results panel in parallel. Give each worker disjoint files, define the interface first, and have the parent recheck both handoffs before integration.
 
-Kiln's `team` tool records the plan; native `task` starts workers. In native runtime 18.4.2, agents send peer messages through `write` to `agent://<id>`. Results and messages arrive automatically; `wait` is available when blocked on an owned job or message. The removed `hub` tool is not part of this runtime. The parent defines each feature's objective, literal relative file or directory scopes, dependencies and acceptance criteria. Workers query the latest revision, claim a ready feature, work in their assigned scope and return artifact hashes plus check reports. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
+Kiln's `team` tool records the plan; native `task` starts workers. In native runtime 18.4.2, agents send peer messages through `write` to `agent://<id>`. Results and messages arrive automatically; `wait` is available when blocked on an owned job or message. The removed `hub` tool is not part of this runtime. The parent defines each feature's objective, literal relative file or directory scopes, dependencies and acceptance criteria. Workers obtain a current revision, claim a ready feature, work in their assigned scope and return artifact hashes plus check reports. Mutations return compact receipts with the changed features, revision and committed ledger hash; reuse that revision, and query for other features/history or after a revision conflict. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
 
 Only the real parent operator can plan, accept or reopen features. Handoffs remain unverified claims until parent review. Acceptance records the parent's assessment and checks artifact identity; it does not independently prove a command ran. A failed feature can be reopened with a reason, preserving the old handoff history. Dependency artifacts are checked before downstream claims and acceptance.
 
 Ask the operator to call `team` with `action: "review_packet"` and the feature `id` to see every stable acceptance-criterion ID, worker-declared artifact/check mappings and current artifact identity. Workers can include `coverage` in handoffs, mapping each `criterionId` to exact artifacts and zero-based `checkIndices`. Unmapped requirements remain visible. This is deterministic organization with no Jev call; check text remains an unverified claim and the parent must still review completeness and run appropriate checks.
 
-The ledger is `team.json` in the run directory. It coordinates collaborators but does not sandbox their tools. The parent remains responsible for integration checks and the original requirements.
+A synthetic 32-feature claim response fell from 17,270 to 997 UTF-8 bytes with compact receipts; this is not a measured token or billing reduction. Full query and review-packet access remain available. The ledger is `team.json` in the run directory. It coordinates collaborators but does not sandbox their tools. The parent remains responsible for integration checks and the original requirements.
 
 ## 5. Models, effort and idea search
 
@@ -174,7 +178,7 @@ A browser receipt marked `verified` means its specified URL/text/field checks pa
 
 For research, ask for named evidence fields and explicit source hosts: “Use research_task to collect the context limit and pricing from https://docs.typesafe.ai/models, allowing docs.typesafe.ai; show the captured passages and unresolved fields.” The tool can search/fetch allowed HTTPS sources and return captured artifacts, citation locations, hashes, contradictions and unknowns. Labels are not verified facts. Defaults are six sources, three concurrent fetches and a 30-second deadline. Dynamic pages that fail to fetch remain gaps; browser work is a separate tool call, not an automatic fallback.
 
-The two tools share a maximum of four active workflows, 64 Jev requests and one million input-token exposure per run, subordinate to its money budget and cancellation. Each request conservatively reserves 64,000 input tokens; unknown usage retains that exposure. `KILN_JEV_WORKFLOWS=0` removes these tools for the current invocation, including resume; it does not erase an enabled saved policy. Removing the override later can restore that policy. `KILN_JEV_ENABLED=0` disables Jev decisions without removing workflow tools. Old runs do not gain workflows merely by resuming with the enable flag. Identical decisions can share a request or an accepted in-memory result without another charge; usage survives resume, cached answers do not.
+The two tools share a maximum of four active workflows. Finite-policy new runs default to 64 Jev requests and one million input-token exposure per run; new runs with both aggregate allocations uncapped default to uncapped aggregate Jev allowances. Explicit and saved allowances remain authoritative, and per-call limits and cancellation still apply. Each request conservatively reserves 64,000 input tokens; unknown usage retains that exposure. `KILN_JEV_WORKFLOWS=0` removes these tools for the current invocation, including resume; it does not erase an enabled saved policy. Removing the override later can restore that policy. `KILN_JEV_ENABLED=0` disables Jev decisions without removing workflow tools. Old runs do not gain workflows merely by resuming with the enable flag. Identical decisions can share a request or an accepted in-memory result without another charge; usage survives resume, cached answers do not.
 
 Kiln now vendors the pinned jev-ultrafast snapshot and adapts its operation/target decisions to the native browser. It does not run the separate Python agent or launch another Chrome process. Supported browser observations and research passages are sent to TypeSafe for classification. These workflows remain experimental. A [live qualification](testing/2026-09-28-jev-live-qualification.md) passed three synthetic fixtures using nine provider requests; it demonstrated batching and request reuse. A subsequent native form fixture completed in two Jev decisions after five incomplete calibration attempts. These are development checks, not representative accuracy or a frontier-model speedup. See [optional integrations](optional-integrations.md) for exact bounds and data handling.
 

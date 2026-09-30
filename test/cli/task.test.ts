@@ -1,11 +1,14 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { main } from "../../src/cli/main";
 import { createRun } from "../../src/core/run";
 import type { OperatorRuntimeOptions } from "../../src/operator/runtime";
 import { acquireRunLock } from "../../src/core/lock";
+import { initHome } from "../../src/core/home";
+import { loadConfig, saveConfig } from "../../src/core/config";
+import { createComputeMonitor } from "../../src/operator/compute-monitor";
 import { requestRunPause } from "../../src/core/pause-request";
 
 test("operator CLI preserves a file prompt and forwards per-task budgets without changing home configuration", async () => {
@@ -58,4 +61,96 @@ test("operator CLI forwards cooperative pause and disposes before returning", as
   });
   expect(code).toBe(0); expect(aborted).toBe(true); expect(disposed).toBe(true);
   expect(process.listenerCount("SIGINT")).toBe(sigintBefore); expect(process.listenerCount("SIGTERM")).toBe(sigtermBefore);
+});
+
+test("uncapped and independent unlimited flags forward JSON-null allocations without changing home defaults", async () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-task-null-")); initHome(home);
+  const original = readFileSync(join(home, "config.json"), "utf8");
+  for (const [flags, expected] of [
+    [["--uncapped"], { budgetUsd: null, wallSeconds: null }],
+    [["--budget", "unlimited", "--wall-seconds", "15"], { budgetUsd: null, wallSeconds: 15 }],
+    [["--budget", "5", "--wall-seconds", "unlimited"], { budgetUsd: 5, wallSeconds: null }],
+  ] as const) {
+    let observed: OperatorRuntimeOptions | undefined;
+    expect(await main(["task", "Inspect local files", "--home", home, "--json", ...flags], { write: () => {} }, {
+      createOperatorRuntime: async options => {
+        observed = options; const run = createRun(home, options.seed!);
+        return { run, prompt: async () => ({ run, text: "checked", stopped: "completed", costUsd: 0, taskQualityValidated: false }),
+          steer: async () => ({ status: "delivered", sourceIds: [] }), cancel: async () => {}, setEffort: async () => {}, dispose: async () => {} };
+      },
+    })).toBe(0);
+    expect(observed).toMatchObject(expected);
+    expect(readFileSync(join(home, "config.json"), "utf8")).toBe(original);
+  }
+});
+
+test("mixed uncapped flags and invalid finite limits reject before dispatch or configuration mutation", async () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-task-invalid-limits-")); initHome(home);
+  const original = readFileSync(join(home, "config.json"), "utf8"); let calls = 0;
+  const deps = { createOperatorRuntime: async (): Promise<never> => { calls++; throw new Error("must not dispatch"); } };
+  for (const cmd of [["task", "Inspect local files"], ["task", "limits"]]) {
+    for (const flags of [["--uncapped", "--budget", "unlimited"], ["--uncapped", "--wall-seconds", "5"],
+      ["--budget", "Infinity"], ["--wall-seconds", "0"], ["--budget", "-1"]]) {
+      expect(await main([...cmd, "--home", home, ...flags], { write: () => {} }, deps)).toBe(2);
+    }
+  }
+  expect(calls).toBe(0);
+  expect(readFileSync(join(home, "config.json"), "utf8")).toBe(original);
+  expect(readdirSync(join(home, "runs"))).toHaveLength(0);
+});
+
+test("limits round trip changes only native operator policy and preserves omitted inherited planning limits", async () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-task-limits-")); initHome(home);
+  const cfg = loadConfig(home); delete cfg.operator; cfg.budgets.usd = 37; cfg.budgets.wallSeconds = 913; saveConfig(home, cfg);
+  const original = JSON.parse(readFileSync(join(home, "config.json"), "utf8")); let calls = 0;
+  const deps = { createOperatorRuntime: async (): Promise<never> => { calls++; throw new Error("must not dispatch"); } };
+  const invoke = async (flags: string[]) => {
+    const out: string[] = [];
+    expect(await main(["task", "limits", "--home", home, "--json", ...flags], { write: text => out.push(text) }, deps)).toBe(0);
+    return JSON.parse(out.join(""));
+  };
+  expect(await invoke([])).toMatchObject({ budgetUsd: 37, wallSeconds: 913 });
+  expect(await invoke(["--budget", "unlimited"])).toMatchObject({ budgetUsd: null, wallSeconds: 913 });
+  expect(loadConfig(home).operator).toEqual({ budgetUsd: null });
+  expect(await invoke(["--wall-seconds", "20"])).toMatchObject({ budgetUsd: null, wallSeconds: 20 });
+  expect(await invoke(["--uncapped"])).toMatchObject({ budgetUsd: null, wallSeconds: null });
+  expect(await invoke([])).toMatchObject({ budgetUsd: null, wallSeconds: null });
+  expect(await invoke(["--budget", "7", "--wall-seconds", "30"])).toMatchObject({ budgetUsd: 7, wallSeconds: 30 });
+  const saved = JSON.parse(readFileSync(join(home, "config.json"), "utf8")); delete saved.operator;
+  expect(saved).toEqual(original);
+  expect(calls).toBe(0); expect(readdirSync(join(home, "runs"))).toHaveLength(0);
+});
+
+test("monitor inspection validates run identity and corrupt receipts without dispatch or modifying evidence", async () => {
+  const home = mkdtempSync(join(tmpdir(), "kiln-task-monitor-")); initHome(home);
+  const run = createRun(home, "Synthetic monitoring fixture");
+  const monitor = createComputeMonitor({ runId: run.id, dir: run.dir }); monitor.beginTurn();
+  monitor.observeTool({ sessionId: "synthetic-session", name: "read", args: { path: "fixture.txt" }, result: "missing", ok: false });
+  const path = join(run.dir, "compute-monitor.json"), original = readFileSync(path, "utf8");
+  const config = readFileSync(join(home, "config.json"), "utf8"); let calls = 0;
+  const deps = { createOperatorRuntime: async (): Promise<never> => { calls++; throw new Error("must not dispatch"); } };
+  const invoke = async (id: string) => { const out: string[] = []; const code = await main(["task", "monitor", id, "--home", home, "--json"], { write: text => out.push(text) }, deps); return { code, text: out.join("") }; };
+  const success = await invoke(run.id);
+  expect(success.code).toBe(0); expect(JSON.parse(success.text).totals).toMatchObject({ toolCalls: 1, failedTools: 1 });
+  expect(readFileSync(path, "utf8")).toBe(original);
+  for (const id of ["../outside", "valid-but-missing"]) expect((await invoke(id)).code).toBe(2);
+  const wrongRun = createRun(home, "Other synthetic run"); writeFileSync(join(wrongRun.dir, "compute-monitor.json"), original);
+  expect((await invoke(wrongRun.id)).code).toBe(2);
+  writeFileSync(path, '{"version":1}'); expect((await invoke(run.id)).code).toBe(2);
+  expect(readFileSync(path, "utf8")).toBe('{"version":1}');
+  expect(readFileSync(join(home, "config.json"), "utf8")).toBe(config);
+  expect(calls).toBe(0);
+});
+
+
+test("monitor CLI on a nonexistent home remains a read-only failure", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "kiln-monitor-no-home-"));
+  const home = join(parent, "absent-home"); let calls = 0;
+  const code = await main(["task", "monitor", "missing-run", "--home", home, "--json"], { write: () => {} }, {
+    createOperatorRuntime: async (): Promise<never> => { calls++; throw new Error("must not dispatch"); },
+  });
+  expect(code).toBe(2);
+  expect(calls).toBe(0);
+  expect(existsSync(home)).toBe(false);
+  expect(readdirSync(parent)).toEqual([]);
 });
