@@ -107,10 +107,11 @@ function parseManifest(home: string): EvalsManifest | undefined {
         || file.startsWith("../") || manifestExcluded(file) || typeof hash !== "string" || !HASH.test(hash)) return undefined;
     }
     if (manifest.kilnVersion !== packageJson.version) {
-      // 0.1.1 changed release metadata only. Admit this one legacy corpus by exact
+      // Releases 0.1.1 and 0.1.2 retain the same evaluation corpus. Admit known versions by exact
       // membership and hashes; the normal on-disk checks below still verify its bytes.
-      const knownLegacy = packageJson.version === "0.1.1" && manifest.kilnVersion === "0.1.0"
-        && bundledManifest.version === 1 && bundledManifest.kilnVersion === packageJson.version
+      const knownLegacy = ["0.1.1", "0.1.2"].includes(packageJson.version)
+        && ["0.1.0", "0.1.1"].includes(manifest.kilnVersion)
+        && bundledManifest.version === 1 && bundledManifest.kilnVersion === "0.1.1"
         && Object.keys(manifest.files).length === Object.keys(bundledManifest.files).length
         && Object.entries(bundledManifest.files).every(([file, hash]) =>
           Object.hasOwn(manifest.files!, file) && manifest.files![file] === hash);

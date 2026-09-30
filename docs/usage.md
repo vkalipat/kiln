@@ -15,7 +15,7 @@ Kiln requires Bun 1.3.14 or newer and Git.
 ```sh
 git clone https://github.com/vkalipat/kiln.git
 cd kiln
-bun install
+bun install --frozen-lockfile
 bun link
 kiln
 ```
@@ -26,7 +26,7 @@ Bare `kiln` opens an editable prompt. Type a task and press Enter; if unauthenti
 
 ### Persistent operator conversations
 
-Bare `kiln` and `kiln task` use the native OMP operator. The operator keeps one session across follow-ups, delegates bounded work to native task workers, and invokes the research/ideation module when useful. Messages during a running turn steer that turn; messages after it finishes start a follow-up in the same session.
+Bare `kiln` and `kiln task` use the native OMP operator. The operator keeps one session across follow-ups, delegates bounded work to native task workers, and composes task-specific research, ideation and review assignments when useful. The preset-driven `ideate` module remains available only outside Jev resource mode. Messages during a running turn steer that turn; messages after it finishes start a follow-up in the same session.
 
 ```sh
 kiln task "Implement the requested feature and check it" --cwd . --budget 10
@@ -38,13 +38,13 @@ kiln --run RUN_ID
 
 The TUI displays work type, selected model and routed effort. Worker routes and pending reviewer recommendations appear in the transcript without replacing the main operator's model display. A failed switch does not publish an applied route.
 
-When `TYPESAFE_API_KEY` is configured, new operator runs use Jev for explicit `route_step auto` handoffs; ordinary prompts make no routing request. Resumed runs preserve their saved routing behavior. Kiln selects the model from its admitted pool and meters classification against the same allocation. Set `KILN_JEV_ENABLED=0` for local routing only. See [integration behavior and limits](optional-integrations.md).
+Use `kiln auth key jev`, `kiln model routing adaptive` and `kiln mode set auto` for task-specific model and effort selection. Jev can choose smaller models and lower effort at human task boundaries, explicit routing requests and new team assignments; routes stay stable inside tool loops. Resumed runs preserve their saved policy. `KILN_JEV_ENABLED=0` disables external decisions and uses labeled local fallback. See [resource routing](jev-resource-routing.md) and [integration limits](optional-integrations.md).
 
 The welcome screen uses large amber-white lettering and a rotating wireframe core with orbital trails, with smaller layouts for narrow terminals. `NO_ANIMATION=1` keeps a static frame. Once a conversation starts, its layout stays stable.
 
 ### Current native toolkit
 
-The instantiated operator exposes file reading/writing/editing, shell execution, JavaScript evaluation, glob/grep search, web search, todos, and native `task`/`hub` delegation. Discoverable tools also include AST editing, debugging, and Kiln's `team`, `context_publish`, `context_query`, `route_step`, `ideate`, and `ask_user`. Browser control is available through the `browser` API inside `eval`; it is not the separate Jev ultrafast browser agent.
+The instantiated operator exposes file reading/writing/editing, shell execution, JavaScript evaluation, glob/grep search, web search, todos, and native `task` delegation and `write` to `agent://<id>` for peer messages. Discoverable tools also include AST editing, debugging, and Kiln's `team`, `context_publish`, `context_query`, `route_step`, `team_assign`, and `ask_user`. The legacy `ideate` tool is available outside resource mode. Browser control is available through the `browser` API inside `eval`; opt-in `browser_task` adapts Jev decisions to the same owned browser.
 
 MCP, LSP, computer control, automatic memory and skill discovery are currently disabled in this embedded session. Available platform tools and connected provider access still depend on the local installation. Kiln's explicit Hindsight CLI is separate from native automatic memory.
 

@@ -18,6 +18,7 @@ jobs:
           bun-version: 1.4.0
       - run: bun install --frozen-lockfile
       - run: bun run typecheck
+      - run: bun run docs:check
       - run: bun test
       - run: bun bin/kiln.ts evals verify --home . --json
       - run: bun bin/kiln.ts evals leakcheck --home . --json

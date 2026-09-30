@@ -1,12 +1,12 @@
 {
   "name": "kiln",
-  "version": "0.1.1",
-  "description": "A local agent harness for ideation, verified builds, and evaluation-gated learning.",
+  "version": "0.1.2",
+  "description": "A terminal harness for research, ideation, and implementation.",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/vkalipat/kiln.git"
   },
-  "homepage": "https://github.com/vkalipat/kiln#readme",
+  "homepage": "https://vkalipat.github.io/kiln/",
   "bugs": {
     "url": "https://github.com/vkalipat/kiln/issues"
   },
@@ -19,6 +19,7 @@
     "test": "bun test",
     "test:usecases": "bun test test/usecases",
     "typecheck": "bunx tsc --noEmit",
+    "docs:check": "bun scripts/check-docs.ts",
     "kiln": "bun run bin/kiln.ts"
   },
   "dependencies": {

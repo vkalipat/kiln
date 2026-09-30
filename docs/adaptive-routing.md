@@ -1,16 +1,29 @@
 # Adaptive model routing
 
+For native operator sessions (`kiln` or `kiln task`), enable Jev resource selection and automatic effort:
+
+```sh
+kiln auth key jev
+kiln model routing adaptive
+kiln mode set auto
+```
+
+Jev selects model, effort and applicable responsibility from compatible choices using the task, reviewed evidence and cost. Legacy role presets do not define this candidate pool. `kiln model plan "Build a prototype" --json` previews the eligible catalog without a paid request; it does not predict the actual Jev selection. Inspect run receipts for that decision. See [Jev resource routing](jev-resource-routing.md) for task boundaries, explicit pins and fallback behavior.
+
+## Explicit phase workflow planning
+
+The remainder of this section describes `kiln run new` and its frozen phase plan. This workflow remains available separately from the persistent native operator.
+
 Adaptive routing performs the model-selection and budget-fit work before a new run starts. It does not make a paid model request or scrape leaderboards as part of planning.
 
 ```sh
 kiln model routing adaptive
-kiln model plan "Find a business idea and build a prototype" --json
 kiln run new "Find a business idea and build a prototype"
 ```
 
-The TUI uses the same run path. In its command palette (`Ctrl+O`), choose `model: adaptive`, `model: manual`, or `model: preview` to preview the current prompt draft. Fresh CLI/TUI homes enable adaptive routing and autonomous selection; existing configurations and evaluator model assignments are not silently migrated. `kiln model routing manual` restores configured role lists for future runs.
+Bare `kiln` starts the native operator, not this phase workflow. Existing configurations and evaluator model assignments are not silently migrated. `kiln model routing manual` disables native Jev resource routing and restores configured role selection for future explicit phase runs.
 
-## What adapts
+### What adapts in phase workflows
 
 - Role choices follow task-relevant categories in dated benchmark evidence, constrained by the installed model catalog and available providers. Science, business, and general work need not use the same ranking. Rankings inform choices; they do not prove that a model is a good Kiln judge or that an idea is correct.
 - Generator/judge and builder/auditor model separation is preserved. Quality ranks before vendor diversity: an independently scored stronger model is preferred even from the same vendor, with correlated-error risk disclosed. Different vendors break score ties. Unavailable catalog entries are not invented.
@@ -18,7 +31,7 @@ The TUI uses the same run path. In its command palette (`Ctrl+O`), choose `model
 - Allocation aims for 10% headroom over projected ideation cost, retaining a build reserve and checking the configured minimum feature count. These are explicit planning assumptions, not measured costs or a guarantee that a run will finish within its target.
 - Adaptive sessions receive runtime evidence guidance even when the home contains an older customized kernel. Guidance distinguishes facts, inferences, and hypotheses and respects which tools each role actually has. It does not grant tools, remove safety restrictions, or replace external checks.
 
-## Computational biology preference
+### Phase-workflow computational biology preference
 
 New adaptive runs apply a prospective workload preference when the request contains high-signal computational biology terms such as VirtualCell, Perturb-seq, single-cell analysis, bioinformatics, GFP, or protein binding. Generic spreadsheet cells, unit-cell physics, phones, and ordinary business work do not trigger it.
 
@@ -32,9 +45,9 @@ This policy runs only during planning for a new adaptive session. Manual configu
 
 ### Effort controls
 
-`kiln mode set low|medium|high|xhigh` remains an explicit override that assigns one effort level to every role. Use `kiln mode set auto` to restore Kiln's role-based defaults: high for the brain, builder, and critic; medium for generation, judging, auditing, and reflection; and low for scouting, probing, and arbitration. The command changes only the global fallback and per-role effort map. It does not change model lists, routing mode, budgets, autonomous behavior, provider settings, or frozen runs. Add `--json` to inspect the restored map.
+`kiln mode set low|medium|high|xhigh` pins effort for future sessions. `kiln mode set auto` enables adaptive effort for Jev resource routing and restores the legacy role effort map used by phase workflows. It does not enable resource routing by itself; use both setup commands above. Model lists, budgets, provider settings and frozen runs are preserved. Add `--json` to inspect the policy and fallback map.
 
-## Stable resumes and inspection
+## Phase-workflow resumes and inspection
 
 Each adaptive run writes `routing.json` alongside `workflow.json`. It records selected roles, effort, strict decision-tool policy, phase shares, planned rounds, and the planner's report. New reports include per-role category, metric, source, score (or an explicit unscored fallback), review counterpart, and selection explanation. These are inspectable decision criteria, not hidden model reasoning. The run summary includes that report. `kiln run show <id>` lists the file. Interrupted setup without its required plan cannot silently resume with a different configuration.
 
@@ -51,9 +64,9 @@ kiln model benchmarks import ./reviewed-benchmarks.json --reviewed
 
 Import requires a reviewed structured snapshot with source URLs, dates, and supported categories. Validation checks data shape and admissibility, not whether a website's score is truthful. Check source pages and benchmark settings before acknowledging review. New snapshots affect new plans; they do not mutate running sessions. Stale evidence is disclosed and cannot silently select a supposedly current winner.
 
-A home-imported snapshot overrides the bundle for CLI workflow planning, so updating source code alone does not refresh that override. Import the reviewed snapshot to update it. Native operator planning uses the bundled evidence. Restart and begin a new session after updating the bundle; frozen runs preserve their prior routing. The six-hour dependency updater does not refresh benchmark rankings.
+A home-imported snapshot overrides the bundle for CLI planning and new native resource-routing sessions. Updating source code alone does not refresh that override. New resource runs save their evidence in `operator/routing-evidence.json` and reuse it on resume. Legacy native routing uses the bundle. Restart and begin a new session after reviewing an update; existing runs preserve their saved policy and evidence. The six-hour dependency updater does not refresh benchmark rankings.
 
-Expired evidence stops new adaptive plans with a refresh/manual-mode instruction. The snapshot declares its maximum age (bounded to 90 days); ordinary runs do not claim to have rechecked its sources.
+Expired evidence stops new evidence-based adaptive plans with a refresh/manual-mode instruction. The snapshot declares its maximum age (bounded to 90 days); ordinary runs do not claim to have rechecked its sources.
 
 This is deliberately not autonomous ingestion of arbitrary leaderboard prose. Sites change formats, benchmark scores may include different harnesses or effort settings, and fetched text is not a trusted configuration. Catalog updates are also separate dependency changes; a benchmark import cannot install code or introduce an unsupported provider.
 

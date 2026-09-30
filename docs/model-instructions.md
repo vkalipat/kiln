@@ -17,8 +17,9 @@ not as an obligatory extra model call for every task.
 The operator starts with relevant sources and settled context, expands discovery when
 needed, and repeats verification when a change, failure or unresolved concern calls
 for it. Visual work calls for inspecting the rendered result. There is no added
-"think harder" instruction, automatic effort increase, global design style, or new
-memory/retrieval service. Browser and research workflow instructions appear only
+"think harder" instruction, global design style, or new memory/retrieval service.
+[Jev resource routing](jev-resource-routing.md) can select task-appropriate effort
+when automatic effort is enabled; explicit pins remain authoritative. Browser and research workflow instructions appear only
 when those capabilities are enabled.
 
 The [Kiln run skill](../plugins/kiln/skills/run/SKILL.md) has a precise operating
