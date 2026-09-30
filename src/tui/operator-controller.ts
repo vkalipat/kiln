@@ -259,6 +259,10 @@ export class OperatorController implements TuiControllerPort {
       return;
     }
     if (event.type === "usage") { this.#update({ costUsd: event.costUsd }); return; }
+    if (event.type === "compute_notice") {
+      this.#change({ type: "text", entry: this.#transcript.appendBrain(`Compute monitor (${event.notice.severity}): ${event.notice.message}`) });
+      return;
+    }
     this.#change(this.#transcript.consume({ ...event, sourceId: `${this.#generation}:${event.sourceId}`, role: "brain", phase: this.#snapshot.phase }));
   }
 

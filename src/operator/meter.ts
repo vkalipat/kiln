@@ -20,12 +20,12 @@ export interface OperatorMeterRow {
   costUsd?: number; stop?: string; reason?: string;
 }
 export interface OperatorMeterSnapshot {
-  version: 1; runId: string; limitUsd: number; chargedUsd: number; knownCostUsd: number;
+  version: 1; runId: string; limitUsd: number | null; chargedUsd: number; knownCostUsd: number;
   coverage: "estimated-exposure-not-invoice-ceiling";
   gaps: string[]; rows: OperatorMeterRow[]; seenMaintenance: string[];
 }
 export interface OperatorMeterOptions {
-  run: Pick<RunPaths, "id" | "dir">; limitUsd: number; deadline?: number; signal?: AbortSignal;
+  run: Pick<RunPaths, "id" | "dir">; limitUsd: number | null; deadline?: number; signal?: AbortSignal;
   /** Must abort the whole operator tree: SDK extension errors are notification-only. */
   onViolation: (error: Error) => void;
   onUsage?: (snapshot: OperatorMeterSnapshot) => void;
@@ -150,7 +150,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
     tickets.delete(row.id); row.state = retain ? "unknown" : "settled";
     row.provider = String(model.provider); row.model = model.id;
     if (known) { row.usage = counters(raw); if (Number.isFinite(cost)) row.costUsd = cost; }
-    row.stop = stop; persist(); if (budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
+    row.stop = stop; persist(); if (options.limitUsd !== null && budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
   }
   /** Optional external calls never wait on a parent model reservation or stop the tree on denial. */
   async function reserveExternal(request: ExternalMeterReservation): Promise<ExternalMeterTicket | undefined> {
@@ -159,7 +159,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
       || !Number.isFinite(request.reservedUsd) || request.reservedUsd < 0) throw new Error("Invalid external meter reservation");
     const scoped = scope(undefined, request.signal);
     if (closed || scoped.aborted || (options.deadline !== undefined && Date.now() >= options.deadline)
-      || budget.queuedCount > 0 || budget.chargedUsd + request.reservedUsd > options.limitUsd) return undefined;
+      || budget.queuedCount > 0 || (options.limitUsd !== null && budget.chargedUsd + request.reservedUsd > options.limitUsd)) return undefined;
     // acquire drains synchronously. No await between the headroom check and acquisition:
     // another request cannot take these funds and turn this optional admission into a wait.
     const acquired = budget.acquire(request.reservedUsd, scoped);
@@ -185,7 +185,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
       }
       row.reason = typeof result.reason === "string" ? result.reason.slice(0, 1024) : known ? "External usage settled" : "External usage unavailable; reservation retained";
       scoped.removeEventListener("abort", onAbort); persist();
-      if (budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
+      if (options.limitUsd !== null && budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
     };
     const onAbort = () => finish(dispatched ? { reason: "External request cancelled after dispatch; reservation retained" }
       : { costUsd: 0, reason: "External request cancelled before dispatch" });

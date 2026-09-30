@@ -27,8 +27,10 @@ export interface JevWorkflowServiceOptions {
   fetch?: typeof fetch;
   timeoutMs?: number;
   minConfidence?: number;
-  maxCalls?: number;
-  maxInputTokens?: number;
+  /** Null removes the aggregate call cap; omission preserves the default. */
+  maxCalls?: number | null;
+  /** Null removes the aggregate exposure cap, not per-request bounds or accounting. */
+  maxInputTokens?: number | null;
   initialStats?: JevWorkflowStats;
   cacheEntries?: number;
   cacheBytes?: number;
@@ -74,10 +76,10 @@ function snapshotInput(request: WorkflowRequest): { state: JevState; questions: 
 /** Run-owned service. Unknown and interrupted requests retain token and dollar exposure. */
 export function createJevWorkflowService(options: JevWorkflowServiceOptions) {
   options = { ...options };
-  const maxCalls = options.maxCalls ?? 64, maxInputTokens = options.maxInputTokens ?? 1_000_000;
+  const maxCalls = options.maxCalls === undefined ? 64 : options.maxCalls, maxInputTokens = options.maxInputTokens === undefined ? 1_000_000 : options.maxInputTokens;
   const capacity = options.cacheEntries ?? 32, byteCap = options.cacheBytes ?? 262144;
   if (![capacity, byteCap].every(n => Number.isSafeInteger(n) && n >= 0) || capacity > 1024 || byteCap > 16777216) throw new Error("Invalid Jev cache limits");
-  if (![maxCalls, maxInputTokens].every(n => Number.isSafeInteger(n) && n >= 0)) throw new Error("Invalid Jev workflow limits");
+  if (![maxCalls, maxInputTokens].every(n => n === null || (Number.isSafeInteger(n) && n >= 0))) throw new Error("Invalid Jev workflow limits");
   const empty: JevWorkflowStats = { attempts: 0, inputTokens: 0, outputTokens: 0, reservedInputTokens: 0, unknownInputTokens: 0 };
   const counters: JevWorkflowStats = { ...(options.initialStats ?? empty) };
   if (Object.keys(empty).some(key => !Number.isSafeInteger(counters[key as keyof JevWorkflowStats]) || counters[key as keyof JevWorkflowStats] < 0)) {
@@ -107,8 +109,8 @@ export function createJevWorkflowService(options: JevWorkflowServiceOptions) {
       const transport: typeof fetch = (async (url, init) => {
         // Admission and counter reservation are synchronous before awaiting dollar admission.
         // Concurrent workers therefore cannot each consume the same final allowance.
-        if (counters.attempts >= maxCalls) { denied = "call_budget"; throw new Error("Jev call allocation exhausted"); }
-        if (counters.inputTokens + counters.unknownInputTokens + counters.reservedInputTokens + MAX_REQUEST_INPUT_TOKENS > maxInputTokens) {
+        if (maxCalls !== null && counters.attempts >= maxCalls) { denied = "call_budget"; throw new Error("Jev call allocation exhausted"); }
+        if (maxInputTokens !== null && counters.inputTokens + counters.unknownInputTokens + counters.reservedInputTokens + MAX_REQUEST_INPUT_TOKENS > maxInputTokens) {
           denied = "token_budget"; throw new Error("Jev input allocation exhausted");
         }
         counters.attempts++;

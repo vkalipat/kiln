@@ -12,7 +12,7 @@ const model = { ...getBundledModel("anthropic", "claude-opus-5")!, maxTokens: 10
   cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } } as Model;
 const billed = () => ({ input: 10, output: 10, cacheRead: 2, cacheWrite: 0, totalTokens: 22,
   cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
-function setup(limit = 1, extra: Record<string, unknown> = {}) {
+function setup(limit: number | null = 1, extra: Record<string, unknown> = {}) {
   const dir = mkdtempSync(join(tmpdir(), "kiln-operator-meter-")); const violations: Error[] = [];
   const meter = createOperatorMeter({ run: { id: "test", dir }, limitUsd: limit, models: [model], onViolation: e => violations.push(e), ...extra });
   const attach = (sid: string) => {
@@ -285,4 +285,65 @@ test("external zero reservations are supported while invalid or unavailable admi
   expect(ticket!.dispatch()).toBe(true); ticket!.settle({ costUsd: 0 });
   expect(s.meter.usage().chargedUsd).toBe(0); expect(s.violations).toHaveLength(0);
   await s.meter.close(); expect(await s.meter.reserveExternal(externalRequest)).toBeUndefined();
+});
+
+test("only explicit null removes the budget limit; accounting and cancellation remain active", async () => {
+  for (const limit of [undefined, NaN, Infinity, -1, 0]) {
+    expect(() => new OperatorBudget(limit as number)).toThrow("Invalid operator budget");
+  }
+  const budget = new OperatorBudget(null, 17);
+  const [first, second] = await Promise.all([budget.acquire(100), budget.acquire(200)]);
+  expect(budget.queuedCount).toBe(0);
+  expect(budget.activeCount).toBe(2);
+  expect(budget.chargedUsd).toBe(317);
+  first.settle(130); second.settle();
+  expect(budget.chargedUsd).toBe(347);
+  const cancellation = new AbortController(); cancellation.abort(new Error("unlimited cancelled"));
+  await expect(budget.acquire(50, cancellation.signal)).rejects.toThrow("unlimited cancelled");
+  expect(budget.chargedUsd).toBe(347);
+  expect(budget.activeCount).toBe(0);
+});
+
+test("unlimited native and external requests keep known costs and interrupted exposure across resume", async () => {
+  const s = setup(null), native = s.attach("parent");
+  await native.emit("before_provider_request", request);
+  const nativeReserve = s.meter.usage().chargedUsd;
+  const [known, interrupted] = await Promise.all([
+    s.meter.reserveExternal({ ...externalRequest, reservedUsd: 100 }),
+    s.meter.reserveExternal({ ...externalRequest, reservedUsd: 200 }),
+  ]);
+  expect(known!.dispatch()).toBe(true); expect(interrupted!.dispatch()).toBe(true);
+  known!.settle({ costUsd: 150, inputTokens: 10, outputTokens: 2 });
+  expect(s.meter.usage().knownCostUsd).toBe(150);
+  expect(s.meter.usage().chargedUsd).toBeCloseTo(350 + nativeReserve);
+  expect(s.violations).toHaveLength(0);
+  expect(s.meter.signal.aborted).toBe(false);
+  const persisted = JSON.parse(readFileSync(join(s.dir, "operator-meter.json"), "utf8"));
+  expect(persisted.limitUsd).toBeNull();
+  expect(persisted.rows.filter((row: { state: string }) => row.state === "reserved")).toHaveLength(2);
+  // Simulate restart from the durable in-flight ledger, before the old process closes.
+  const resumed = createOperatorMeter({ run: { id: "test", dir: s.dir }, limitUsd: null, models: [model], onViolation: () => {} });
+  expect(resumed.usage().chargedUsd).toBeCloseTo(350 + nativeReserve);
+  expect(resumed.usage().rows.filter(row => row.state === "unknown")).toHaveLength(2);
+  const next = await resumed.reserveExternal(externalRequest);
+  expect(next).toBeDefined(); next!.settle({ costUsd: 0 });
+  expect(() => createOperatorMeter({ run: { id: "test", dir: s.dir }, limitUsd: 500, onViolation: () => {} })).toThrow("mismatched");
+  await s.meter.close(); await resumed.close();
+});
+
+test("unlimited cancellation releases undispatched reservations and retains dispatched unknown exposure", async () => {
+  const s = setup(null), before = new AbortController(), after = new AbortController();
+  const first = await s.meter.reserveExternal({ ...externalRequest, signal: before.signal });
+  before.abort(); expect(first!.dispatch()).toBe(false);
+  const second = await s.meter.reserveExternal({ ...externalRequest, signal: after.signal });
+  expect(second!.dispatch()).toBe(true); after.abort();
+  expect(s.meter.usage().rows[0]).toMatchObject({ state: "settled", chargedUsd: 0 });
+  expect(s.meter.usage().rows[1]).toMatchObject({ state: "unknown", chargedUsd: externalRequest.reservedUsd });
+  expect(await s.meter.reserveExternal({ ...externalRequest, signal: before.signal })).toBeUndefined();
+  expect(s.violations).toHaveLength(0); await s.meter.close();
+});
+
+test("finite ledgers cannot silently resume as unlimited", async () => {
+  const s = setup(1); await s.meter.close();
+  expect(() => createOperatorMeter({ run: { id: "test", dir: s.dir }, limitUsd: null, onViolation: () => {} })).toThrow("mismatched");
 });

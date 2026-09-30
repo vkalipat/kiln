@@ -129,7 +129,18 @@ kiln mode set xhigh
 
 `auto` restores role-based defaults: high for planning/building/critique, medium for generation/judging/audit/reflection, and low for retrieval/probes/arbitration. Compatible measured effort settings still take precedence. Explicit effort levels apply to every role; new defaults do not rewrite existing runs.
 
-Run dollar allocations are planning targets, not hard invoice ceilings or completion guarantees: an admitted provider turn may finish above its target. Turn limits and phase deadlines remain enforced; wall limits differ by phase, with some checked at work-unit boundaries. Cost estimates depend on assumed token counts and latency. Model benchmark rank, tool availability, and Kiln's full-program quality are separate questions.
+Native sessions can use an uncapped allocation while retaining accounting and local loop monitoring:
+
+```sh
+kiln task limits --uncapped             # Persist for new native sessions
+kiln task "Finish the task and checks" --uncapped  # One new task only
+kiln task limits --budget 100 --wall-seconds 28800 # Restore finite defaults
+kiln task monitor RUN_ID --json
+```
+
+Both `null` allocations remove aggregate dollar and active-time limits; existing runs preserve saved policies. Provider/per-tool/concurrency bounds still apply, and legacy ideation batches keep finite planning targets. The deterministic monitor makes no model calls and does not judge task quality. See [compute limits and monitoring](docs/compute-limits.md).
+
+Finite run dollar allocations are planning targets, not hard invoice ceilings or completion guarantees: an admitted provider turn may finish above its target. Legacy phase turn limits and deadlines remain enforced; wall limits differ by phase, with some checked at work-unit boundaries. Cost estimates depend on assumed token counts and latency. Model benchmark rank, tool availability, and Kiln's full-program quality are separate questions.
 
 ## What is default and what is opt-in
 

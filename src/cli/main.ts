@@ -86,7 +86,7 @@ export interface CliDeps {
 
 export const VERSION = "0.1.0";
 
-const USAGE = 'usage: kiln [tui] | kiln task [resume RUN_ID] <prompt> ... | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
+const USAGE = 'usage: kiln [tui] | kiln task [resume RUN_ID] <prompt> ... | kiln task limits [--uncapped | --budget USD --wall-seconds N] | kiln task monitor RUN_ID [--json] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
 
 /** `--k v` and `--k=v` set string flags; a bare `--k` sets `true`. Everything else is a command word. */
 export function parseArgs(argv: string[]): { cmd: string[]; flags: Record<string, string | boolean> } {
@@ -125,6 +125,8 @@ export async function main(
   if (cmd[0] === "model" && cmd[1] === "catalog") return catalogCommand(cmd.slice(2), flags, io, deps);
   // Explicit memory operations do not initialize a model home or provider session.
   if (cmd[0] === "memory") return memoryCommand(cmd.slice(1), flags, io, deps);
+  // Inspecting a saved receipt must not create a home or start a session.
+  if (cmd[0] === "task" && cmd[1] === "monitor") return taskCommand(cmd.slice(1), flags, io, deps);
   if (cmd[0] !== "evals" && cmd[0] !== "evolve") {
     initHome(typeof flags.home === "string" ? flags.home : kilnHome(), { plugAndPlay: true });
   }

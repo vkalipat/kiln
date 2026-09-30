@@ -328,3 +328,20 @@ test("routing observation restores saved selection and reflects effort without o
     expect(restored.find(event => event.type === "routing")).toMatchObject({ effort: "high", scope: "operator", handoff: false, reason: "Saved session selection" });
   } finally { await resumed.dispose(); }
 });
+
+test("compute warning and pause notices are visible without changing recorded usage or claiming completion", async () => {
+  const s = fixture();
+  await s.controller.start({ seed: "Inspect the local task" });
+  try {
+    s.emit({ type: "usage", costUsd: 1.25 });
+    const state = s.controller.getSnapshot().state;
+    for (const severity of ["warning", "pause"] as const) {
+      const message = severity === "warning" ? "Repeated tool failure needs review." : "Paused after repeated identical failures; revise the instruction.";
+      s.emit({ type: "compute_notice", notice: { kind: "repeated_failure", severity, message } });
+      const snapshot = s.controller.getSnapshot();
+      expect(snapshot.transcript.flatMap(entry => entry.kind === "brain" ? [entry.text] : []).join("\n")).toContain(`Compute monitor (${severity}): ${message}`);
+      expect(snapshot.costUsd).toBe(1.25);
+      expect(snapshot.state).toBe(state);
+    }
+  } finally { await s.controller.dispose(); }
+});
