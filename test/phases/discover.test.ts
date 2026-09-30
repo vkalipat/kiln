@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, spyOn, test } from "bun:test";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -14,6 +14,7 @@ import { createRun, readStatus, writeStatus, type RunPaths } from "../../src/cor
 import { hashInput, RunRecord } from "../../src/core/record";
 import { RunCancelledError, RunControl, withRunControl } from "../../src/core/run-control";
 import { initHome } from "../../src/core/home";
+import * as phaseDeadlines from "../../src/phases/shared";
 import { freezeRouting } from "../../src/workflow/routing";
 
 const AXES = "- who it serves: hobbyists | sideliners | commercial\n- mechanism class: sensing | modeling | logistics\n- where the value shows up: prevention | diagnosis | recovery";
@@ -221,17 +222,36 @@ describe("discovery research expansion", () => {
 
   test("a soft retrieval cutoff with no observed source cannot manufacture discovery evidence", async () => {
     const base = setup(); let fetches = 0;
-    const scout = createMockModel({ id: "late-retrieval", handler: async (context: Context) => (context.tools?.length ?? 0) === 0
-      ? { content: ["- unsupported invented observation"] }
-      : { delayMs: 240, content: [{ type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/source" } }] } } as never);
-    const brain = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["must not run"] }) } as never);
-    const d = deps(base, brain, scout); d.cfg.budgets.wallSeconds = 0.6;
-    d.cfg.budgets.share = { frame: 0, discover: 1, ideate: 0, form: 0, build: 0, reflect: 0 };
-    d.fetchImpl = (async () => { fetches++; return new Response("Source content"); }) as unknown as typeof fetch;
-    expect(await runDiscover(d)).toMatchObject({ outcome: "failed", failureClass: "verify" });
-    expect(fetches).toBe(0); expect(brain.calls).toHaveLength(0);
-    expect(existsSync(base.run.landscape)).toBe(false);
-    for (const file of readdirSync(base.run.discoveryDir)) expect(readFileSync(join(base.run.discoveryDir, file), "utf8")).not.toContain("unsupported invented observation");
+    // Control only the deadline signal boundary. CI load must not turn the
+    // soft-retrieval evidence test into the separately tested hard-deadline path.
+    const deadlines: { ms: number; controller: AbortController }[] = [];
+    const deadlineSpy = spyOn(phaseDeadlines, "createDisposableDeadline").mockImplementation(ms => {
+      const controller = new AbortController(); deadlines.push({ ms, controller });
+      return { signal: controller.signal, dispose() {} };
+    });
+    let softClosed = false;
+    try {
+      const scout = createMockModel({ id: "late-retrieval", handler: async (context: Context) => {
+        if ((context.tools?.length ?? 0) === 0) return { content: ["- unsupported invented observation"] };
+        if (!softClosed) {
+          const ordered = [...deadlines].sort((a, b) => a.ms - b.ms);
+          expect(ordered).toHaveLength(3);
+          expect(ordered[0]!.ms).toBeLessThan(ordered[1]!.ms);
+          ordered[0]!.controller.abort(new DOMException("Synthetic retrieval cutoff", "TimeoutError"));
+          expect(ordered.slice(1).every(deadline => !deadline.controller.signal.aborted)).toBe(true);
+          softClosed = true;
+        }
+        return { content: [{ type: "toolCall", name: "web_fetch", arguments: { url: "https://example.test/source" } }] };
+      } } as never);
+      const brain = createMockModel({ id: "must-not-run", handler: async () => ({ content: ["must not run"] }) } as never);
+      const d = deps(base, brain, scout);
+      d.fetchImpl = (async () => { fetches++; return new Response("Source content"); }) as unknown as typeof fetch;
+      expect(await runDiscover(d)).toMatchObject({ outcome: "failed", failureClass: "verify" });
+      expect(softClosed).toBe(true);
+      expect(fetches).toBe(0); expect(brain.calls).toHaveLength(0);
+      expect(existsSync(base.run.landscape)).toBe(false);
+      for (const file of readdirSync(base.run.discoveryDir)) expect(readFileSync(join(base.run.discoveryDir, file), "utf8")).not.toContain("unsupported invented observation");
+    } finally { deadlineSpy.mockRestore(); }
   });
 
   test("configured scout turn cap triggers the tool-free findings window in discovery", async () => {

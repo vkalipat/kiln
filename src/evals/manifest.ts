@@ -1,6 +1,7 @@
 import { lstatSync, readFileSync, readdirSync } from "node:fs";
 import { join, posix, sep } from "node:path";
 import packageJson from "../../package.json";
+import bundledManifest from "../../evals/manifest.json";
 import { writeAtomic } from "../core/paths";
 import { evalsPath, sha256Bytes } from "./seeds";
 
@@ -98,12 +99,22 @@ function parseManifest(home: string): EvalsManifest | undefined {
     const value = JSON.parse(readFileSync(path, "utf8")) as unknown;
     if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
     const manifest = value as Partial<EvalsManifest>;
-    if (manifest.version !== 1 || manifest.kilnVersion !== packageJson.version
+    if (manifest.version !== 1 || typeof manifest.kilnVersion !== "string"
       || typeof manifest.generatedAt !== "string" || Number.isNaN(new Date(manifest.generatedAt).valueOf())
       || !manifest.files || typeof manifest.files !== "object" || Array.isArray(manifest.files)) return undefined;
     for (const [file, hash] of Object.entries(manifest.files)) {
       if (file === "" || file.startsWith("/") || file.includes("\\") || posix.normalize(file) !== file
         || file.startsWith("../") || manifestExcluded(file) || typeof hash !== "string" || !HASH.test(hash)) return undefined;
+    }
+    if (manifest.kilnVersion !== packageJson.version) {
+      // 0.1.1 changed release metadata only. Admit this one legacy corpus by exact
+      // membership and hashes; the normal on-disk checks below still verify its bytes.
+      const knownLegacy = packageJson.version === "0.1.1" && manifest.kilnVersion === "0.1.0"
+        && bundledManifest.version === 1 && bundledManifest.kilnVersion === packageJson.version
+        && Object.keys(manifest.files).length === Object.keys(bundledManifest.files).length
+        && Object.entries(bundledManifest.files).every(([file, hash]) =>
+          Object.hasOwn(manifest.files!, file) && manifest.files![file] === hash);
+      if (!knownLegacy) return undefined;
     }
     return manifest as EvalsManifest;
   } catch {

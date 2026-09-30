@@ -20,6 +20,24 @@ async function nativeSetting(settings: unknown, key: string, ...value: unknown[]
 }
 
 describe("native OMP session adapter", () => {
+  test("explicit empty or scoped context bypasses ambient project instructions", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kiln-omp-context-"));
+    writeFileSync(join(root, "AGENTS.md"), "AMBIENT_PROJECT_CONTEXT_MARKER");
+    mkdirSync(join(root, ".omp", "skills", "unrequested"), { recursive: true });
+    writeFileSync(join(root, ".omp", "skills", "unrequested", "SKILL.md"), "---\nname: unrequested\ndescription: UNREQUESTED_SKILL_MARKER\n---\nNever implicitly load this skill.\n");
+    for (const contextFiles of [[], [{ path: join(root, "specific-policy.txt"), content: "EXPLICIT_CONTEXT_MARKER" }]]) {
+      let prompt = "";
+      const model = createMockModel({ id: "context-isolation", handler: (context: { systemPrompt?: string[] }) => { prompt = (context.systemPrompt ?? []).join("\n"); return { content: ["Synthetic context check"] }; } } as never);
+      const handle = await createOmpSession({ cwd: root, stateDir: join(root, "state"), modelRef: `${model.provider}/${model.id}`, model: model as never, effort: "low", connectedProviders: [model.provider],
+        auth: { apiKeyFor: async () => "synthetic", configuredProviders: providers => [...providers] }, streamFn: streamMock as never, contextFiles });
+      try {
+        await handle.session.prompt("Synthetic context check only");
+        expect(prompt).not.toContain("AMBIENT_PROJECT_CONTEXT_MARKER");
+        expect(prompt).not.toContain("UNREQUESTED_SKILL_MARKER");
+        expect(prompt.includes("EXPLICIT_CONTEXT_MARKER")).toBe(contextFiles.length > 0);
+      } finally { await handle.dispose(); }
+    }
+  });
   test("credential resolution rejects cancellation after the host promise settles", async () => {
     const root = mkdtempSync(join(tmpdir(), "kiln-omp-auth-cancel-"));
     const model = createMockModel({ id: "omp-auth-cancel" });
@@ -63,8 +81,10 @@ describe("native OMP session adapter", () => {
     const controller = new AbortController();
     let holdChild = false, childAborted = false, started!: () => void;
     const childStarted = new Promise<void>((resolve) => { started = resolve; });
-    const model = createMockModel({ id: "omp-child", handler: async (context: { tools?: { name: string }[] }, request: { signal?: AbortSignal }) => {
+    const prompts: { child: boolean; text: string }[] = [];
+    const model = createMockModel({ id: "omp-child", handler: async (context: { tools?: { name: string }[]; systemPrompt?: string[] }, request: { signal?: AbortSignal }) => {
       const child = context.tools?.some((t) => t.name === "yield");
+      prompts.push({ child: child === true, text: (context.systemPrompt ?? []).join("\n") });
       if (child && holdChild) {
         await new Promise<void>((resolve) => { request.signal!.addEventListener("abort", () => { childAborted = true; resolve(); }, { once: true }); started(); });
         throw request.signal!.reason;
@@ -72,7 +92,8 @@ describe("native OMP session adapter", () => {
       return { content: child ? [{ type: "toolCall", name: "yield", arguments: { data: "NATIVE_CHILD_VERIFIED" } }] : ["Root ready"] };
     } } as never);
     const handle = await createOmpSession({ cwd: root, stateDir: join(root, "state"), modelRef: `${model.provider}/${model.id}`, model: model as never, effort: "low", connectedProviders: [model.provider],
-      auth: { apiKeyFor: async () => "synthetic", configuredProviders: (providers) => [...providers] }, streamFn: streamMock as never, contextFiles: [], signal: controller.signal,
+      auth: { apiKeyFor: async () => "synthetic", configuredProviders: (providers) => [...providers] }, streamFn: streamMock as never,
+      contextFiles: [{ path: join(root, "task-policy.txt"), content: "EXPLICIT_SCOPED_CONTEXT_MARKER" }], signal: controller.signal,
       onModelMessage: (event, ctx) => { if (event.message.role === "assistant") observed.add(ctx.sessionManager.getSessionId()); },
       onBeforeModelCall: (ctx) => { guardedSessions.add(ctx.sessionManager.getSessionId()); return allowed; },
       factory: async (options) => {
@@ -92,6 +113,8 @@ describe("native OMP session adapter", () => {
       expect((result.details as { results: { exitCode: number; output: string }[] }).results[0]).toMatchObject({ exitCode: 0 });
       expect((result.details as { results: { output: string }[] }).results[0]!.output).toContain("NATIVE_CHILD_VERIFIED");
       expect(observed.size).toBe(2);
+      expect(prompts.some(p => p.child && p.text.includes("EXPLICIT_SCOPED_CONTEXT_MARKER"))).toBe(true);
+      expect(prompts.some(p => !p.child && p.text.includes("EXPLICIT_SCOPED_CONTEXT_MARKER"))).toBe(true);
       const hub = handle.session.agent.state.tools.find((t) => t.name === "hub");
       if (hub) {
         const listed = await hub.execute("hub-contract", { op: "list" });
@@ -130,6 +153,12 @@ describe("native OMP session adapter", () => {
         expect(await nativeSetting(sdkOptions!.settings!, "task.enableEffort")).toBe(true);
         expect(await nativeSetting(sdkOptions!.settings!, "modelRoles")).toEqual(options.modelRoles);
         expect(await nativeSetting(sdkOptions!.settings!, "compaction.enabled")).toBe(true);
+        expect(await nativeSetting(sdkOptions!.settings!, "includeWorkspaceTree")).toBe(false);
+        expect(await nativeSetting(sdkOptions!.settings!, "personality")).toBe("none");
+        expect(sdkOptions!.skills).toEqual([]);
+        expect(sdkOptions!.rules).toEqual([]);
+        expect(sdkOptions!.promptTemplates).toEqual([]);
+        expect(sdkOptions!.slashCommands).toEqual([]);
         return createAgentSession(sdkOptions);
       },
     };

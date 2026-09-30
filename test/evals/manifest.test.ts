@@ -1,7 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { mkdirSync, mkdtempSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, copyFileSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import bundledManifest from "../../evals/manifest.json";
 import { buildEvalsManifest, verifyEvalsManifest } from "../../src/evals/manifest";
 
 function fixture(): string {
@@ -60,4 +61,41 @@ describe("eval manifest", () => {
     symlinkSync(manifestTarget, manifest);
     expect(verifyEvalsManifest(manifestLink)).toEqual({ ok: false, changed: ["manifest.json"], missing: [], extra: [] });
   });
+});
+
+function legacyFixture() {
+  const home = mkdtempSync(join(tmpdir(), "kiln-legacy-manifest-"));
+  for (const file of Object.keys(bundledManifest.files)) {
+    const target = join(home, "evals", file);
+    mkdirSync(join(target, ".."), { recursive: true });
+    copyFileSync(new URL(`../../evals/${file}`, import.meta.url), target);
+  }
+  const manifest = { ...structuredClone(bundledManifest), kilnVersion: "0.1.0" };
+  const path = join(home, "evals", "manifest.json");
+  writeFileSync(path, JSON.stringify(manifest));
+  return { home, manifest, path };
+}
+
+test("accepts only the unchanged legacy corpus without rewriting its manifest or files", () => {
+  const { home, path } = legacyFixture();
+  const before = readFileSync(path), modified = statSync(path).mtimeMs;
+  expect(verifyEvalsManifest(home)).toEqual({ ok: true, changed: [], missing: [], extra: [] });
+  expect(readFileSync(path)).toEqual(before);
+  expect(statSync(path).mtimeMs).toBe(modified);
+  writeFileSync(join(home, "evals", "README.md"), "changed legacy corpus");
+  expect(verifyEvalsManifest(home)).toEqual({ ok: false, changed: ["README.md"], missing: [], extra: [] });
+});
+
+test("legacy compatibility rejects changed, removed, added digest mappings and unknown versions", () => {
+  const mutations = [
+    (m: ReturnType<typeof legacyFixture>["manifest"]) => { m.files["README.md"] = "0".repeat(64); },
+    (m: ReturnType<typeof legacyFixture>["manifest"]) => { delete (m.files as Record<string, string>)["README.md"]; },
+    (m: ReturnType<typeof legacyFixture>["manifest"]) => { (m.files as Record<string, string>)["extra.md"] = "0".repeat(64); },
+    (m: ReturnType<typeof legacyFixture>["manifest"]) => { m.kilnVersion = "0.0.9"; },
+  ];
+  for (const mutate of mutations) {
+    const { home, manifest, path } = legacyFixture(); mutate(manifest);
+    writeFileSync(path, JSON.stringify(manifest));
+    expect(verifyEvalsManifest(home)).toEqual({ ok: false, changed: ["manifest.json"], missing: [], extra: [] });
+  }
 });

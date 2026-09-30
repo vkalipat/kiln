@@ -51,9 +51,10 @@ export function createResearchClassifier(service: Service, sessionId: string): N
       const group = sources.get(passage.sourceId) ?? [];
       group.push(passage); sources.set(passage.sourceId, group);
     }
-    const labels: ResearchClassification[] = [];
+    const labelsBySource = new Map<string, ResearchClassification[]>();
     let costUsd = 0, knownCost = true;
-    for (const [sourceId, passages] of sources) {
+    const classifySource = async ([sourceId, passages]: [string, ResearchPassage[]]) => {
+      const labels: ResearchClassification[] = [];
       const aggregates = new Map<string, Aggregate>(input.fields.map(field => [field.id, { support: false, conflict: false,
         unknown: passages.some(p => !p.text.trim()), ids: new Set<string>() }]));
       // Splitting large supplied passages preserves their original citation ID. Every character
@@ -91,8 +92,10 @@ export function createResearchClassifier(service: Service, sessionId: string): N
             const label = main?.accepted && Object.hasOwn(coverage, main.choice) ? main.choice as ResearchCoverage : "unknown";
             const explicitNone = (kind: "support" | "conflict") => answers?.[`f${i}_${kind}`]?.accepted
               && answers[`f${i}_${kind}`]!.choice === "none";
-            const valid = (label === "not_stated" && explicitNone("support") && explicitNone("conflict")) || (label === "supports" && !!support)
-              || (label === "contradicts" && !!conflict) || (label === "mixed" && !!support && !!conflict);
+            const valid = (label === "not_stated" && explicitNone("support") && explicitNone("conflict"))
+              || (label === "supports" && !!support && (!!conflict || explicitNone("conflict")))
+              || (label === "contradicts" && !!conflict && (!!support || explicitNone("support")))
+              || (label === "mixed" && !!support && !!conflict);
             if (!valid) aggregate.unknown = true;
             // Independently accepted evidence cannot be discarded by another head's label.
             // A false absence claim becomes unknown; opposite positive evidence becomes mixed.
@@ -108,7 +111,28 @@ export function createResearchClassifier(service: Service, sessionId: string): N
             : aggregate.support ? "supports" : aggregate.conflict ? "contradicts" : "not_stated",
           passageIds: [...new Set([aggregate.supportId, aggregate.conflictId, ...aggregate.ids].filter((id): id is string => id !== undefined))].slice(0, 12) });
       }
+      labelsBySource.set(sourceId, labels);
+    };
+    // Sources are independent. Keep each source's chunks ordered and shared-service admission
+    // authoritative, while removing needless source-to-source latency. No extra questions.
+    const pending = [...sources.entries()]; let next = 0;
+    const local = new AbortController(); signal = AbortSignal.any([signal, local.signal]);
+    let firstFailure: { error: unknown } | undefined;
+    const worker = async () => {
+      try {
+        while (next < pending.length) {
+          if (signal.aborted) throw new Error("Research classification cancelled");
+          await classifySource(pending[next++]!);
+        }
+      } catch (error) { firstFailure ??= { error }; local.abort(); throw error; }
+    };
+    const workers = Array.from({ length: Math.min(3, pending.length) }, worker);
+    try {
+      await Promise.allSettled(workers);
+      if (firstFailure) throw firstFailure.error;
     }
+    finally { local.abort(); }
+    const labels = [...sources.keys()].flatMap(id => labelsBySource.get(id) ?? []);
     return { labels, ...(knownCost ? { costUsd } : {}) };
   };
 }

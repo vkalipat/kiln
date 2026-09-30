@@ -157,9 +157,9 @@ Finite run dollar allocations are planning targets, not hard invoice ceilings or
 
 Reflection always writes a digest and may propose a playbook delta. It does not modify the live playbook. Promotion requires separate evaluation, integrity checks, and an eligible result. This is gated configuration improvement, not automatic self-modification.
 
-With `TYPESAFE_API_KEY` configured, [Jev](docs/optional-integrations.md) classifies explicit `route_step auto` handoffs before Kiln selects an admitted model and effort. New runs use boundary routing: ordinary prompts make no routing request. Resume preserves saved routing behavior. Usage shares the run budget, repeated decisions are cached, and uncertain decisions preserve the current route. Set `KILN_JEV_ENABLED=0` to disable it. `kiln model suggest` also supports explicit suggestions; Hindsight project memory remains explicitly invoked through `kiln memory`.
+With `kiln auth key jev` or `TYPESAFE_API_KEY` configured, [Jev](docs/optional-integrations.md) classifies explicit `route_step auto` handoffs before Kiln selects an admitted model and effort. New runs use boundary routing: ordinary prompts make no routing request. Resume preserves saved routing behavior. Usage shares the run budget, repeated decisions are cached, and uncertain decisions preserve the current route. Set `KILN_JEV_ENABLED=0` to disable it. `kiln model suggest` also supports explicit suggestions; Hindsight project memory remains explicitly invoked through `kiln memory`.
 
-Start a new run with `KILN_JEV_WORKFLOWS=1 kiln` to enable experimental `browser_task` and `research_task` tools. The browser tool adapts a pinned jev-ultrafast snapshot and batched action decisions to an existing owned native tab; the research tool captures bounded HTTPS evidence with citations, contradictions and unknowns. Neither a passed browser assertion nor a passage label proves the full user goal. No separate Python agent or Chrome process is launched. Identical decisions share transport or accepted in-memory results; browser recovery only retries proven pre-input stale observations. See [design rationale](docs/jev-design.md), [usage and limits](docs/optional-integrations.md#browser-execution-and-completion-discipline) and the [2026-09-28 validation record](docs/testing/2026-09-28-jev-workflows.md). A [nine-request live qualification](docs/testing/2026-09-28-jev-live-qualification.md) passed three synthetic fixtures and demonstrated batching/reuse on those inputs. A native form fixture also completed in two Jev decisions after five incomplete development attempts, all retained in the report. Representative throughput and frontier-model comparisons remain unqualified.
+Save `kiln integrations jev enable` and start a new session (or use `KILN_JEV_WORKFLOWS=1 kiln`) to enable experimental `browser_task` and `research_task` tools. The browser tool adapts a pinned jev-ultrafast snapshot and batched action decisions to an existing owned native tab; the research tool captures bounded HTTPS evidence with citations, contradictions and unknowns. Neither a passed browser assertion nor a passage label proves the full user goal. No separate Python agent or Chrome process is launched. Identical decisions share transport or accepted in-memory results; browser recovery only retries proven pre-input stale observations. See [design rationale](docs/jev-design.md), [usage and limits](docs/optional-integrations.md#browser-execution-and-completion-discipline) and the [2026-09-28 validation record](docs/testing/2026-09-28-jev-workflows.md). A [nine-request live qualification](docs/testing/2026-09-28-jev-live-qualification.md) passed three synthetic fixtures and demonstrated batching/reuse on those inputs. A native form fixture also completed in two Jev decisions after five incomplete development attempts, all retained in the report. Representative throughput and frontier-model comparisons remain unqualified.
 
 ## Inspect, watch, and recover
 
@@ -173,6 +173,8 @@ kiln run resume RUN_ID
 ```
 
 The [Kiln operator plugin](plugins/kiln/README.md) lets Codex or Claude Code launch, watch, pause, and resume the same durable run. Stable request IDs prevent duplicate launches. It does not create worktrees, bundle credentials, or start paid work merely by being installed.
+
+[Model instruction policy](docs/model-instructions.md) covers concise operator prompts, task-specific skill loading, context reuse and completion boundaries. The run skill loads detailed launch, watch or resume instructions only when needed.
 
 Detailed recovery rules, auth variants, TUI controls, and evaluation commands are in the [usage guide](docs/usage.md). The [design index](docs/design/README.md) links the original records and later corrections.
 
@@ -189,6 +191,20 @@ A run directory contains ordinary files that can be inspected without Kiln:
 | `record.jsonl`, `status.json`, `metrics.json` | Event journal, resumable state, usage, and cost |
 | `operator.json`, `operator-context.json`, `team.json` | Native session state, shared evidence, and scoped feature handoffs |
 | `project/` and `reflect/` | Delivered repository and proposed learning digest |
+
+## Offline readiness
+
+The current native SDK pin is **18.4.4**. Configure integration credentials through masked prompts and check local readiness:
+
+```sh
+kiln auth key jev
+kiln integrations jev enable
+kiln auth key hindsight
+kiln doctor --json
+kiln doctor --require jev,hindsight --json
+```
+
+Environment credentials take precedence over stored keys; neither belongs in config or run metadata. Integration policy changes apply to new sessions; existing policies remain frozen, with environment `0` disabling overrides available. Hindsight still needs an explicit server URL and bank. Doctor makes no model/service calls: optional warnings do not block core readiness unless required, and configured access is not verified connectivity or quota. [Challenge software readiness](docs/challenges/2026-readiness.md) records remaining distinctions; neither challenge has been started and the user supplies their own task prompt.
 
 ## Evidence and limits
 

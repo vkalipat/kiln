@@ -4,7 +4,7 @@ Kiln uses its native operator, durable context, admitted model pool, and ideatio
 
 ## Jev runtime routing and step suggestions
 
-With `TYPESAFE_API_KEY` available, new native operator runs use boundary routing: ordinary prompts make no routing request, while `route_step` with `kind: "auto"` can call Jev at an ambiguous work transition. Jev chooses among research, ideation, implementation, and synthesis. Kiln then applies its existing credential, compatibility, role and effort rules to select an admitted model. Explicit step requests bypass Jev, and independent review still requires a separate worker and producer identity.
+With a key from `kiln auth key jev` or `TYPESAFE_API_KEY` available, new native operator runs use boundary routing: ordinary prompts make no routing request, while `route_step` with `kind: "auto"` can call Jev at an ambiguous work transition. Jev chooses among research, ideation, implementation, and synthesis. Kiln then applies its existing credential, compatibility, role and effort rules to select an admitted model. Explicit step requests bypass Jev, and independent review still requires a separate worker and producer identity.
 
 Boundary routing sends the agent's concise work description. Legacy or explicitly configured `per_prompt` routing sends bounded, redacted original-task and current-request excerpts. It does not receive the full transcript, repository files, or authentication store. Redaction is not a guarantee that arbitrary private text is removed. Set `KILN_JEV_ENABLED=0` to disable automatic external classification. Without a key, routing stays local. Routing mode is frozen per run. Existing Jev runs saved without a mode retain their previous `per_prompt` behavior; runs predating Jev retain local routing. Changing a saved mode requires a new run. The programmatic runtime option supports explicit `per_prompt` mode; there is no CLI mode flag.
 
@@ -19,11 +19,26 @@ kiln model suggest "Implement and test the CSV parser" --step implement --json
 kiln model suggest "Compare approaches to this research problem" --step synthesize --jev --json
 ```
 
-The first command is local. The second sends only the supplied summary to TypeSafe, using `TYPESAFE_API_KEY` from the environment. Do not include credentials or private material you do not intend to send. Configure the key through your normal secret manager; Kiln does not save it in a run.
+The first command is local. The second sends only the supplied summary to TypeSafe, using the configured TypeSafe credential. Do not include credentials or private material you do not intend to send. Use the masked `kiln auth key jev` prompt (stored under `typesafe`) or your secret manager. Nonempty `TYPESAFE_API_KEY` overrides the stored key. Keys are not saved in config or run metadata.
 
 The advisor offers four work types: research, ideation, implementation, and synthesis. `--step` supplies the fallback (default: synthesis). Jev is pinned to `jev-1.13.0`; a low-confidence, invalid, unavailable, or timed-out response keeps the fallback. Results expose decision provenance and latency. Kiln's existing compatibility and credential filters then suggest a model and effort. Missing eligible access produces no model suggestion. This command never changes or dispatches a native model. Independent review still requires the actual producer identity through the operator's `route_step` tool.
 
 Provider-free runtime tests verify selection, caching, cancellation, budget accounting and fallback. They do not establish improved task success, latency or end-to-end cost; those claims require a paired live evaluation on representative tasks. The design follows Jev's constrained classification API and the separation of selection from generation described in the [official API](https://docs.typesafe.ai/api) and [LangChain harness article](https://www.langchain.com/blog/building-a-harness-with-jev).
+
+## Persistent policy and offline checks
+
+```sh
+kiln auth key jev
+kiln integrations jev enable
+kiln integrations jev status --json
+kiln integrations jev disable
+kiln auth key hindsight
+kiln doctor --require jev,hindsight --json
+```
+
+Auth prompts are masked; automation can use `--api-key-stdin`. Workflow enable/disable changes only the default for new native sessions, without network dispatch. `KILN_JEV_WORKFLOWS` overrides that default for an invocation; `0` removes workflow tools on resume too. `KILN_JEV_ENABLED=0` disables Jev decisions. Existing run policies remain frozen and are not erased by these overrides.
+
+Doctor checks local dependency/model compatibility and configured access, not live authentication, quota or service reachability. Default doctor can report core readiness with optional-service warnings; `--require` turns missing requested integration configuration into blockers. Hindsight endpoint and bank must still be supplied explicitly through flags or environment.
 
 ## Hindsight project memory
 
@@ -35,7 +50,7 @@ kiln memory retain --file ./verified-project-notes.md --url http://127.0.0.1:888
 kiln memory recall "Which acceptance checks caught regressions?" --url http://127.0.0.1:8888 --bank example-project --max-tokens 2048
 ```
 
-`KILN_HINDSIGHT_URL` and `KILN_HINDSIGHT_BANK` can replace the URL and bank flags. Authentication uses `HINDSIGHT_API_KEY` from the environment. HTTPS is required except for loopback HTTP. URL credentials, redirects, and credential flags are rejected.
+`KILN_HINDSIGHT_URL` and `KILN_HINDSIGHT_BANK` can replace the URL and bank flags. Authentication uses the masked `kiln auth key hindsight` credential or `HINDSIGHT_API_KEY`; a nonempty environment value takes precedence. No endpoint, bank or server is provisioned by storing a key. HTTPS is required except for loopback HTTP. URL credentials, redirects, and credential flags are rejected.
 
 `status` checks local configuration only. `retain` sends only the named UTF-8 file, limited to 256 KiB, with a content hash and source basename. It requires a confirmed synchronous service response. A timeout can leave retention outcome unknown; Kiln does not automatically retry. `recall` returns bounded JSON explicitly marked as untrusted, retaining service provenance. Recalled material does not become a current requirement or an accepted check. Output is always JSON, including without `--json`.
 
@@ -45,11 +60,14 @@ There is no automatic retention/recall wrapper around model turns. Existing run 
 
 ## Browser execution and completion discipline
 
-Enable the experimental tools for a **new native operator run**, with `TYPESAFE_API_KEY` already supplied by your secret manager:
+Enable the experimental tools for a **new native operator run**, with a stored Jev key or `TYPESAFE_API_KEY` supplied by your secret manager:
 
 ```sh
-KILN_JEV_WORKFLOWS=1 kiln
+kiln integrations jev enable
+kiln
 ```
+
+For an invocation-only override, use `KILN_JEV_WORKFLOWS=1 kiln`.
 
 This registers `browser_task`, `research_task`, and the internal `kiln_browser_decide` service. These are operator tools, not shell subcommands. `KILN_JEV_WORKFLOWS=0` prevents workflow tool registration for that invocation, including resume; `KILN_JEV_ENABLED=0` disables Jev decisions without removing enabled workflow tools. These overrides do not rewrite the saved policy: removing them on a later resume can restore an originally enabled policy. Enabling workflows is frozen at run creation: starting an old run with the flag does not add them retroactively.
 
@@ -57,7 +75,7 @@ This registers `browser_task`, `research_task`, and the internal `kiln_browser_d
 
 Jev chooses an operation and compatible observed target from one batched request. Native ownership and freshness checks surround execution. A receipt with `status: "verified"` means only the supplied fresh checks passed: `quality` remains `specified_checks_only` and `taskQualityValidated` remains `false`. The native adapter returns check results and their observation atomically. The parent must assess whether those checks cover the user's goal. Text generation, arbitrary navigation and every browser control are not supported by this bounded tool.
 
-**Research:** `research_task` accepts a question, named required evidence fields, explicit HTTPS source URLs and exact allowed source hosts, optionally up to three search queries. Defaults are six sources, three concurrent fetches, 30 seconds, 12,000 captured characters per source and 1,800 inline characters; maxima are twelve sources, four fetches, 120 seconds and 6,000 inline characters. HTTPS host filtering is not a DNS sandbox. Retrieved text goes to immutable captured artifacts with hashes, URLs, retrieval times and passage locations. Jev labels support, contradiction, mixed evidence, not-stated or unknown; these labels do not establish source truth. `truthVerified` is always `false`. Captures can be truncated, and missing costs remain unknown. The registered tool has **no automatic browser fallback**: dynamic-page fetch failures remain explicit gaps, and the operator can call `browser_task` separately.
+**Research:** `research_task` accepts a question, named required evidence fields, explicit HTTPS source URLs and exact allowed source hosts, optionally up to three search queries. Defaults are six sources, three concurrent fetches, 30 seconds, 12,000 captured characters per source and 1,800 inline characters; maxima are twelve sources, four fetches, 120 seconds and 6,000 inline characters. HTTPS host filtering is not a DNS sandbox. Retrieved text goes to immutable captured artifacts with hashes, URLs, retrieval times and passage locations. Source classification runs at most three independent batches concurrently without additional requests. Unresolved opposing answers remain unknown and retain citations. Jev labels support, contradiction, mixed evidence, not-stated or unknown; these labels do not establish source truth. `truthVerified` is always `false`. Captures can be truncated, and missing costs remain unknown. The registered tool has **no automatic browser fallback**: dynamic-page fetch failures remain explicit gaps, and the operator can call `browser_task` separately.
 
 The operator admits at most four active browser/research workflows in total, across workers. Their separate shared Jev allocation defaults to 64 calls and 1,000,000 input-token exposure for new native runs with at least one finite aggregate allocation. When both native allocations are `null`, these default aggregate allowances are uncapped; explicit and saved allowances remain unchanged. Per-request bounds and the four-workflow concurrency limit still apply. Each request reserves 64,000 possible input tokens before dispatch; validated usage settles the reservation, while unknown/interrupted usage retains it, including on resume. For a finite allowance, unknown usage can exhaust the token allocation before 64 calls. Identical concurrent workflow decisions share one physical request; accepted known-usage answers can be reused from a bounded in-memory cache (32 entries, 256 KiB). Identity includes the exact serialized state/questions, operation, pinned model and confidence policy. Cache hits and followers have no additional dispatch/usage/charge and reference the origin request. They do not bypass browser freshness checks. Failures, low-confidence and unknown-usage results are not cached. Cancellation of one caller does not cancel remaining consumers; all callers cancelling or run cancellation aborts the shared request. Cache contents do not survive resume and are cleared on run cancellation; recorded usage counters do survive. Steering cancels its pending workflow callers; exact cached decisions still require current task/state identity and browser freshness checks. The root run's money and cancellation limits still apply. Steering invalidates pending workflow actions. Receipts and captured evidence remain in run artifacts; compact results return to the planner.
 

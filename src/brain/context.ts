@@ -3,9 +3,9 @@ import type { Usage } from "@oh-my-pi/pi-ai";
 import type { Model } from "@oh-my-pi/pi-catalog";
 
 /**
- * Tokens of recent transcript a compaction must keep. The library requires the field; kiln never
- * runs the library's compaction, so the value only has to be a coherent budget for the tail a
- * rebuilt round would need.
+ * Tokens of recent transcript reserved by the legacy brain context-pressure calculation.
+ * This path rebuilds a round rather than invoking library compaction. Native operator sessions
+ * use their own SDK compaction lifecycle; this constant does not configure that lifecycle.
  */
 export const KEEP_RECENT_TOKENS = 8000;
 

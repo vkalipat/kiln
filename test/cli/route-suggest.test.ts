@@ -51,3 +51,20 @@ test("explicit Jev opt-in classifies one step and returns an admitted model with
     rmSync(home, { recursive: true, force: true });
   }
 });
+
+test("stored Jev key is used only with explicit opt-in and is not printed", async () => {
+  const home = mkdtempSync(join(tmpdir(), 'kiln-suggest-stored-')); let out = '', calls = 0;
+  const previous = process.env.TYPESAFE_API_KEY; delete process.env.TYPESAFE_API_KEY;
+  try {
+    const { AuthStore } = await import('../../src/providers/auth');
+    const auth = new AuthStore(join(home, 'auth.json')); auth.setApiKey('typesafe', 'fake-stored-jev');
+    const deps = { authStoreFactory: () => auth, fetchImpl: (async (_url: unknown, init?: RequestInit) => {
+      calls++; expect(new Headers(init?.headers).get('authorization')).toBe('Bearer fake-stored-jev');
+      return Response.json({ model: 'jev-1.13.0', answers: { route: { type: 'choice', choice: 'implement', confidence: 0.99,
+        probabilities: { research: 0.01, ideate: 0.01, implement: 0.97, synthesize: 0.01 } } } });
+    }) as typeof fetch };
+    expect(await routeSuggestCommand(['task'], { home, json: true }, { write: s => out += s }, deps)).toBe(0); expect(calls).toBe(0);
+    expect(await routeSuggestCommand(['task'], { home, json: true, jev: true }, { write: s => out += s }, deps)).toBe(0); expect(calls).toBe(1);
+    expect(out).not.toContain('fake-stored-jev');
+  } finally { if (previous !== undefined) process.env.TYPESAFE_API_KEY = previous; rmSync(home, { recursive: true, force: true }); }
+});
