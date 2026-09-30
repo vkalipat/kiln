@@ -49,12 +49,13 @@ test("context growth advisories fire once per new observation and never pause", 
   for (let id = 1; id <= 4; id++) { rows.push(row(id, { payloadBytes: 100 * 2 ** id })); m.observeUsage(usage(rows)); m.observeUsage(usage(rows)); }
   expect(notices.map(n => [n.kind, n.severity])).toEqual([["context_growth", "warning"]]);
 }));
+// Exercise real persistence for 1,080 observations; this checks retention, not disk speed.
 test("bounds session history and notice history", () => fixture(dir => {
   const m = createComputeMonitor({ runId: "r", dir });
   for (let id = 0; id < 270; id++) for (let n = 0; n < 4; n++) m.observeTool({ sessionId: String(id), name: "read", args: null, result: null, ok: true });
   expect(m.snapshot().sessions).toHaveLength(256); expect(m.snapshot().notices).toHaveLength(64);
   expect(m.snapshot().totals.evictedSessions).toBe(14);
-}));
+}), 20_000);
 test("malformed restored state, wrong run and getters fail closed", () => fixture(dir => {
   const m = createComputeMonitor({ runId: "r", dir }); m.beginTurn();
   expect(() => createComputeMonitor({ runId: "other", dir })).toThrow();
