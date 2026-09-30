@@ -48,7 +48,7 @@ document.querySelectorAll('[data-copy]').forEach(button => {
   });
 });
 
-const links = document.querySelectorAll('.sidebar a[href^="#"], .page-outline a[href^="#"]');
+const links = document.querySelectorAll('.sidebar a[href^="#"]');
 const sections = [...document.querySelectorAll('main section[id]')];
 let scheduled = false;
 function updateLocation() {

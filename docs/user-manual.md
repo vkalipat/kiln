@@ -104,6 +104,10 @@ For independent features, describe the scope and required checks, for example:
 
 Kiln's `team` tool records the plan; native `task` starts workers. In the current pinned native runtime 18.4.4, agents send peer messages through `write` to `agent://<id>`. Results and messages arrive automatically; `wait` is available when blocked on an owned job or message. The removed `hub` tool is not part of this runtime. The parent defines each feature's objective, literal relative file or directory scopes, dependencies and acceptance criteria. Workers obtain a current revision, claim a ready feature, work in their assigned scope and return artifact hashes plus check reports. Mutations return compact receipts with the changed features, revision and committed ledger hash; reuse that revision, and query for other features/history or after a revision conflict. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
 
+The frontier operator decides whether a team is useful and defines responsibilities for the actual goal: for example, a source auditor, experiment designer and implementation owner. Simple tasks stay with one operator. `team_assign` exposes the compatible model catalog, including context limits, costs and reviewed selection evidence. The operator supplies a quality-qualified shortlist and preferred model for each planned feature; Jev can choose within that shortlist. Missing, disabled or inconclusive Jev preserves the operator's preference. An explicit user model is locked with `exactModelRef`; effort remains the user's choice.
+
+Assignments are saved in `operator/team-assignments.json`. The operator starts native `task` with the returned `dispatchName` as its name and the feature contract in its prompt. The native spawn hook applies that exact model, checks dependencies and rejects stale assignments or conflicting explicit selectors. It does not automatically switch models after provider failure. Shared sources can be read by multiple workers; scopes identify owned outputs and edits, so research teams can own separate evidence reports. Custom role names describe responsibilities, not personas or mandatory stages.
+
 Only the real parent operator can plan, accept or reopen features. Handoffs remain unverified claims until parent review. Acceptance records the parent's assessment and checks artifact identity; it does not independently prove a command ran. A failed feature can be reopened with a reason, preserving the old handoff history. Dependency artifacts are checked before downstream claims and acceptance.
 
 Ask the operator to call `team` with `action: "review_packet"` and the feature `id` to see every stable acceptance-criterion ID, worker-declared artifact/check mappings and current artifact identity. Workers can include `coverage` in handoffs, mapping each `criterionId` to exact artifacts and zero-based `checkIndices`. Unmapped requirements remain visible. This is deterministic organization with no Jev call; check text remains an unverified claim and the parent must still review completeness and run appropriate checks.
@@ -112,7 +116,7 @@ A synthetic 32-feature claim response fell from 17,270 to 997 UTF-8 bytes with c
 
 ## 5. Models, effort and idea search
 
-Model choice and reasoning effort are separate. Roles describe jobs; effort controls how an eligible model reasons. Inspect the actual configuration and routing evidence:
+Model choice and reasoning effort are separate. `kiln model roles` lists reusable bootstrap and legacy workflow defaults, not a required team roster. Native teams use the task-specific assignments described above. Effort controls how an eligible model reasons. Inspect configuration and routing evidence:
 
 ```sh
 kiln model roles --json
@@ -158,7 +162,7 @@ After a transient discovery outage, inspect the diagnostic and use `kiln run res
 
 ## 7. Optional integrations
 
-**Jev:** configure a key with the masked `kiln auth key jev` prompt (stored as `typesafe`), or supply `TYPESAFE_API_KEY` through your secret manager. With a key, new operator runs can classify ambiguous work transitions through `route_step auto`. Ordinary prompts keep their current role without a routing request. Explicit roles bypass Jev. Old Jev runs retain their saved per-prompt behavior on resume; changing mode requires a new run. `KILN_JEV_ENABLED=0 kiln` disables external classification. No key means local routing.
+**Jev:** configure a key with the masked `kiln auth key jev` prompt (stored as `typesafe`), or supply `TYPESAFE_API_KEY` through your secret manager. With a key, new operator runs can classify ambiguous work transitions through `route_step auto`. Ordinary prompts keep their current model without a routing request. Explicit step kinds bypass classification. Task-specific `team_assign` selections can also use Jev within a frontier-defined compatible shortlist; an exact model choice bypasses Jev. Old Jev runs retain their saved per-prompt behavior on resume; changing mode requires a new run. `KILN_JEV_ENABLED=0 kiln` disables external classification. No key means local routing.
 ```sh
 kiln model suggest "Implement and test the parser" --step implement --json
 kiln model suggest "Compare candidate approaches" --step synthesize --jev --json

@@ -86,3 +86,73 @@ test("owner-aware switching changes the next root/child request and never relaxe
     expect(second.calls).toHaveLength(2);
   } finally { await handle.dispose(); }
 }, 20_000);
+
+test("native spawn routing associates parallel assignments and blocks failed dispatch guards", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kiln-spawn-routing-"));
+  const seen: { name?: string; text?: string; effort?: string }[] = [];
+  let fail = false;
+  let failStartup = true;
+  const recovered: string[] = [];
+  const planner = createMockModel({ provider: "spawn-parent", id: "parent", handler: () => ({ content: planner.calls.length <= 3 ? [
+    { type: "toolCall", name: "task", arguments: { context: planner.calls.length === 1 ? "" : "Synthetic independent assignments", tasks: [
+      { agent: "task", name: "assignment_alpha", task: "Produce alpha evidence", effort: "lo" },
+      ...(planner.calls.length <= 2 ? [{ agent: "task", name: "assignment_beta", task: "Produce beta evidence" }] : []),
+    ] } },
+  ] : ["DONE"] }) } as never);
+  const alpha = createMockModel({ provider: "spawn-alpha", id: "alpha", reasoning: true, handler: () => ({ content: [{ type: "toolCall", name: "yield", arguments: { data: "ALPHA" } }] }) } as never);
+  const beta = createMockModel({ provider: "spawn-beta", id: "beta", reasoning: true, handler: () => ({ content: [{ type: "toolCall", name: "yield", arguments: { data: "BETA" } }] }) } as never);
+  for (const model of [alpha, beta]) (model as unknown as { thinking: unknown }).thinking = { mode: "effort", efforts: ["low", "high"] };
+  const candidates = [planner, alpha, beta];
+  const ref = `${planner.provider}/${planner.id}`;
+  const handle = await createOmpSession({ cwd: root, stateDir: join(root, "state"), modelRef: ref, model: planner as never,
+    effort: "low", contextFiles: [], connectedProviders: candidates.map((model) => model.provider),
+    auth: { apiKeyFor: async () => "synthetic-owned-key", configuredProviders: (providers) => [...providers] },
+    onBeforeModelCall: () => candidates.reduce((sum, model) => sum + model.calls.length, 0) < 10,
+    onTaskDispatchFailure: (names) => { recovered.push(...names); },
+    beforeSubagentSpawn: async (event) => {
+      if (fail) throw new Error("synthetic routing failure");
+      // Generic task inherits the parent selector without a role alias.
+      expect(event.modelRole).toBeUndefined();
+      expect(event.patterns).toEqual([ref]);
+      seen.push({ name: event.taskName, text: event.taskText, effort: event.effort });
+      const selected = event.taskName === "assignment_alpha" ? alpha : event.taskName === "assignment_beta" ? beta : undefined;
+      if (event.taskName === "assignment_alpha" && failStartup) { failStartup = false; return { model: "unavailable-provider/missing-model" }; }
+      return selected ? { model: `${selected.provider}/${selected.id}:high`, note: "Persisted assignment" } : { block: true, reason: "Missing assignment" };
+    },
+    factory: async (options) => {
+      expect(await nativeSetting(options.settings!, "task.speculativeLaunch")).toBe(false);
+      await nativeSetting(options.settings!, "async.enabled", false);
+      await nativeSetting(options.settings!, "modelRoles", { default: ref, smol: ref });
+      options.extensions!.push((extension) => {
+        for (const candidate of candidates) extension.registerProvider(candidate.provider, {
+          api: "mock", apiKey: "synthetic-registration-only", baseUrl: "https://synthetic.invalid",
+          models: [{ id: candidate.id, name: candidate.id, input: ["text"], contextWindow: 32000, maxTokens: 2000, thinking: (candidate as unknown as Model).thinking, reasoning: true }],
+          streamSimple: (model: Model, context: Parameters<typeof streamMock>[1], request: Parameters<typeof streamMock>[2]) => streamMock(candidates.find((candidate) => candidate.provider === model.provider)!, context, request),
+        } as never);
+      });
+      return createAgentSession(options);
+    },
+  });
+  try {
+    await handle.session.prompt("Delegate the two independent assignments then finish");
+    // Invalid first batch reuses both names; stale correlation must be cleaned.
+    expect(JSON.stringify(handle.session.agent.state.messages)).toContain("Missing `context`");
+    expect(seen.sort((a, b) => a.name!.localeCompare(b.name!))).toEqual([
+      { name: "assignment_alpha", text: "Produce alpha evidence", effort: "lo" },
+      { name: "assignment_alpha", text: "Produce alpha evidence", effort: "lo" },
+      { name: "assignment_beta", text: "Produce beta evidence", effort: undefined },
+    ]);
+    expect(recovered).toEqual(["assignment_alpha"]);
+    expect(alpha.calls).toHaveLength(1);
+    expect(beta.calls).toHaveLength(1);
+    expect(alpha.calls[0]!.options?.reasoning).toBe(Effort.Low);
+    expect(beta.calls[0]!.options?.reasoning).toBe(Effort.High);
+    expect(handle.session.model?.provider).toBe(planner.provider);
+    fail = true;
+    const task = handle.session.agent.state.tools.find((tool) => tool.name === "task")!;
+    const result = await task.execute("blocked-spawn", { context: "Synthetic blocked assignment", tasks: [{ agent: "task", name: "assignment_alpha", task: "Should never dispatch" }] });
+    expect(JSON.stringify(result)).toContain("dispatch guard failed");
+    expect(alpha.calls).toHaveLength(1);
+    expect(beta.calls).toHaveLength(1);
+  } finally { await handle.dispose(); }
+}, 20_000);

@@ -11,6 +11,25 @@ import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-in
 import type { AuthStore } from "../providers/auth";
 import { clampEffort, parseModelRef } from "../providers/models";
 
+export interface OmpSubagentSpawnEvent {
+  agent: string;
+  invocationKind: "task" | "eval";
+  modelRole?: string;
+  patterns: string[];
+  spawnKey?: string;
+  taskName?: string;
+  taskText?: string;
+  effort?: string;
+}
+
+export interface OmpSubagentSpawnResult {
+  /** One exact admitted selector; retry chains are deliberately unsupported. */
+  model?: string;
+  block?: boolean;
+  reason?: string;
+  note?: string;
+}
+
 export interface OmpSessionOptions {
   cwd: string;
   stateDir: string;
@@ -33,6 +52,9 @@ export interface OmpSessionOptions {
   /** Rebound native extension hooks run in root and spawned sessions. */
   onBeforeModelCall?: (context: ExtensionContext, request: Parameters<AgentBeforeModelCall>[0], signal?: AbortSignal) => boolean | void | Promise<boolean | void>;
   onModelMessage?: (event: MessageEndEvent, context: ExtensionContext) => void | Promise<void>;
+  beforeSubagentSpawn?: (event: OmpSubagentSpawnEvent, context: ExtensionContext) => OmpSubagentSpawnResult | void | Promise<OmpSubagentSpawnResult | void>;
+  /** Recover a reserved assignment only when synchronous native task failed without a running child. */
+  onTaskDispatchFailure?: (names: string[], context: ExtensionContext) => void | Promise<void>;
   onBeforeCompact?: (context: ExtensionContext) => boolean | void | Promise<boolean | void>;
   onExtensionError?: (message: string) => void;
   /** Test/embedding seams: supplied model and stream must still use the explicit selector. */
@@ -151,6 +173,7 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
     "edit.autoRepair.enabled": false, "features.unexpectedStopDetection": "mechanical", "speech.enhanced": false,
     defaultThinkingLevel: clampEffort(model, options.effort) ?? "high",
     modelRoles: options.modelRoles ?? {}, "task.enableEffort": true, "task.prewalk": false,
+    ...(options.beforeSubagentSpawn ? { "task.speculativeLaunch": false } : {}),
     personality: "none", includeWorkspaceTree: false,
   });
   const authStorage = await AuthStorage.create(":memory:");
@@ -189,6 +212,69 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
     };
   }
   const hooks: NonNullable<CreateAgentSessionOptions["extensions"]>[number] = (extension) => {
+    // Each rebound extension owns one parent session's pending dispatches.
+    // Match identities, never consume a global next-worker queue.
+    const dispatchedTasks = new Map<string, { name: string; spawnKey?: string }>();
+    const pendingTasks = new Map<string, { name: string; taskText?: string; effort?: string }>();
+    extension.on("tool_execution_start", (event) => {
+      if (!options.beforeSubagentSpawn || event.toolName !== "task" || !event.args || typeof event.args !== "object") return;
+      const input = event.args as Record<string, unknown>;
+      const tasks = Array.isArray(input.tasks) ? input.tasks : [input];
+      tasks.forEach((raw, index) => {
+        if (!raw || typeof raw !== "object") return;
+        const task = raw as Record<string, unknown>;
+        if (typeof task.name !== "string") return;
+        pendingTasks.set(`${event.toolCallId}:${index}`, {
+          name: task.name,
+          taskText: typeof task.task === "string" ? task.task : undefined,
+          effort: typeof task.effort === "string" ? task.effort : typeof input.effort === "string" ? input.effort : undefined,
+        });
+      });
+    });
+    extension.on("tool_execution_end", async (event, ctx) => {
+      const prefix = `${event.toolCallId}:`;
+      for (const id of pendingTasks.keys()) if (id.startsWith(prefix)) pendingTasks.delete(id);
+      const dispatched = [...dispatchedTasks.entries()].filter(([id]) => id.startsWith(prefix));
+      for (const [id] of dispatched) dispatchedTasks.delete(id);
+      if (!options.onTaskDispatchFailure || !dispatched.length) return;
+      const result = event.result as { details?: { async?: unknown; results?: { index?: number; exitCode?: number; error?: unknown; aborted?: boolean }[] } } | undefined;
+      // Background jobs settle after the tool returns; never release their reservations here.
+      if (result?.details?.async || !Array.isArray(result?.details?.results)) return;
+      const results = result.details.results;
+      const failed = dispatched.filter(([id, task]) => {
+        const index = Number(id.slice(prefix.length));
+        const child = results.find(item => item.index === index || (item.index === undefined && dispatched.length === 1));
+        if (child && child.exitCode === 0 && !child.error && !child.aborted) return false;
+        // The tool has settled, but a still-running native session always prevents retry.
+        return !AgentRegistry.global().list().some(ref => ref.session && ref.status === "running" &&
+          (ref.id === task.spawnKey || ref.id === task.name || ref.id.endsWith(`.${task.name}`) || ref.id.startsWith(`${task.name}-`)));
+      }).map(([, task]) => task.name);
+      if (failed.length) await options.onTaskDispatchFailure(failed, ctx);
+    });
+    extension.on("before_subagent_spawn", async (event, ctx) => {
+      if (!options.beforeSubagentSpawn) return;
+      const key = event.spawnKey;
+      // Native allocated IDs add a parent prefix and a numeric collision suffix.
+      const localKey = key?.split(".").at(-1);
+      const matches = [...pendingTasks.entries()].filter(([id, task]) => {
+        if (id === key || task.name === key || task.name === localKey) return true;
+        const suffix = localKey?.startsWith(`${task.name}-`) ? localKey.slice(task.name.length + 1) : "";
+        return /^[2-9]\d*$|^1\d+$/.test(suffix ?? "");
+      });
+      if (matches.length > 1) return { block: true, reason: "Ambiguous native task assignment identity." };
+      const match = matches[0];
+      if (match) pendingTasks.delete(match[0]);
+      try {
+        options.signal?.throwIfAborted();
+        const result = await options.beforeSubagentSpawn({ ...event,
+          ...(match ? { taskName: match[1].name, taskText: match[1].taskText, effort: match[1].effort } : {}),
+        }, ctx);
+        if (match && result?.model && !result.block) dispatchedTasks.set(match[0], { name: match[1].name, spawnKey: key });
+        return result;
+      } catch {
+        return { block: true, reason: "Kiln subagent dispatch guard failed." };
+      }
+    });
     let abortListener: (() => void) | undefined;
     let removeGate: (() => void) | undefined;
     extension.on("session_start", async (_event, ctx) => {

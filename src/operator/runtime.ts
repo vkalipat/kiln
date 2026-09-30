@@ -14,7 +14,7 @@ import { RunControl, withRunControl } from "../core/run-control";
 import { createRun, readStatus, runPaths, writeStatus, type RunPaths } from "../core/run";
 import { redactText, redactValue } from "../core/secrets";
 import { AuthStore } from "../providers/auth";
-import { parseModelRef, resolveRole, resolveRoleOn, modelCostUsd } from "../providers/models";
+import { parseModelRef, resolveRole, resolveRoleOn, modelCostUsd, clampEffort } from "../providers/models";
 import { createOperatorContextStore, type OperatorStepKind } from "./context";
 import { invokeIdeation } from "./ideation";
 import { createOperatorMeter } from "./meter";
@@ -30,6 +30,8 @@ import { operatorCatalogSha256 } from "./catalog-snapshot";
 import { prepareStepRouting, resolveStep } from "./routing";
 import { createOperatorTeamStore } from "./team";
 import { registerOperatorTeamTools } from "./team-tools";
+import { TeamAssignmentStore } from "./team-assignments";
+import { registerTeamAssignmentTools } from "./team-assignment-tools";
 import type { OmpSessionHandle, OmpSessionOptions } from "./session";
 
 export type OperatorEvent =
@@ -191,6 +193,13 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     ] });
     const team = createOperatorTeamStore({ runDir: run.dir, cwd, runId: run.id, originalSourceHash: initialContext.original.sourceHash });
     await team.initialize();
+    const assignmentAdmissions = [...new Set(Object.values(prepared.admittedRoleRefs).flat().map(item => item.ref))].map(modelRef => {
+      const parsed = parseModelRef(modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
+      return { modelRef, effort: clampEffort(model, metadata.effort) ?? metadata.effort };
+    });
+    const assignments = new TeamAssignmentStore(join(run.dir, "operator", "team-assignments.json"), catalogSha256, assignmentAdmissions);
+    assignments.load(); // Validate saved decisions before any provider dispatch.
+    const assignedDispatches = new Map<string, string>();
     const configPath = join(run.dir, "operator", "config.json");
     if (!options.runId) { saveConfig(join(run.dir, "operator"), cfg); metadata.configSha256 = hash(readFileSync(configPath, "utf8")); }
     else if (metadata.configSha256 && metadata.configSha256 !== hash(readFileSync(configPath, "utf8"))) throw new Error("Saved operator configuration changed");
@@ -255,7 +264,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       return decision;
     };
     const workflowsEnabled = metadata.workflows.enabled && options.workflows?.enabled !== false && process.env.KILN_JEV_WORKFLOWS !== "0";
-    const workflowJev = createJevWorkflowService({ enabled: workflowsEnabled && metadata.jev.enabled && options.jev?.enabled !== false && process.env.KILN_JEV_ENABLED !== "0",
+    const workflowJev = createJevWorkflowService({ enabled: metadata.jev.enabled && options.jev?.enabled !== false && process.env.KILN_JEV_ENABLED !== "0",
       apiKey: options.jev?.apiKey ?? resolveIntegrationCredential(auth, "typesafe"), fetch: options.jev?.fetch,
       timeoutMs: metadata.jev.timeoutMs, minConfidence: metadata.jev.minConfidence,
       maxCalls: metadata.workflows.maxCalls, maxInputTokens: metadata.workflows.maxInputTokens, initialStats: metadata.workflows.stats,
@@ -306,6 +315,17 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           return { path, sha256 };
         },
       });
+      registerTeamAssignmentTools(extension, { team, assignments, admitted: assignmentAdmissions,
+        catalog: () => ({ evidenceSnapshot: prepared.evidence, models: assignmentAdmissions.map(item => {
+          const parsed = parseModelRef(item.modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
+          return { ...item, inputs: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
+            costUsdPerMillion: model.cost,
+            selectedDefaultEvidence: Object.entries(prepared.selectedRoleRefs).filter(([, ref]) => ref === item.modelRef)
+              .map(([role]) => ({ role, ...prepared.roleReasons[role as keyof typeof prepared.roleReasons] })),
+            measuredTaskThroughput: null };
+        }) }),
+        parentSessionId: () => handle?.sessionId, jev: workflowJev, signal: () => control.signal, assertOriginal,
+        record: assignment => record.append({ t: "note", text: `operator.team_assignment ${JSON.stringify(assignment)}` }) });
       registerOperatorTeamTools(extension, {
         store: team, parentSessionId: () => handle?.sessionId, assertOriginal,
         onChange: document => record.append({ t: "note", text: `operator.team ${JSON.stringify({ revision: document.revision,
@@ -477,6 +497,52 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       handle = await factory({ cwd, stateDir: join(run.dir, "omp"), resumeFile: metadata.sessionFile, modelRef: metadata.modelRef,
         effort: metadata.effort, auth, connectedProviders: [...available], additionalDirectories: [run.dir], signal: control.signal,
         modelRoles: { default: metadata.modelRef, smol: prepared.selectedRoleRefs.scout, slow: prepared.selectedRoleRefs.builder, plan: prepared.selectedRoleRefs.brain },
+        onTaskDispatchFailure: (names, ctx) => {
+          if (owner(ctx) !== handle?.sessionId) return;
+          for (const name of names) {
+            const assignment = assignments.load().find(item => item.dispatchName === name);
+            if (assignment && team.query().features.find(item => item.id === assignment.featureId)?.status === "planned") assignedDispatches.delete(assignment.featureHash);
+          }
+        },
+        beforeSubagentSpawn: (event, ctx) => {
+          assertOriginal(); control.signal.throwIfAborted();
+          const name = event.taskName ?? event.spawnKey;
+          const savedAssignments = assignments.load();
+          const assignment = savedAssignments.find(item => item.dispatchName === name);
+          if (!assignment) {
+            if (name?.startsWith("assignment_")) return { block: true, reason: "Unknown task assignment; use the saved dispatchName exactly" };
+            if (owner(ctx) === handle?.sessionId && savedAssignments.some(item => team.query().features.some(feature => feature.id === item.featureId && feature.status !== "accepted"))) return { block: true, reason: "This team uses saved assignments; assign the new responsibility and use its exact dispatchName" };
+            return;
+          }
+          if (owner(ctx) !== handle?.sessionId) return { block: true, reason: "Only the parent may dispatch assigned team features" };
+          const document = team.query(), feature = document.features.find(item => item.id === assignment.featureId);
+          if (!feature) return { block: true, reason: "Assigned team feature is missing" };
+          assignments.query(assignment.dispatchName, feature);
+          const previousDispatch = assignedDispatches.get(assignment.featureHash);
+          if (previousDispatch) {
+            const jobs = handle?.session.getAsyncJobSnapshot?.({ recentLimit: 1024 });
+            const matches = (job: { id: string; agentId?: string; label?: string }) => job.id === previousDispatch || job.agentId === previousDispatch || job.label === previousDispatch;
+            if (jobs && !jobs.running.some(matches) && jobs.recent.some(job => matches(job) && (job.status === "failed" || job.status === "cancelled"))) assignedDispatches.delete(assignment.featureHash);
+          }
+          if (feature.status !== "planned" || assignedDispatches.has(assignment.featureHash)) return { block: true, reason: "Assigned feature already dispatched; inspect or reopen before launching another worker" };
+          if (feature.dependencies.some(id => document.features.find(item => item.id === id)?.status !== "accepted")) return { block: true, reason: "Assigned feature dependencies are not accepted" };
+          const bare = (pattern: string) => pattern.replace(/:(minimal|low|medium|high|xhigh|max|auto)$/, "");
+          // The native generic task expands inherited defaults without retaining modelRole.
+          // These are defaults, not an explicit task model request. Actual user pins live
+          // in team_assign.exactModelRef; unrelated native selectors remain conflicts.
+          const inherited = new Set([metadata.modelRef, prepared.selectedRoleRefs.scout, prepared.selectedRoleRefs.builder,
+            prepared.selectedRoleRefs.brain, ...(ctx.model ? [`${ctx.model.provider}/${ctx.model.id}`] : [])]);
+          if (!event.modelRole && event.patterns.length && !event.patterns.every(pattern => bare(pattern) === assignment.modelRef || inherited.has(bare(pattern)))) return { block: true, reason: "Explicit native model selector conflicts with the saved assignment" };
+          const selected = parseModelRef(assignment.modelRef), model = getBundledModel(selected.provider as never, selected.modelId)!;
+          const explicitPattern = !event.modelRole && event.patterns[0]?.startsWith(`${assignment.modelRef}:`) ? event.patterns[0] : undefined;
+          const selectorEffort = explicitPattern?.slice(assignment.modelRef.length + 1) ?? clampEffort(model, metadata.effort) ?? metadata.effort;
+          const selector = explicitPattern ?? `${assignment.modelRef}:${selectorEffort}`;
+          assignedDispatches.set(assignment.featureHash, event.spawnKey ?? assignment.dispatchName);
+          record.append({ t: "note", text: `operator.team_dispatch ${JSON.stringify({ featureId: feature.id, role: assignment.role, dispatchName: assignment.dispatchName,
+            modelRef: assignment.modelRef, selector, requestedEffort: event.effort ?? selectorEffort,
+            effortSource: event.effort ? "native_task_override" : "model_selector" })}` });
+          return { model: selector, note: `Task responsibility: ${assignment.role}. ${assignment.reason}. Preserve user effort; no provider-error fallback.` };
+        },
         extensions: [capabilities, meter.extension], onExtensionError: (message) => stopTree(new Error(message)),
         onBeforeModelCall: (ctx, request, signal) => {
           assertOriginal();
@@ -615,6 +681,10 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
         metadata.effort = effort;
         cfg = { ...cfg, effort: effort as typeof cfg.effort, effortByRole: Object.fromEntries(Object.keys(cfg.roles).map(role => [role, effort])) };
         prepared = prepareStepRouting(cfg, available, seed);
+        for (const item of assignmentAdmissions) {
+          const parsed = parseModelRef(item.modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
+          item.effort = clampEffort(model, effort) ?? effort;
+        }
         saveConfig(join(run.dir, "operator"), cfg); metadata.configSha256 = hash(readFileSync(configPath, "utf8"));
         save(); handle?.session.setThinkingLevel(effort as never);
         emit({ type: "routing", kind: metadata.step ?? "synthesize", modelRef: metadata.modelRef, effort,
