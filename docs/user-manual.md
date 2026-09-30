@@ -90,11 +90,13 @@ kiln --run RUN_ID
 
 Copy `RUN_ID` from the run output. `kiln task resume RUN_ID` without a message reports the retained session instead of dispatching more work. Resume uses its saved scope and allocations; it is not a new free budget. Use `--seed-file PATH` instead of inline task text when exact file contents should be the request. `--json` produces a structured final report for scripts.
 
+The [challenge prompts](challenges/prompts/README.md) provide ready-to-use briefs for the 2026 conditional EGFR binder and Virtual Cell Challenge workflows.
+
 Budget is an allocation, not an absolute invoice cap: an admitted in-flight request can finish after crossing its target. Paid provider work consumes API budget or subscription allowance. A resumed task preserves recorded spending. Do not describe an agent turn ending as proof that all acceptance conditions passed.
 
 To keep working without an aggregate dollar or active-time allocation, run `kiln task limits --uncapped` for future native sessions, or `kiln task "Finish the task and its checks" --uncapped` for one new run. `null` allocations mean uncapped; usage accounting remains active. Restore finite defaults with `kiln task limits --budget 100 --wall-seconds 28800`. Existing runs retain their saved allocations. Provider, tool and concurrency limits still apply; legacy ideation batches retain finite planning targets. Work can stop for completion, a concrete blocker, cancellation or a detected loop.
 
-`kiln task monitor RUN_ID --json` reads local accounting and repetition/context-growth diagnostics without a model call. Identical failures warn at three and pause at six; identical successful calls/results warn at four and pause at eight. Recognized polling only warns. Missing usage and limited fingerprint coverage stay visible; this monitor does not judge task quality. See [compute limits and monitoring](compute-limits.md) for policy, thresholds and coverage details. No model or selected `xhigh` effort is lowered.
+`kiln task monitor RUN_ID --json` reads local accounting and repetition/context-growth diagnostics without a model call. Identical failures warn at three and pause at six; identical successful calls/results warn at four and pause at eight. Recognized polling only warns. Missing usage and limited fingerprint coverage stay visible; this monitor does not judge task quality. See [compute limits and monitoring](compute-limits.md) for policy, thresholds and coverage details. The monitor does not change models or effort. Automatic resource routing can select lower effort; an explicit fixed effort remains authoritative.
 
 ## 4. Ask for parallel feature work
 
@@ -104,7 +106,7 @@ For independent features, describe the scope and required checks, for example:
 
 Kiln's `team` tool records the plan; native `task` starts workers. In the current pinned native runtime 18.4.4, agents send peer messages through `write` to `agent://<id>`. Results and messages arrive automatically; `wait` is available when blocked on an owned job or message. The removed `hub` tool is not part of this runtime. The parent defines each feature's objective, literal relative file or directory scopes, dependencies and acceptance criteria. Workers obtain a current revision, claim a ready feature, work in their assigned scope and return artifact hashes plus check reports. Mutations return compact receipts with the changed features, revision and committed ledger hash; reuse that revision, and query for other features/history or after a revision conflict. Stale revisions, overlapping active scopes and unmet dependencies are rejected.
 
-The frontier operator decides whether a team is useful and defines responsibilities for the actual goal: for example, a source auditor, experiment designer and implementation owner. Simple tasks stay with one operator. `team_assign` exposes the compatible model catalog, including context limits, costs and reviewed selection evidence. The operator supplies a quality-qualified shortlist and preferred model for each planned feature; Jev can choose within that shortlist. Missing, disabled or inconclusive Jev preserves the operator's preference. An explicit user model is locked with `exactModelRef`; effort remains the user's choice.
+The operator decides whether a team is useful and proposes responsibilities, goals and acceptance criteria for the actual task. Simple tasks stay with one operator. In Jev resource mode, `team_assign` presents bounded role alternatives and compatible model/effort choices, including smaller models, costs and reviewed evidence. Jev selects the assignment; it does not invent unrestricted roles or establish the quality of the resulting work. An explicit model or fixed effort remains authoritative. Inconclusive selection retains an eligible current route or uses a conservative reviewed fallback, with the source recorded.
 
 Assignments are saved in `operator/team-assignments.json`. The operator starts native `task` with the returned `dispatchName` as its name and the feature contract in its prompt. The native spawn hook applies that exact model, checks dependencies and rejects stale assignments or conflicting explicit selectors. It does not automatically switch models after provider failure. Shared sources can be read by multiple workers; scopes identify owned outputs and edits, so research teams can own separate evidence reports. Custom role names describe responsibilities, not personas or mandatory stages.
 
@@ -116,23 +118,27 @@ A synthetic 32-feature claim response fell from 17,270 to 997 UTF-8 bytes with c
 
 ## 5. Models, effort and idea search
 
-Model choice and reasoning effort are separate. `kiln model roles` lists reusable bootstrap and legacy workflow defaults, not a required team roster. Native teams use the task-specific assignments described above. Effort controls how an eligible model reasons. Inspect configuration and routing evidence:
+Enable Jev to select model and effort for new native sessions:
 
 ```sh
-kiln model roles --json
-kiln model routing
-kiln model plan "Build a tested data import tool" --json
-kiln model benchmarks show --json
-kiln mode show
-kiln mode set high
+kiln auth key jev
+kiln model routing adaptive
 kiln mode set auto
 ```
 
-`kiln model routing adaptive` enables adaptive planning; `manual` keeps configured role routing. Fresh homes use adaptive defaults; existing choices are preserved. `mode set auto` restores role effort defaults. The TUI label `ultra` maps to stored `xhigh`; it is not a different model. Effort changes during work apply at the next turn.
+Adaptive routing enables `routing.resources = "jev"`. Candidates come from the compatible credentialed catalog, independently of legacy role presets. Jev selects model and effort through separate questions in one request, using the current task, reviewed benchmark evidence and compute cost. Automatic effort admits supported lower levels; `kiln mode set high` or another explicit level pins effort instead. The TUI label `ultra` maps to stored `xhigh`.
 
-Adaptive routing filters candidates through configured access and compatibility, then uses the available role evidence. A benchmark snapshot has a source and date; it is not live proof that a model is best for your task. Fresh default Codex role candidates now include GPT-6 Astra for critic/judge and GPT-5.5 as a retrieval/probe/arbiter fallback when the smaller model is absent. A compatible fallback can cost more, so inspect `kiln model roles --json` and keep an appropriate run budget. Explicit pinned choices are not silently replaced when unavailable. An explicit benchmark import requires a reviewed snapshot and does not independently verify its claims.
+Routes remain stable inside tool loops. Human task boundaries, explicit `route_step` requests and new `team_assign` assignments are opportunities to select again. Existing runs retain their saved policy. `manual` keeps configured routing; `kiln model roles` lists bootstrap and legacy defaults, not the current team. Inspect actual routing and assignment receipts for selections and fallback reasons.
 
-For an open-ended question, the operator can call `ideate`: research, distinct candidate generation, prior-art assessment, assigned probes and order-swapped pairwise comparisons produce inspectable artifacts and evidence gaps. It is more than a prose brainstorming prompt, but its output is still not experimental validation. Inadequate research stays unknown. A simple implementation task need not run competitive ideation.
+```sh
+kiln model routing
+kiln mode show
+kiln model benchmarks show --json
+```
+
+A benchmark snapshot has a source and date; it is not proof that a model is best for a new task. Catalog and benchmark updates remain explicit. See [Jev resource routing](jev-resource-routing.md) for selection and fallback behavior.
+
+In Jev resource mode, native teams perform idea generation, research, probes and review with task-specific assignments. The legacy preset-driven `ideate` tool is unavailable in this mode. Define the question, evidence requirements and completion conditions; the operator chooses the useful work. Scientific quality still requires substantive evaluation, not a routing classification.
 
 ## 6. Explicit workflow runs
 
@@ -162,7 +168,7 @@ After a transient discovery outage, inspect the diagnostic and use `kiln run res
 
 ## 7. Optional integrations
 
-**Jev:** configure a key with the masked `kiln auth key jev` prompt (stored as `typesafe`), or supply `TYPESAFE_API_KEY` through your secret manager. With a key, new operator runs can classify ambiguous work transitions through `route_step auto`. Ordinary prompts keep their current model without a routing request. Explicit step kinds bypass classification. Task-specific `team_assign` selections can also use Jev within a frontier-defined compatible shortlist; an exact model choice bypasses Jev. Old Jev runs retain their saved per-prompt behavior on resume; changing mode requires a new run. `KILN_JEV_ENABLED=0 kiln` disables external classification. No key means local routing.
+**Jev:** configure a key with the masked `kiln auth key jev` prompt (stored as `typesafe`), or supply `TYPESAFE_API_KEY` through your secret manager. With adaptive resource routing, Jev selects compatible model/effort options at task boundaries and for new task-specific assignments. Explicit model and effort pins constrain those choices. Saved sessions retain their policy. `KILN_JEV_ENABLED=0 kiln` disables external classification; missing or inconclusive Jev uses a labeled local fallback. See [resource routing](jev-resource-routing.md).
 ```sh
 kiln model suggest "Implement and test the parser" --step implement --json
 kiln model suggest "Compare candidate approaches" --step synthesize --jev --json

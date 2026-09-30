@@ -64,25 +64,26 @@ kiln doctor --json</code></pre></div>
         <p>To start a task directly from the command line:</p>
         <div class="code-block"><div class="code-header"><button data-copy aria-label="Copy task command">Copy <span aria-hidden="true">⧉</span></button></div><pre><code>kiln task "Implement the importer and verify malformed input handling" --cwd .</code></pre></div>
         <p>Describe the outcome, quality requirements, and constraints. When independent work benefits from delegation, Kiln composes task-specific responsibilities with separate file scopes, dependencies, and acceptance checks. The parent operator reviews the handoffs and integrates the result.</p>
-        <div class="two-column"><div><h3>Research &amp; ideation</h3><p>Ask for sources, competing approaches, assumptions, and a test that could change the decision. Substantial idea search can use Kiln’s dedicated ideation workflow.</p></div><div><h3>Implementation</h3><p>Describe the behavior and constraints. Let the operator choose the steps, use tools, inspect results, and repair failures within that scope.</p></div></div>
+        <div class="two-column"><div><h3>Research &amp; ideation</h3><p>Ask for sources, competing approaches, assumptions, and a test that could change the decision. Task-specific teams can research alternatives, generate ideas, run probes, and review the evidence.</p></div><div><h3>Implementation</h3><p>Describe the behavior and constraints. Let the operator choose the steps, use tools, inspect results, and repair failures within that scope.</p></div></div>
         <p>For additional controls, see the <a href="https://github.com/vkalipat/kiln/blob/main/docs/user-manual.md#6-explicit-workflow-runs">workflow commands</a>.</p>
       </section>
 
       <section id="models" aria-labelledby="models-title">
         <h2 id="models-title">Models and reasoning</h2>
-        <p>The frontier operator chooses the responsibilities a task needs and a compatible model shortlist for each assignment. Jev helps select within that shortlist. Kiln applies the saved assignment when dispatching the named worker.</p>
-        <ul><li>The roles command shows reusable defaults; those defaults do not prescribe a fixed team for every task.</li><li>Explicit model and effort choices are preserved. Use more reasoning effort when the task warrants it. <code>xhigh</code> appears as <code>ultra</code> in the TUI.</li><li>Keep verified context across follow-ups. Recheck when the inputs, artifacts, or evidence change.</li></ul>
-        <div class="code-block"><div class="code-header"><button data-copy aria-label="Copy model inspection commands">Copy <span aria-hidden="true">⧉</span></button></div><pre><code>kiln model roles --json
+        <p>The operator proposes responsibilities, goals, and acceptance checks for the task. Jev selects compatible models and effort using the task, reviewed evidence, and compute cost. Smaller models and lower effort remain eligible; Kiln applies the saved assignment when dispatching a worker.</p>
+        <ul><li>The roles command shows legacy defaults. Resource routing uses the compatible catalog rather than a preset team.</li><li>Automatic effort adapts to the task. Explicit model and effort choices remain authoritative. <code>xhigh</code> appears as <code>ultra</code> in the TUI.</li><li>Routes stay stable inside tool loops and can change at task boundaries or explicit routing requests. Existing sessions retain their saved policy.</li></ul>
+        <div class="code-block"><div class="code-header"><button data-copy aria-label="Copy model routing commands">Copy <span aria-hidden="true">⧉</span></button></div><pre><code>kiln model routing adaptive
+kiln mode set auto
 kiln mode show</code></pre></div>
-        <p>To choose an effort explicitly, use <code>kiln mode set xhigh</code>. Use <code>kiln mode set auto</code> to restore role defaults.</p>
-        <a class="text-link" href="https://github.com/vkalipat/kiln/blob/main/docs/model-instructions.md">Read the instruction policy <span aria-hidden="true">↗</span></a>
+        <p>Use <code>kiln mode set auto</code> for Jev effort selection, or a level such as <code>kiln mode set high</code> to pin it. Catalog and benchmark updates remain explicit.</p>
+        <a class="text-link" href="https://github.com/vkalipat/kiln/blob/main/docs/jev-resource-routing.md">Read about resource routing <span aria-hidden="true">↗</span></a>
       </section>
 
       <section id="integrations" aria-labelledby="integrations-title">
         <h2 id="integrations-title">Integrations</h2>
         <p>Connect Jev for constrained decisions or Hindsight for curated project memory.</p>
         <h3>Jev</h3>
-        <p>Jev handles constrained decisions: selecting from compatible model shortlists, ambiguous routing handoffs, browser actions, and research passage classification. The frontier model remains responsible for the plan and the final assessment.</p>
+        <p>Jev selects model and effort through separate questions in one request, and chooses among task-specific role alternatives. It also supports bounded browser actions and research passage classification. The operator remains responsible for planning and assessing the work.</p>
         <div class="code-block"><div class="code-header"><button data-copy aria-label="Copy Jev setup commands">Copy <span aria-hidden="true">⧉</span></button></div><pre><code>kiln auth key jev
 kiln integrations jev enable
 kiln doctor --require jev --json</code></pre></div>
@@ -112,7 +113,7 @@ kiln task monitor RUN_ID --json</code></pre></div>
       <section id="readiness" aria-labelledby="readiness-title">
         <h2 id="readiness-title">Usage notes</h2>
         <ul>
-          <li><strong>Service access.</strong> <code>doctor</code> and <code>memory status</code> inspect local configuration. Live authentication, quota, and service health depend on your provider or server. If Jev is unavailable for a team assignment, Kiln retains the frontier operator’s compatible choice.</li>
+          <li><strong>Service access.</strong> <code>doctor</code> and <code>memory status</code> inspect local configuration. Live authentication, quota, and service health depend on your provider or server. If Jev is unavailable or uncertain, Kiln retains an eligible current route or uses a conservative reviewed fallback, recording the source.</li>
           <li><strong>Compute and cost.</strong> Submitting a task can use paid provider access. Uncapped sessions remove aggregate dollar and active-time limits; provider, tool, and concurrency limits still apply. In-flight work can exceed a finite allocation.</li>
           <li><strong>Result quality.</strong> Review delivered artifacts, sources, checks, and unresolved gaps. Monitor readings, model rankings, and individual Jev decisions inform that review; they do not establish that the whole task is complete.</li>
           <li><strong>Workspace access.</strong> Shell and file tools act with your local permissions. Specify the task’s scope, authorize external actions deliberately, and enter credentials through the authentication prompts.</li>

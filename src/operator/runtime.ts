@@ -27,10 +27,12 @@ import { createJevWorkflowService, type JevWorkflowStats } from "./jev-service";
 import { registerOperatorWorkflowTools, type OperatorWorkflowToolOptions } from "./workflow-tools";
 import { JEV_MODEL } from "../integrations/jev";
 import { operatorCatalogSha256 } from "./catalog-snapshot";
-import { prepareStepRouting, resolveStep } from "./routing";
+import { admitResourceModels, prepareStepRouting, resolveStep } from "./routing";
+import { buildResourceCatalog, chooseResourceRoute, type ResourceRoute, type ResourceRouteInput } from "./resource-routing";
+import { DEFAULT_EVIDENCE_SNAPSHOT } from "../routing/adaptive";
 import { createOperatorTeamStore } from "./team";
 import { registerOperatorTeamTools } from "./team-tools";
-import { TeamAssignmentStore } from "./team-assignments";
+import { TeamAssignmentStore, teamAssignmentFeatureHash, type TeamAssignmentProducer } from "./team-assignments";
 import { registerTeamAssignmentTools } from "./team-assignment-tools";
 import type { OmpSessionHandle, OmpSessionOptions } from "./session";
 
@@ -104,6 +106,7 @@ interface OperatorMetadata {
     mode?: JevRoutingMode;
   };
   workflows?: { version: 1; enabled: boolean; maxCalls: number | null; maxInputTokens: number | null; stats?: JevWorkflowStats };
+  resources?: { version: 1; effortPolicy: "adaptive" | "fixed"; catalogSha256: string };
 }
 const hash = (text: string) => createHash("sha256").update(text).digest("hex");
 const asText = (message: any): string => typeof message?.content === "string" ? message.content
@@ -135,12 +138,24 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
   const release = () => { if (!released) { released = true; lock.release(); } };
   try {
     const seed = readFileSync(run.seed, "utf8"), metaPath = join(run.dir, "operator.json");
-    let prepared = prepareStepRouting(cfg, available, seed);
+    const savedMetadata: OperatorMetadata | undefined = options.runId && existsSync(metaPath) ? JSON.parse(readFileSync(metaPath, "utf8")) : undefined;
+    const resourceMode = options.runId ? savedMetadata?.resources !== undefined : cfg.routing?.resources === "jev";
+    const evidencePath = join(run.dir, "operator", "routing-evidence.json");
+    const importedEvidence = join(options.home, "routing", "benchmarks.json");
+    const resourceEvidence: unknown = resourceMode && options.runId ? JSON.parse(readFileSync(evidencePath, "utf8"))
+      : resourceMode && existsSync(importedEvidence) ? JSON.parse(readFileSync(importedEvidence, "utf8")) : DEFAULT_EVIDENCE_SNAPSHOT;
+    const resourceCatalog = resourceMode ? buildResourceCatalog(available, resourceEvidence) : [];
+    if (resourceMode && !options.runId) writeAtomic(evidencePath, JSON.stringify(resourceEvidence, null, 2), { mode: 0o600 });
+    const prepare = () => {
+      const base = prepareStepRouting(cfg, available, seed, new Date(), resourceMode ? resourceEvidence : DEFAULT_EVIDENCE_SNAPSHOT);
+      return resourceMode ? admitResourceModels(base, cfg, available, resourceCatalog.map(model => model.modelRef)) : base;
+    };
+    let prepared = prepare();
     const initial = resolveStep("synthesize", cfg, available, seed, { prepared });
     let metadata: OperatorMetadata;
     if (options.runId) {
       if (!existsSync(metaPath)) throw new Error("This is a legacy workflow run; resume it through kiln run resume");
-      metadata = JSON.parse(readFileSync(metaPath, "utf8"));
+      metadata = savedMetadata!;
       if (metadata.version !== 1 || metadata.engine !== "omp" || metadata.seedSha256 !== hash(seed)
         || metadata.cwd !== cwd || !Number.isFinite(metadata.activeSeconds) || metadata.activeSeconds < 0) throw new Error("Operator scope or original task differs from the saved session");
       for (const value of [metadata.budgetUsd, metadata.wallSeconds]) {
@@ -151,7 +166,10 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     } else {
       metadata = { version: 1, engine: "omp", cwd, seedSha256: hash(seed), modelRef: initial.modelRef, effort: initial.effort ?? cfg.effort,
         budgetUsd: runBudget, wallSeconds: runWall, activeSeconds: 0, turns: 0 };
+      if (resourceMode) metadata.resources = { version: 1, effortPolicy: cfg.routing?.effort ?? "fixed", catalogSha256: hash(JSON.stringify(resourceCatalog)) };
     }
+    if (metadata.resources && (metadata.resources.version !== 1 || !["adaptive", "fixed"].includes(metadata.resources.effortPolicy)
+      || metadata.resources.catalogSha256 !== hash(JSON.stringify(resourceCatalog)))) throw new Error("Saved resource catalog or policy changed; start a new run after reviewing the update");
     const catalogSha256 = operatorCatalogSha256(prepared);
     if (metadata.catalogSha256 && metadata.catalogSha256 !== catalogSha256) {
       throw new Error("The admitted model catalog or role selection changed since this run was saved. Review the catalog update and start a new run, or resume with the original dependency versions.");
@@ -195,10 +213,22 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     await team.initialize();
     const assignmentAdmissions = [...new Set(Object.values(prepared.admittedRoleRefs).flat().map(item => item.ref))].map(modelRef => {
       const parsed = parseModelRef(modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
-      return { modelRef, effort: clampEffort(model, metadata.effort) ?? metadata.effort };
+      return { modelRef, effort: clampEffort(model, metadata.effort) ?? metadata.effort,
+        ...(resourceMode ? { efforts: resourceCatalog.find(entry => entry.modelRef === modelRef)?.efforts ?? [clampEffort(model, metadata.effort) ?? metadata.effort] } : {}) };
     });
     const assignments = new TeamAssignmentStore(join(run.dir, "operator", "team-assignments.json"), catalogSha256, assignmentAdmissions);
     assignments.load(); // Validate saved decisions before any provider dispatch.
+    const resolveProducer = (featureId: string): TeamAssignmentProducer => {
+      const feature = team.query().features.find(item => item.id === featureId);
+      if (!feature || !["active", "awaiting_review", "accepted"].includes(feature.status)) throw new Error("Independent review requires a dispatched producer feature");
+      const featureHash = teamAssignmentFeatureHash(feature);
+      const dispatched = record.read().filter(event => event.t === "note" && event.text.startsWith("operator.team_dispatch "))
+        .map(event => JSON.parse((event as { text: string }).text.slice("operator.team_dispatch ".length)))
+        .findLast(event => event.featureId === featureId);
+      const assignment = assignments.load().find(item => item.dispatchName === dispatched?.dispatchName && item.featureHash === featureHash);
+      if (!assignment) throw new Error("No current producer dispatch receipt; inspect or reassign the producer");
+      return { featureId, featureHash, dispatchName: assignment.dispatchName, modelRef: assignment.modelRef };
+    };
     const assignedDispatches = new Map<string, string>();
     const configPath = join(run.dir, "operator", "config.json");
     if (!options.runId) { saveConfig(join(run.dir, "operator"), cfg); metadata.configSha256 = hash(readFileSync(configPath, "utf8")); }
@@ -273,6 +303,26 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       onDecision: event => record.append({ t: "note", text: `operator.jev_workflow ${JSON.stringify(event)}` }),
       onReuse: event => record.append({ t: "note", text: `operator.jev_reuse ${JSON.stringify(event)}` }),
     });
+    const resourceRoles = [
+      { id: "research", description: "Find and assess evidence needed for the current task" },
+      { id: "ideate", description: "Develop and compare possible approaches to the current problem" },
+      { id: "implement", description: "Make and verify the requested artifact or code change" },
+      { id: "synthesize", description: "Integrate findings, coordinate remaining work or answer the request" },
+    ];
+    let resourcePolicyRevision = 0;
+    const selectResources = async (input: ResourceRouteInput) => {
+      for (;;) {
+        const revision = resourcePolicyRevision;
+        const selected = await chooseResourceRoute({ ...input,
+          ...(metadata.resources?.effortPolicy === "fixed" ? { exactEffort: input.exactEffort ?? cfg.effort } : {}),
+          signal: AbortSignal.any([control.signal, ...(input.signal ? [input.signal] : [])]),
+        }, resourceCatalog, workflowJev);
+        control.signal.throwIfAborted();
+        if (revision !== resourcePolicyRevision) continue; // A user changed the pin during classification.
+        record.append({ t: "note", text: `operator.resource_route ${JSON.stringify(selected)}` });
+        return selected;
+      }
+    };
     const owner = (ctx: ExtensionContext) => ctx.sessionManager.getSessionId();
     const source = (ctx: ExtensionContext) => `operator:${owner(ctx)}:${turnSources.get(owner(ctx)) ?? 0}`;
     const stepFor = (ctx: ExtensionContext) => steps.get(owner(ctx)) ?? step;
@@ -316,6 +366,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
         },
       });
       registerTeamAssignmentTools(extension, { team, assignments, admitted: assignmentAdmissions,
+        ...(resourceMode ? { resourceCatalog, selectResources, resolveProducer, resourcePolicy: () => ({ effortPolicy: metadata.resources!.effortPolicy, fixedEffort: cfg.effort }) } : {}),
         catalog: () => ({ evidenceSnapshot: prepared.evidence, models: assignmentAdmissions.map(item => {
           const parsed = parseModelRef(item.modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
           return { ...item, inputs: model.input, contextWindow: model.contextWindow, maxTokens: model.maxTokens,
@@ -352,6 +403,31 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
         parameters: z.object({ kind: z.enum(["auto", "research", "ideate", "implement", "review", "synthesize"]), reason: z.string() }),
         async execute(_id, raw, signal, _update, ctx) {
           const args = raw as { kind: OperatorStepKind | "auto"; reason: string };
+          if (resourceMode) {
+            for (;;) {
+              const currentEffort = (await import("./session")).currentOmpSessionEffort(ctx)
+                ?? (owner(ctx) === handle?.sessionId ? metadata.effort : undefined);
+              const selected = await selectResources({ task: `Original task: ${seed.slice(0, 4000)}\nNext work: ${args.reason.slice(0, 10000)}`,
+                sessionId: owner(ctx), roles: args.kind === "auto" ? resourceRoles : [{ id: args.kind, description: args.reason.slice(0, 1000) }],
+                ...(args.kind === "review" && ctx.model ? { producerRef: `${ctx.model.provider}/${ctx.model.id}` } : {}),
+                ...(args.kind !== "review" && ctx.model && currentEffort ? { currentRoute: { modelRef: `${ctx.model.provider}/${ctx.model.id}`,
+                  effort: currentEffort as ResourceRoute["effort"], role: stepFor(ctx) } } : {}),
+                requiredContextTokens: Math.ceil((ctx.getContextUsage?.()?.tokens ?? 0) + 4000), signal });
+              const revision = resourcePolicyRevision;
+              const kind = selected.role as OperatorStepKind;
+              if (kind !== "review") {
+                const ref = parseModelRef(selected.modelRef), model = getBundledModel(ref.provider as never, ref.modelId)!;
+                await (await import("./session")).switchOmpSessionModel(ctx, model, selected.effort);
+                if (revision !== resourcePolicyRevision) continue;
+                steps.set(owner(ctx), kind);
+                if (owner(ctx) === handle?.sessionId) { metadata.modelRef = selected.modelRef; metadata.effort = selected.effort; metadata.step = step = kind; save(); }
+              }
+              emit({ type: "routing", kind, modelRef: selected.modelRef, effort: selected.effort, reason: selected.reason,
+                handoff: kind === "review", scope: owner(ctx) === handle?.sessionId ? "operator" : "worker" });
+              return { content: [{ type: "text", text: JSON.stringify({ ...selected, decision: undefined,
+                state: kind === "review" ? "recommended_worker" : "applied" }) }] };
+            }
+          }
           const classification = args.kind === "auto" ? await classifyStep(args.reason, stepFor(ctx), signal) : undefined;
           signal?.throwIfAborted(); control.signal.throwIfAborted();
           const kind = args.kind === "auto" ? classification!.choice : args.kind;
@@ -380,7 +456,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           await store.publish({ entries: [decision.contextEntry] });
           return { content: [{ type: "text", text: description + (kind === "review" ? "\nUse this reviewer in a separate native task with the relevant artifacts, not the producer's private reasoning." : "\nSelection applies to subsequent model work.") }] };
         } });
-      extension.registerTool({ name: "ideate", label: "Research and compare ideas", description: "Run Kiln's rigorous parallel research, distinct idea generation, prior-art checks, assigned probes and order-swapped comparisons. Returns a selected candidate, evidence gaps and artifact identities. Use for genuine open-ended idea search; it is not a validator or a prose brainstorming substitute. Implementation remains the operator's job afterward.",
+      if (!resourceMode) extension.registerTool({ name: "ideate", label: "Research and compare ideas", description: "Run Kiln's rigorous parallel research, distinct idea generation, prior-art checks, assigned probes and order-swapped comparisons. Returns a selected candidate, evidence gaps and artifact identities. Use for genuine open-ended idea search; it is not a validator or a prose brainstorming substitute. Implementation remains the operator's job afterward.",
         parameters: z.object({ task: z.string(), context: z.array(z.object({ path: z.string(), sha256: z.string() })).optional() }),
         async execute(_id, raw, toolSignal, _update, _ctx) {
           const args = raw as { task: string; context?: { path: string; sha256: string }[] };
@@ -478,13 +554,12 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       extension.on("auto_compaction_start", () => emit({ type: "status", state: "running", activity: "Maintaining context", costUsd: spent() }));
     };
 
-    const ensureSession = async () => {
-      if (handle) return handle;
-      control.signal.throwIfAborted();
-      const admittedModels = [...new Set(Object.values(prepared.admittedRoleRefs).flat().map(item => item.ref))].flatMap(ref => {
+    const admittedModels = [...new Set(Object.values(prepared.admittedRoleRefs).flat().map(item => item.ref))].flatMap(ref => {
         const parsed = parseModelRef(ref), model = getBundledModel(parsed.provider as never, parsed.modelId); return model ? [model] : [];
       });
-      const admittedRefs = new Set(admittedModels.map(model => `${model.provider}/${model.id}`));
+    const admittedRefs = new Set(admittedModels.map(model => `${model.provider}/${model.id}`));
+    const ensureMeter = () => {
+      if (meter) return;
       meter = createOperatorMeter({ run, limitUsd: metadata.budgetUsd, signal: control.signal, onViolation: stopTree, models: admittedModels,
         onUsage: snapshot => {
           // The runtime owns run.lock throughout the turn. CLI inspection and the TUI
@@ -493,6 +568,11 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           compute.observeUsage(snapshot);
           emit({ type: "usage", costUsd: snapshot.knownCostUsd });
         } });
+    };
+    const ensureSession = async () => {
+      if (handle) return handle;
+      control.signal.throwIfAborted();
+      ensureMeter();
       const factory = options.createSession ?? (await import("./session")).createOmpSession;
       handle = await factory({ cwd, stateDir: join(run.dir, "omp"), resumeFile: metadata.sessionFile, modelRef: metadata.modelRef,
         effort: metadata.effort, auth, connectedProviders: [...available], additionalDirectories: [run.dir], signal: control.signal,
@@ -510,6 +590,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           const savedAssignments = assignments.load();
           const assignment = savedAssignments.find(item => item.dispatchName === name);
           if (!assignment) {
+            if (resourceMode) return { block: true, reason: "Plan and assign this task with team/team_assign so Jev selects its responsibility, model and effort before dispatch" };
             if (name?.startsWith("assignment_")) return { block: true, reason: "Unknown task assignment; use the saved dispatchName exactly" };
             if (owner(ctx) === handle?.sessionId && savedAssignments.some(item => team.query().features.some(feature => feature.id === item.featureId && feature.status !== "accepted"))) return { block: true, reason: "This team uses saved assignments; assign the new responsibility and use its exact dispatchName" };
             return;
@@ -518,6 +599,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           const document = team.query(), feature = document.features.find(item => item.id === assignment.featureId);
           if (!feature) return { block: true, reason: "Assigned team feature is missing" };
           assignments.query(assignment.dispatchName, feature);
+          if (assignment.reviewOf && JSON.stringify(resolveProducer(assignment.reviewOf.featureId)) !== JSON.stringify(assignment.reviewOf)) return { block: true, reason: "Review producer changed; create a fresh reviewer assignment" };
           const previousDispatch = assignedDispatches.get(assignment.featureHash);
           if (previousDispatch) {
             const jobs = handle?.session.getAsyncJobSnapshot?.({ recentLimit: 1024 });
@@ -535,7 +617,8 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           if (!event.modelRole && event.patterns.length && !event.patterns.every(pattern => bare(pattern) === assignment.modelRef || inherited.has(bare(pattern)))) return { block: true, reason: "Explicit native model selector conflicts with the saved assignment" };
           const selected = parseModelRef(assignment.modelRef), model = getBundledModel(selected.provider as never, selected.modelId)!;
           const explicitPattern = !event.modelRole && event.patterns[0]?.startsWith(`${assignment.modelRef}:`) ? event.patterns[0] : undefined;
-          const selectorEffort = explicitPattern?.slice(assignment.modelRef.length + 1) ?? clampEffort(model, metadata.effort) ?? metadata.effort;
+          const selectedEffort = assignment.exactEffort ?? (metadata.resources?.effortPolicy === "adaptive" ? assignment.effort : metadata.effort);
+          const selectorEffort = explicitPattern?.slice(assignment.modelRef.length + 1) ?? clampEffort(model, selectedEffort) ?? selectedEffort;
           const selector = explicitPattern ?? `${assignment.modelRef}:${selectorEffort}`;
           assignedDispatches.set(assignment.featureHash, event.spawnKey ?? assignment.dispatchName);
           record.append({ t: "note", text: `operator.team_dispatch ${JSON.stringify({ featureId: feature.id, role: assignment.role, dispatchName: assignment.dispatchName,
@@ -543,7 +626,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
             effortSource: event.effort ? "native_task_override" : "model_selector" })}` });
           return { model: selector, note: `Task responsibility: ${assignment.role}. ${assignment.reason}. Preserve user effort; no provider-error fallback.` };
         },
-        extensions: [capabilities, meter.extension], onExtensionError: (message) => stopTree(new Error(message)),
+        extensions: [capabilities, meter!.extension], onExtensionError: (message) => stopTree(new Error(message)),
         onBeforeModelCall: (ctx, request, signal) => {
           assertOriginal();
           if (!ctx.model || !admittedRefs.has(`${ctx.model.provider}/${ctx.model.id}`)) {
@@ -553,12 +636,12 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
         },
         appendSystemPrompt: buildOperatorPrompt({ cwd, projectDir: run.project, contextPath: store.path,
           teamPath: team.path, seedSha256: metadata.seedSha256, budgetUsd: metadata.budgetUsd,
-          wallSeconds: metadata.wallSeconds, workflowsEnabled }) });
+          wallSeconds: metadata.wallSeconds, workflowsEnabled, resourceRouting: resourceMode, adaptiveEffort: metadata.resources?.effortPolicy === "adaptive" }) });
       metadata.sessionFile = handle.sessionFile; save(); return handle;
     };
     const closeSession = async () => {
       const current = handle; handle = undefined; unsubscribe?.(); unsubscribe = undefined;
-      try { await current?.dispose(); } finally { await meter?.close(); }
+      try { await current?.dispose(); } finally { await meter?.close(); meter = undefined; }
     };
     const externalCancel = () => { abortRequested = true; control.cancel(options.signal?.reason); void handle?.session.abort().catch(() => {}); };
     options.signal?.addEventListener("abort", externalCancel);
@@ -599,10 +682,34 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
           try {
             writeStatus(run, { state: "running", outcome: undefined, pausedReason: undefined });
             emit({ type: "status", state: "running", activity: "Working", costUsd: spent() });
+            if (resourceMode) {
+              // Restore native context without dispatching a model; routing must include
+              // saved history and the entire new input before admitting a smaller window.
+              await ensureSession();
+              for (;;) {
+                const selected = await selectResources({ task: `Original task: ${seed.slice(0, 4000)}\nCurrent request: ${text.slice(0, 10000)}`,
+                  sessionId: handle?.sessionId ?? run.id, roles: resourceRoles,
+                  requiredContextTokens: Math.ceil((handle?.session.getContextUsage?.()?.tokens ?? 0) + Buffer.byteLength(text) + 8000),
+                  ...(metadata.turns > 0 ? { currentRoute: { modelRef: metadata.modelRef, effort: metadata.effort as ResourceRoute["effort"], role: step } } : {}) });
+                const revision = resourcePolicyRevision;
+                const parsed = parseModelRef(selected.modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
+                if (handle) {
+                  if (selected.modelRef !== metadata.modelRef) await handle.session.setModel(model);
+                  if (revision !== resourcePolicyRevision) continue;
+                  handle.session.setThinkingLevel(clampEffort(model, selected.effort) as never);
+                }
+                control.signal.throwIfAborted();
+                metadata.modelRef = selected.modelRef; metadata.effort = selected.effort;
+                metadata.step = step = selected.role as OperatorStepKind; save();
+                emit({ type: "routing", kind: step, modelRef: selected.modelRef, effort: selected.effort,
+                  reason: selected.reason, handoff: false, scope: "operator" });
+                break;
+              }
+            }
             const current = await ensureSession();
             control.signal.throwIfAborted();
             metadata.turns += 1; save(); await retainUser(text); record.append({ t: "note", text: `operator.user ${redactText(text)}` });
-            if (shouldClassifyJev(routingMode, "prompt")) {
+            if (!resourceMode && shouldClassifyJev(routingMode, "prompt")) {
               const classification = await classifyStep(`Original task: ${seed.slice(0, 4000)}\nCurrent user request: ${text.slice(0, 11000)}`, step);
               control.signal.throwIfAborted();
               if (classification.source === "jev") {
@@ -678,9 +785,12 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       },
       async setEffort(effort) {
         if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Unsupported operator effort");
+        resourcePolicyRevision++;
         metadata.effort = effort;
-        cfg = { ...cfg, effort: effort as typeof cfg.effort, effortByRole: Object.fromEntries(Object.keys(cfg.roles).map(role => [role, effort])) };
-        prepared = prepareStepRouting(cfg, available, seed);
+        if (metadata.resources) metadata.resources.effortPolicy = "fixed";
+        cfg = { ...cfg, effort: effort as typeof cfg.effort, effortByRole: Object.fromEntries(Object.keys(cfg.roles).map(role => [role, effort])),
+          routing: { ...cfg.routing, mode: cfg.routing?.mode ?? "manual", effort: "fixed" } };
+        prepared = prepare();
         for (const item of assignmentAdmissions) {
           const parsed = parseModelRef(item.modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
           item.effort = clampEffort(model, effort) ?? effort;

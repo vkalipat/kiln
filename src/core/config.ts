@@ -83,7 +83,7 @@ export interface KilnConfig {
   evals: EvalsConfig;
   seating: SeatingConfig;
   /** Manual preserves the configured seats exactly; adaptive derives a per-seed run plan. */
-  routing?: { mode: RoutingMode };
+  routing?: { mode: RoutingMode; resources?: "jev" | "legacy"; effort?: "adaptive" | "fixed" };
 }
 
 export interface SeatingConfig {
@@ -351,6 +351,8 @@ export function loadConfig(home: string): KilnConfig {
     if (!raw.routing || typeof raw.routing !== "object" || !["adaptive", "manual"].includes(raw.routing.mode as string)) {
       throw new Error('routing.mode must be "adaptive" or "manual"');
     }
+    if (raw.routing.resources !== undefined && !["jev", "legacy"].includes(raw.routing.resources)) throw new Error('routing.resources must be "jev" or "legacy"');
+    if (raw.routing.effort !== undefined && !["adaptive", "fixed"].includes(raw.routing.effort)) throw new Error('routing.effort must be "adaptive" or "fixed"');
   }
   if (raw.operator !== undefined) {
     if (!raw.operator || typeof raw.operator !== "object" || Array.isArray(raw.operator)) throw new Error("operator limits must be an object");
@@ -413,7 +415,9 @@ export function loadConfig(home: string): KilnConfig {
         caps: { ...d.seating.frontier.caps, ...(seating.frontier?.caps ?? {}) },
       },
     },
-    routing: { mode: raw.routing?.mode ?? d.routing!.mode },
+    routing: { mode: raw.routing?.mode ?? d.routing!.mode,
+      ...(raw.routing?.resources === undefined ? {} : { resources: raw.routing.resources }),
+      ...(raw.routing?.effort === undefined ? {} : { effort: raw.routing.effort }) },
   };
 }
 

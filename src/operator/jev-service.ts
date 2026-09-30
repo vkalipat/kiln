@@ -41,7 +41,7 @@ export interface JevWorkflowServiceOptions {
   onReuse?: (event: { operation: string; sessionId: string; stateHash: string; kind: "inflight" | "cache"; requestId: string; reason: string; latencyMs: number }) => void;
 }
 
-type WorkflowRequest = { operation: "browser" | "research" | "team"; sessionId: string; state: JevState;
+type WorkflowRequest = { operation: "browser" | "research" | "team" | "routing"; sessionId: string; state: JevState;
   questions: Record<string, JevChoiceQuestion>; signal?: AbortSignal };
 
 /** Descriptor checks precede serialization: no getters, toJSON, cycles, or lossy JSON identities. */

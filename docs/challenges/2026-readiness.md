@@ -1,6 +1,6 @@
 # 2026 challenge software readiness
 
-Public requirements checked **2026-09-30**. **Neither challenge has been started.** The user will supply their own task prompt and target/data choices later. This document is a software-readiness assessment, not a campaign plan, generated task prompt, submission package or scientific result. No challenge data were downloaded, accounts registered, designs generated, GPU resources rented or submissions made in this assessment.
+Public requirements checked **2026-09-30**. **Neither challenge has been started.** Prepared [challenge prompts](prompts/README.md) are available for later user-directed runs. This document is a software-readiness assessment, not a submission package or scientific result. No challenge data were downloaded, accounts registered, designs generated, GPU resources rented or submissions made in this assessment.
 
 ## Verified public interfaces
 
@@ -40,4 +40,4 @@ After local setup, `doctor --require jev` confirms native credentials, a stored 
 | Format validation | Positive and negative fixtures for the selected current official schema; retained commands, versions and outputs | Official acceptance without the organizer's own validation |
 | Scientific evaluation | Distinct synthetic/real labels, declared baseline, complete metric outputs and held-out evaluation where appropriate | Affinity, pH selectivity, generalization or leaderboard performance from software checks |
 
-Challenge-specific data, registration status, service quota, compute requirements and suitable evaluation data remain **unassessed for a new run**. Once the user supplies the task, report those dependencies independently from software readiness. Preserve raw/normalized score distinctions, unknown evidence and failed attempts. Do not call any challenge complete from this document or the historical smoke tests.
+Challenge-specific data, registration status, service quota, compute requirements and suitable evaluation data remain **unassessed for a new run**. When a challenge run starts, report those dependencies independently from software readiness. Preserve raw/normalized score distinctions, unknown evidence and failed attempts. Do not call any challenge complete from this document or the historical smoke tests.

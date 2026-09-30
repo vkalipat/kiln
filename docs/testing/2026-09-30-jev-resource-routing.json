@@ -1,0 +1,505 @@
+{
+  "schema": "kiln-resource-routing-qualification-v1",
+  "checkedAt": "2026-09-30T19:54:41.134Z",
+  "strategy": "separate-model-effort-heads-with-retirement-admission",
+  "catalogModels": 20,
+  "timeoutMs": 1500,
+  "minConfidence": 0.8,
+  "fixtures": [
+    {
+      "id": "routine-format",
+      "task": "Apply a supplied punctuation correction to one README sentence. The exact replacement is given; no investigation or architecture decision is needed.",
+      "qualityDemand": "simple",
+      "roles": [
+        {
+          "id": "copy_editor",
+          "description": "Apply the exact supplied correction and verify the diff"
+        }
+      ]
+    },
+    {
+      "id": "code-investigation",
+      "task": "Diagnose an intermittent asynchronous resource leak in a TypeScript service, implement the smallest fix, and verify it with a focused regression test.",
+      "qualityDemand": "standard",
+      "roles": [
+        {
+          "id": "debugger",
+          "description": "Find the cause, implement the fix and validate it"
+        }
+      ]
+    },
+    {
+      "id": "research-design",
+      "task": "Design a novel rigorous evaluation for a scientific modeling proposal with confounded observations, incomplete measurements, and competing causal hypotheses. Define falsifiable alternatives and uncertainty-aware checks.",
+      "qualityDemand": "complex",
+      "roles": [
+        {
+          "id": "methodologist",
+          "description": "Develop the evaluation strategy and compare the scientific alternatives"
+        }
+      ]
+    }
+  ],
+  "rows": [
+    {
+      "id": "routine-format",
+      "modelChoices": {
+        "model_0": "anthropic/claude-fable-5-1",
+        "model_1": "anthropic/claude-opus-5",
+        "model_2": "openai-codex/gpt-6-astra",
+        "model_3": "anthropic/claude-opus-5-5",
+        "model_4": "anthropic/claude-sonnet-5-5",
+        "model_5": "openai-codex/gpt-5.5",
+        "model_6": "anthropic/claude-haiku-4-5"
+      },
+      "modelRef": "anthropic/claude-haiku-4-5",
+      "effort": "minimal",
+      "source": "jev",
+      "reason": "Jev selected model and light effort profile mapped to supported minimal",
+      "decision": {
+        "reason": "accepted",
+        "dispatched": true,
+        "latencyMs": 226,
+        "answers": {
+          "model": {
+            "choice": "model_6",
+            "confidence": 0.93,
+            "probabilities": {
+              "model_4": 0.05,
+              "model_3": 0,
+              "model_0": 0,
+              "model_1": 0,
+              "model_2": 0,
+              "model_5": 0,
+              "model_6": 0.95
+            },
+            "accepted": true
+          },
+          "effort": {
+            "choice": "light",
+            "confidence": 1,
+            "probabilities": {
+              "light": 1,
+              "deep": 0,
+              "balanced": 0
+            },
+            "accepted": true
+          }
+        },
+        "usage": {
+          "input_tokens": 5534,
+          "output_tokens": 118
+        },
+        "costUsd": 0.00023242800000000002
+      }
+    },
+    {
+      "id": "code-investigation",
+      "modelChoices": {
+        "model_0": "anthropic/claude-fable-5-1",
+        "model_1": "anthropic/claude-opus-5",
+        "model_2": "openai-codex/gpt-6-astra",
+        "model_3": "anthropic/claude-opus-5-5",
+        "model_4": "anthropic/claude-sonnet-5-5",
+        "model_5": "openai-codex/gpt-5.5",
+        "model_6": "anthropic/claude-haiku-4-5"
+      },
+      "modelRef": "anthropic/claude-opus-5-5",
+      "effort": "xhigh",
+      "source": "fallback",
+      "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+      "decision": {
+        "reason": "low_confidence",
+        "dispatched": true,
+        "latencyMs": 162,
+        "answers": {
+          "model": {
+            "choice": "model_4",
+            "confidence": 0.54,
+            "probabilities": {
+              "model_3": 0.2,
+              "model_6": 0.14,
+              "model_4": 0.61,
+              "model_5": 0.01,
+              "model_1": 0.01,
+              "model_0": 0.02,
+              "model_2": 0.01
+            },
+            "accepted": false
+          },
+          "effort": {
+            "choice": "balanced",
+            "confidence": 0.26,
+            "probabilities": {
+              "deep": 0.49,
+              "balanced": 0.51,
+              "light": 0
+            },
+            "accepted": false
+          }
+        },
+        "usage": {
+          "input_tokens": 5542,
+          "output_tokens": 118
+        },
+        "costUsd": 0.00023276400000000002
+      }
+    },
+    {
+      "id": "research-design",
+      "modelChoices": {
+        "model_0": "anthropic/claude-fable-5-1",
+        "model_1": "anthropic/claude-opus-5",
+        "model_2": "openai-codex/gpt-6-astra",
+        "model_3": "anthropic/claude-opus-5-5",
+        "model_4": "anthropic/claude-sonnet-5-5",
+        "model_5": "openai-codex/gpt-5.5",
+        "model_6": "anthropic/claude-haiku-4-5"
+      },
+      "modelRef": "anthropic/claude-opus-5-5",
+      "effort": "xhigh",
+      "source": "fallback",
+      "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+      "decision": {
+        "reason": "low_confidence",
+        "dispatched": true,
+        "latencyMs": 182,
+        "answers": {
+          "model": {
+            "choice": "model_3",
+            "confidence": 0.63,
+            "probabilities": {
+              "model_1": 0.02,
+              "model_5": 0.01,
+              "model_6": 0.02,
+              "model_3": 0.68,
+              "model_0": 0.03,
+              "model_2": 0,
+              "model_4": 0.23
+            },
+            "accepted": false
+          },
+          "effort": {
+            "choice": "deep",
+            "confidence": 0.84,
+            "probabilities": {
+              "light": 0.06,
+              "balanced": 0.04,
+              "deep": 0.9
+            },
+            "accepted": true
+          }
+        },
+        "usage": {
+          "input_tokens": 5546,
+          "output_tokens": 118
+        },
+        "costUsd": 0.000232932
+      }
+    }
+  ],
+  "stats": {
+    "attempts": 3,
+    "inputTokens": 16622,
+    "outputTokens": 354,
+    "reservedInputTokens": 0,
+    "unknownInputTokens": 0
+  },
+  "settlements": [
+    {
+      "costUsd": 0.00023242800000000002,
+      "inputTokens": 5534,
+      "outputTokens": 118,
+      "reason": "Jev routing: accepted; pricing 2026-09-28"
+    },
+    {
+      "costUsd": 0.00023276400000000002,
+      "inputTokens": 5542,
+      "outputTokens": 118,
+      "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+    },
+    {
+      "costUsd": 0.000232932,
+      "inputTokens": 5546,
+      "outputTokens": 118,
+      "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+    }
+  ],
+  "earlierAttempts": [
+    {
+      "strategy": "joint-pair-choices",
+      "schema": "kiln-resource-routing-qualification-v1",
+      "checkedAt": "2026-09-30T19:48:39.786Z",
+      "catalogModels": 29,
+      "rows": [
+        {
+          "id": "routine-format",
+          "modelRef": "anthropic/claude-opus-5-5",
+          "effort": "xhigh",
+          "source": "fallback",
+          "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+          "decision": {
+            "reason": "low_confidence",
+            "dispatched": true,
+            "latencyMs": 501,
+            "confidence": 0.39,
+            "usage": {
+              "input_tokens": 9985,
+              "output_tokens": 1197
+            },
+            "costUsd": 0.00041937
+          }
+        },
+        {
+          "id": "code-investigation",
+          "modelRef": "anthropic/claude-opus-5-5",
+          "effort": "xhigh",
+          "source": "fallback",
+          "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+          "decision": {
+            "reason": "low_confidence",
+            "dispatched": true,
+            "latencyMs": 249,
+            "confidence": 0.09,
+            "usage": {
+              "input_tokens": 9993,
+              "output_tokens": 1197
+            },
+            "costUsd": 0.000419706
+          }
+        },
+        {
+          "id": "research-design",
+          "modelRef": "anthropic/claude-opus-5-5",
+          "effort": "xhigh",
+          "source": "fallback",
+          "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+          "decision": {
+            "reason": "low_confidence",
+            "dispatched": true,
+            "latencyMs": 242,
+            "confidence": 0.48,
+            "usage": {
+              "input_tokens": 9997,
+              "output_tokens": 1197
+            },
+            "costUsd": 0.00041987400000000004
+          }
+        }
+      ],
+      "stats": {
+        "attempts": 3,
+        "inputTokens": 29975,
+        "outputTokens": 3591,
+        "reservedInputTokens": 0,
+        "unknownInputTokens": 0
+      },
+      "settlements": [
+        {
+          "costUsd": 0.00041937,
+          "inputTokens": 9985,
+          "outputTokens": 1197,
+          "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+        },
+        {
+          "costUsd": 0.000419706,
+          "inputTokens": 9993,
+          "outputTokens": 1197,
+          "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+        },
+        {
+          "costUsd": 0.00041987400000000004,
+          "inputTokens": 9997,
+          "outputTokens": 1197,
+          "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+        }
+      ],
+      "limitations": [
+        "Three synthetic routing requests only; no selected model or user workload executed.",
+        "No task accuracy, paired throughput improvement or frontier baseline measured.",
+        "Jev confidence is classification confidence, not proof of task quality."
+      ]
+    },
+    {
+      "schema": "kiln-resource-routing-qualification-v1",
+      "checkedAt": "2026-09-30T19:52:33.574Z",
+      "strategy": "separate-model-effort-heads",
+      "catalogModels": 29,
+      "timeoutMs": 1500,
+      "minConfidence": 0.8,
+      "rows": [
+        {
+          "id": "routine-format",
+          "modelChoices": 7,
+          "modelRef": "anthropic/claude-3-haiku-20240307",
+          "effort": "medium",
+          "source": "jev",
+          "reason": "Jev selected model and light effort profile mapped to supported medium",
+          "decision": {
+            "reason": "accepted",
+            "dispatched": true,
+            "latencyMs": 431,
+            "answers": {
+              "model": {
+                "choice": "model_6",
+                "confidence": 0.91,
+                "probabilities": {
+                  "model_1": 0,
+                  "model_4": 0.07,
+                  "model_0": 0,
+                  "model_6": 0.93,
+                  "model_3": 0,
+                  "model_2": 0,
+                  "model_5": 0
+                },
+                "accepted": true
+              },
+              "effort": {
+                "choice": "light",
+                "confidence": 1,
+                "probabilities": {
+                  "balanced": 0,
+                  "light": 1,
+                  "deep": 0
+                },
+                "accepted": true
+              }
+            },
+            "usage": {
+              "input_tokens": 5553,
+              "output_tokens": 118
+            },
+            "costUsd": 0.00023322600000000003
+          }
+        },
+        {
+          "id": "code-investigation",
+          "modelChoices": 7,
+          "modelRef": "anthropic/claude-opus-5-5",
+          "effort": "xhigh",
+          "source": "fallback",
+          "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+          "decision": {
+            "reason": "low_confidence",
+            "dispatched": true,
+            "latencyMs": 197,
+            "answers": {
+              "model": {
+                "choice": "model_4",
+                "confidence": 0.75,
+                "probabilities": {
+                  "model_1": 0.02,
+                  "model_0": 0.02,
+                  "model_5": 0.01,
+                  "model_2": 0.01,
+                  "model_6": 0.05,
+                  "model_3": 0.11,
+                  "model_4": 0.78
+                },
+                "accepted": false
+              },
+              "effort": {
+                "choice": "deep",
+                "confidence": 0.33,
+                "probabilities": {
+                  "balanced": 0.44,
+                  "deep": 0.56,
+                  "light": 0
+                },
+                "accepted": false
+              }
+            },
+            "usage": {
+              "input_tokens": 5561,
+              "output_tokens": 118
+            },
+            "costUsd": 0.000233562
+          }
+        },
+        {
+          "id": "research-design",
+          "modelChoices": 7,
+          "modelRef": "anthropic/claude-opus-5-5",
+          "effort": "xhigh",
+          "source": "fallback",
+          "reason": "Conservative reviewed category evidence fallback; Jev low_confidence",
+          "decision": {
+            "reason": "low_confidence",
+            "dispatched": true,
+            "latencyMs": 169,
+            "answers": {
+              "model": {
+                "choice": "model_3",
+                "confidence": 0.51,
+                "probabilities": {
+                  "model_5": 0.01,
+                  "model_0": 0.03,
+                  "model_1": 0.03,
+                  "model_6": 0,
+                  "model_4": 0.35,
+                  "model_3": 0.58,
+                  "model_2": 0
+                },
+                "accepted": false
+              },
+              "effort": {
+                "choice": "deep",
+                "confidence": 0.86,
+                "probabilities": {
+                  "light": 0.06,
+                  "balanced": 0.03,
+                  "deep": 0.91
+                },
+                "accepted": true
+              }
+            },
+            "usage": {
+              "input_tokens": 5565,
+              "output_tokens": 118
+            },
+            "costUsd": 0.00023373000000000003
+          }
+        }
+      ],
+      "stats": {
+        "attempts": 3,
+        "inputTokens": 16679,
+        "outputTokens": 354,
+        "reservedInputTokens": 0,
+        "unknownInputTokens": 0
+      },
+      "settlements": [
+        {
+          "costUsd": 0.00023322600000000003,
+          "inputTokens": 5553,
+          "outputTokens": 118,
+          "reason": "Jev routing: accepted; pricing 2026-09-28"
+        },
+        {
+          "costUsd": 0.000233562,
+          "inputTokens": 5561,
+          "outputTokens": 118,
+          "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+        },
+        {
+          "costUsd": 0.00023373000000000003,
+          "inputTokens": 5565,
+          "outputTokens": 118,
+          "reason": "Jev routing: low_confidence; pricing 2026-09-28"
+        }
+      ],
+      "limitations": [
+        "Three synthetic routing requests only; no selected model or user workload executed.",
+        "No task accuracy, paired throughput improvement or frontier baseline measured.",
+        "Jev confidence is classification confidence, not proof of task quality."
+      ]
+    }
+  ],
+  "limitations": [
+    "Three synthetic routing requests only; no selected model or user workload executed.",
+    "No task accuracy, paired throughput improvement or frontier baseline measured.",
+    "Jev confidence is classification confidence, not proof of task quality.",
+    "Earlier attempts exposed excessive choice ambiguity and a retired catalog entry; those observations are preserved, not claimed as successful dispatch.",
+    "All nine requests were Jev classifications only; no selected model was executed."
+  ]
+}

@@ -121,6 +121,11 @@ export function installOperatorAuthStorage(storage: unknown, providers: readonly
 }
 
 let active = false;
+/** The calling worker can have a different effort from the operator. */
+export function currentOmpSessionEffort(ctx: ExtensionContext): string | undefined {
+  const id = ctx.sessionManager.getSessionId();
+  return AgentRegistry.global().list().find(ref => ref.session?.sessionManager.getSessionId() === id)?.session?.thinkingLevel;
+}
 /** Switch the calling native session without weakening credential ownership for auxiliary work. */
 export async function switchOmpSessionModel(ctx: ExtensionContext, model: Model, effort?: string): Promise<void> {
   const id = ctx.sessionManager.getSessionId();
