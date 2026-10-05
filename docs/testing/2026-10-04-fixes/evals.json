@@ -1,0 +1,19 @@
+{
+  "ok": true,
+  "manifest": {
+    "ok": true,
+    "changed": [],
+    "missing": [],
+    "extra": []
+  },
+  "split": {
+    "ok": true,
+    "errors": [],
+    "problems": [],
+    "missing": [],
+    "extra": [],
+    "changed": [],
+    "maxPairwiseJaccard": 0.23766816143497757,
+    "maxCrossSplitJaccard": 0.23766816143497757
+  }
+}

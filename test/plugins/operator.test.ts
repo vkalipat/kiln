@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -23,7 +23,18 @@ calls.parent.mkdir(parents=True, exist_ok=True)
 with calls.open("a") as out: out.write(json.dumps(args) + "\\n")
 run_id = value("--id") if "--id" in args else args[2]
 status_path = home / "runs" / run_id / "status.json"
-if args[:2] == ["run", "new"]:
+if args[:2] == ["task", "new"]:
+    status_path.parent.mkdir(parents=True, exist_ok=True)
+    status_path.write_text(json.dumps({"id":run_id,"phase":"frame","state":"running","usdSpent":0.25}))
+    time.sleep(float(os.environ.get("FAKE_SLEEP", "0")))
+    state=json.loads(status_path.read_text());state["state"]="done";status_path.write_text(json.dumps(state))
+elif args[:2] == ["task", "resume"]:
+    state=json.loads(status_path.read_text());state["state"]="done";status_path.write_text(json.dumps(state))
+elif args[:2] == ["task", "steer"]:
+    print(json.dumps({"runId":run_id,"status":"queued"}))
+elif args[:2] == ["task", "pause"]:
+    state=json.loads(status_path.read_text());state["state"]="paused";status_path.write_text(json.dumps(state));print(json.dumps({"state":"pause_requested"}))
+elif args[:2] == ["run", "new"]:
     status_path.parent.mkdir(parents=True, exist_ok=True)
     through=value("--through")
     status_path.write_text(json.dumps({"id":run_id,"phase":"reflect" if through == "reflect" else "form","state":"done" if through == "reflect" else "running","usdSpent":1.25,"createdAt":"x","updatedAt":"x"}))
@@ -75,6 +86,31 @@ async function waitFor(path: string, predicate: (value: any) => boolean, timeout
 }
 
 describe("Kiln coding-agent operator", () => {
+  test("failed and still-running boundaries cannot be reported completed", () => {
+    const process = Bun.spawnSync({ cmd: ["python3", "-c", `import importlib.util,json
+s=importlib.util.spec_from_file_location('operator',${JSON.stringify(OPERATOR)});m=importlib.util.module_from_spec(s);s.loader.exec_module(m)
+print(json.dumps([m.endpoint_status({'launchThrough':'reflect'},{'exitCode':1},{'available':True,'phase':'reflect','state':'failed'}),m.endpoint_status({'launchThrough':'checkpoint'},{'workerAlive':True},{'available':True,'phase':'form','state':'running'})]))`], env: { ...globalThis.process.env, PYTHONDONTWRITEBYTECODE: "1" }, stdout: "pipe", stderr: "pipe" });
+    expect(process.exitCode).toBe(0); expect(JSON.parse(process.stdout.toString()).map((item: any) => item.disposition)).toEqual(["failed", "running"]);
+  });
+
+  test("native jobs preserve scope and limits, resume with explicit followups, and expose steering", async () => {
+    const f = fixture(), request = "native-fixture";
+    const launched = invoke(f, ["start", "--request-id", request, "--engine", "native", "--cwd", f.home, "--budget", "3", "--wall-seconds", "30", "--seed-file", f.seed, "--confirm-spend"]);
+    expect(launched.code).toBe(0);
+    const job = join(f.home, "operator", request, "job.json"); await waitFor(job, m => m.state === "exited");
+    const status = JSON.parse(invoke(f, ["status", "--request-id", request]).out);
+    expect(status.endpoint).toMatchObject({ requested: "turn", reached: true, disposition: "completed", taskQualityValidated: false });
+    expect(invoke(f, ["resume", "--request-id", request, "--confirm-spend"]).code).toBe(2);
+    writeFileSync(f.seed, "Explicit followup\n");
+    expect(invoke(f, ["resume", "--request-id", request, "--seed-file", f.seed, "--confirm-spend"]).code).toBe(0);
+    await waitFor(job, m => m.attempts.length === 2 && m.state === "exited");
+    expect(invoke(f, ["steer", "--request-id", request, "--seed-file", f.seed]).code).toBe(0);
+    const commands = readFileSync(join(f.home, "fake-calls.jsonl"), "utf8").trim().split("\n").map(line => JSON.parse(line));
+    const start = commands.find((command: string[]) => command[0] === "task" && command[1] === "new");
+    expect(start).toContain("--cwd"); expect(start).toContain(realpathSync(f.home)); expect(start).toContain("--budget"); expect(start).toContain("3");
+    const resume = commands.find((command: string[]) => command[0] === "task" && command[1] === "resume");
+    expect(resume).not.toContain("--budget"); expect(resume).not.toContain("--through");
+  });
   test("recovers a start process that crashed after reserving its job directory", async () => {
     const f = fixture();
     mkdirSync(join(f.home, "operator/crash-before-intent"), { recursive: true });

@@ -1,0 +1,11 @@
+bun test v1.4.0 (34cbb9a40)
+
+test/operator/catalog-resume.test.ts:
+(pass) catalog fingerprint drift refuses resume before native session or transport and preserves metadata [138.71ms]
+(pass) effort changes survive reopening without changing catalog identity; legacy missing hash gains baseline [136.95ms]
+(pass) restoring automatic effort preserves frozen models, allocation and resume identity without transport [128.91ms]
+
+ 3 pass
+ 0 fail
+ 22 expect() calls
+Ran 3 tests across 1 file. [556.00ms]

@@ -29,7 +29,7 @@ export async function catalogCommand(args: string[], flags: Record<string, strin
       limits: ["Metadata checks do not prove provider availability, current pricing, or request compatibility.", "New IDs remain unavailable to Kiln until the pinned catalog/adapter is updated and validated. No automatic runtime admission or live model switch occurs.", "Installed catalog version is not a release date; local snapshots do not establish upstream freshness."],
       summary: { added: findings.filter(f => f.change === "added").length, changed: findings.filter(f => f.change === "changed").length, removed: findings.filter(f => f.change === "removed").length, blocked: findings.filter(f => f.compatibility === "blocked").length }, findings };
     if (flags.json) io.write(JSON.stringify(report, null, 2) + "\n");
-    else { io.write(`Catalog ${installed.version}: ${installed.models.length} installed models; ${report.freshness}\n`); io.write(`Added ${report.summary.added}; changed ${report.summary.changed}; removed ${report.summary.removed}; metadata blockers ${report.summary.blocked}.\n`); io.write("Audit only. No models admitted or switched. See docs/model-catalog-updates.md; --json includes per-model findings and source hash.\n"); }
+    else { io.write(`Catalog ${installed.version}: ${installed.models.length} installed models; ${report.freshness}\n`); io.write(`Added ${report.summary.added}; changed ${report.summary.changed}; removed ${report.summary.removed}; metadata blockers ${report.summary.blocked}.\n`); io.write("Audit only. No models admitted or switched. See docs/README.md#updates; --json includes per-model findings and source hash.\n"); }
     return 0;
   } catch (error) { err(`Catalog audit failed: ${(error as Error).message}\n`); return 2; }
 }

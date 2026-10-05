@@ -90,20 +90,34 @@ export const VERSION = "0.1.2";
 
 const USAGE = 'usage: kiln [tui] | kiln doctor [--require jev,hindsight] [--json] | kiln integrations jev status|enable|disable | kiln task [resume RUN_ID] <prompt> ... | kiln task limits [--uncapped | --budget USD --wall-seconds N] | kiln task monitor RUN_ID [--json] | kiln auth login|key|status|logout ... | kiln run new|resume|list|show|record ... | kiln project form|build|status|audit|relock ... | kiln build start|pause ... | kiln ideas frontier|pick|reject|another ... | kiln judge pair ... | kiln model roles|routing|plan|benchmarks|suggest|catalog ... | kiln memory status|recall|retain ... | kiln mode show|set|toggle ... | kiln evals verify|leakcheck|metrics|calibrate|effort|m1|m2 ... | kiln evolve list|propose|eval|promote|rollback|archive|apply ...\n';
 
-/** `--k v` and `--k=v` set string flags; a bare `--k` sets `true`. Everything else is a command word. */
+const BOOLEAN_FLAGS = new Set(["json", "uncapped", "bare", "yes", "confirm", "autonomous", "interactive", "force", "reinit", "single-session", "reviewed", "device", "api-key-stdin", "no-browser", "no-fable-low", "no-frontier", "jev"]);
+const TASK_FLAGS = new Set(["home", "cwd", "id", "json", "uncapped", "budget", "wall-seconds", "seed-file", "through", "bare"]);
+
+/** Boolean switches never consume a positional prompt. `--` ends option parsing. */
 export function parseArgs(argv: string[]): { cmd: string[]; flags: Record<string, string | boolean> } {
   const cmd: string[] = [];
   const flags: Record<string, string | boolean> = {};
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]!;
+    if (a === "--") { cmd.push(...argv.slice(i + 1)); break; }
     if (a.startsWith("--")) {
       const eq = a.indexOf("=");
+      const name = a.slice(2, eq === -1 ? undefined : eq);
+      if (!name) throw new Error("Empty option name");
+      if (Object.hasOwn(flags, name)) throw new Error(`Duplicate option --${name}`);
       if (eq !== -1) {
-        flags[a.slice(2, eq)] = a.slice(eq + 1);
+        const value = a.slice(eq + 1);
+        if (BOOLEAN_FLAGS.has(name)) {
+          if (value !== "true" && value !== "false") throw new Error(`--${name} expects true or false`);
+          flags[name] = value === "true";
+        } else flags[name] = value;
+      } else if (BOOLEAN_FLAGS.has(name)) {
+        flags[name] = true;
       } else if (i + 1 < argv.length && !argv[i + 1]!.startsWith("--")) {
-        flags[a.slice(2)] = argv[++i]!;
+        flags[name] = argv[++i]!;
       } else {
-        flags[a.slice(2)] = true;
+        if (TASK_FLAGS.has(name)) throw new Error(`Missing value for --${name}`);
+        flags[name] = true; // Let command-specific validators diagnose unknown switches.
       }
     } else {
       cmd.push(a);
@@ -123,14 +137,28 @@ export async function main(
     io.write(`kiln ${VERSION}\n`);
     return 0;
   }
-  const { cmd, flags } = parseArgs(argv);
+  let parsed: ReturnType<typeof parseArgs>;
+  try { parsed = parseArgs(argv); }
+  catch (error) { err(`kiln: ${(error as Error).message}\n`); return 2; }
+  const { cmd, flags } = parsed;
+  if (cmd[0] === "task") {
+    const unknown = Object.keys(flags).find(name => !TASK_FLAGS.has(name));
+    if (unknown) { err(`kiln: unknown task option --${unknown}\n`); return 2; }
+    const subcommand = cmd[1];
+    const allowed = subcommand === "monitor" || subcommand === "pause" ? ["home", "json"]
+      : subcommand === "steer" ? ["home", "json", "seed-file"]
+      : subcommand === "limits" ? ["home", "json", "uncapped", "budget", "wall-seconds"]
+      : subcommand === "resume" ? [...TASK_FLAGS].filter(name => name !== "id") : undefined;
+    const inapplicable = allowed && Object.keys(flags).find(name => !allowed.includes(name));
+    if (inapplicable) { err(`kiln: task ${subcommand} does not accept --${inapplicable}\n`); return 2; }
+  }
   if (cmd[0] === "doctor") return doctorCommand(cmd.slice(1), flags, io);
   if (cmd[0] === "integrations") return integrationsCommand(cmd.slice(1), flags, io);
   if (cmd[0] === "model" && cmd[1] === "catalog") return catalogCommand(cmd.slice(2), flags, io, deps);
   // Explicit memory operations do not initialize a model home or provider session.
   if (cmd[0] === "memory") return memoryCommand(cmd.slice(1), flags, io, deps);
   // Inspecting a saved receipt must not create a home or start a session.
-  if (cmd[0] === "task" && cmd[1] === "monitor") return taskCommand(cmd.slice(1), flags, io, deps);
+  if (cmd[0] === "task" && ["monitor", "pause", "steer"].includes(cmd[1]!)) return taskCommand(cmd.slice(1), flags, io, deps);
   if (cmd[0] !== "evals" && cmd[0] !== "evolve") {
     initHome(typeof flags.home === "string" ? flags.home : kilnHome(), { plugAndPlay: true });
   }

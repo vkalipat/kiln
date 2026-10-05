@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createMockModel, streamMock } from "@oh-my-pi/pi-ai/providers/mock";
 import { createAgentSession } from "@oh-my-pi/pi-coding-agent";
+import { getBundledModel } from "@oh-my-pi/pi-catalog";
 import { createOmpSession } from "../../src/operator/session";
 
 async function nativeSetting(settings: unknown, key: string, ...value: unknown[]): Promise<unknown> {
@@ -20,6 +21,31 @@ async function nativeSetting(settings: unknown, key: string, ...value: unknown[]
 }
 
 describe("native OMP session adapter", () => {
+  test("Sol uses native tools and resumes its exact model and effort", async () => {
+    const root = mkdtempSync(join(tmpdir(), "kiln-sol-session-"));
+    const sol = getBundledModel("openai-codex", "gpt-6.1-sol")!;
+    const mock = createMockModel({ id: "sol-native-contract", responses: [
+      { content: [{ type: "toolCall", name: "bash", arguments: { command: "printf sol-native-check > artifact.txt" } }] },
+      { content: ["Sol tool path complete"] },
+    ] } as never);
+    const options = { cwd: root, stateDir: join(root, "state"), modelRef: "openai-codex/gpt-6.1-sol", effort: "max", connectedProviders: ["openai-codex"],
+      auth: { apiKeyFor: async () => "synthetic-sol-key", configuredProviders: (providers: readonly string[]) => [...providers] }, contextFiles: [],
+      streamFn: ((_model: unknown, context: Parameters<typeof streamMock>[1], streamOptions: Parameters<typeof streamMock>[2]) => streamMock(mock, context, streamOptions)) as never };
+    const handle = await createOmpSession(options);
+    try {
+      expect(handle.session.model?.id).toBe(sol.id);
+      expect(String(handle.session.thinkingLevel)).toBe("max");
+      await handle.session.prompt("Write the synthetic artifact with the supplied bash tool.");
+      expect(readFileSync(join(root, "artifact.txt"), "utf8")).toBe("sol-native-check");
+      expect(mock.calls).toHaveLength(2);
+    } finally { await handle.dispose(); }
+    const resumed = await createOmpSession({ ...options, resumeFile: handle.sessionFile });
+    try {
+      expect(resumed.session.model?.id).toBe(sol.id);
+      expect(String(resumed.session.thinkingLevel)).toBe("max");
+      expect(JSON.stringify(resumed.session.messages)).toContain("Sol tool path complete");
+    } finally { await resumed.dispose(); }
+  }, 20_000);
   test("explicit empty or scoped context bypasses ambient project instructions", async () => {
     const root = mkdtempSync(join(tmpdir(), "kiln-omp-context-"));
     writeFileSync(join(root, "AGENTS.md"), "AMBIENT_PROJECT_CONTEXT_MARKER");

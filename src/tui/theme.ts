@@ -32,6 +32,7 @@ export const PHASE_STYLE: Readonly<Record<TuiPhase, Style>> = {
 };
 
 export const EFFORT_STYLE: Readonly<Record<TuiEffort, Style>> = {
+  auto: ansi.rgb(180, 200, 210),
   low: ansi.rgb(255, 215, 0),
   medium: ansi.rgb(61, 255, 166),
   high: ansi.rgb(61, 212, 255),

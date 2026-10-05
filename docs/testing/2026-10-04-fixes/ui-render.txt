@@ -1,0 +1,94 @@
+Fixture 20x10
+                   ▐
+parse("one,two");  ▐
+```                ▐
+▐
+✓ bash bun test ▸█
+╭── $0.05  impleme…╮
+│ ▌                │
+│                  │
+│                  │
+╰ ∼ idle  /tmp/syn…╯
+
+Fixture 40x12
+└───────────┴──────────┘               ▐
+                                       ▐
+```ts                                  ▐
+    parse("one,two");                  ▐
+```                                    ▐
+█
+✓ bash bun test ▸█
+╭── $0.05  implement  openai-codex/gpt…╮
+│ ▌                                    │
+│                                      │
+│                                      │
+╰ ∼ idle ────── /tmp/synthetic-project ╯
+
+Fixture 80x24
+
+
+▌▌ Implement and check the CSV importer. 🧪 Preserve malformed rows.
+
+I checked the parser and found two cases.                                       
+                                                                                
+┌───────────┬──────────┐                                                        
+│ Input     │ Result   │                                                        
+├───────────┼──────────┤                                                        
+│ empty     │ retained │                                                        
+├───────────┼──────────┤                                                        
+│ malformed │ reported │                                                        
+└───────────┴──────────┘                                                        
+                                                                                
+```ts                                                                           
+    parse("one,two");                                                           
+```                                                                             
+
+✓ bash bun test ▸
+╭─────────────────────────── $0.05  implement  openai-codex/gpt-6-astra · high ╮
+│ ▌                                                                            │
+│                                                                              │
+│                                                                              │
+╰ ∼ idle ────────────────────────────────────────────── /tmp/synthetic-project ╯
+
+Fixture 120x40
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+▌▌ Implement and check the CSV importer. 🧪 Preserve malformed rows.
+
+I checked the parser and found two cases.                                                                               
+                                                                                                                        
+┌───────────┬──────────┐                                                                                                
+│ Input     │ Result   │                                                                                                
+├───────────┼──────────┤                                                                                                
+│ empty     │ retained │                                                                                                
+├───────────┼──────────┤                                                                                                
+│ malformed │ reported │                                                                                                
+└───────────┴──────────┘                                                                                                
+                                                                                                                        
+```ts                                                                                                                   
+    parse("one,two");                                                                                                   
+```                                                                                                                     
+
+✓ bash bun test ▸
+╭─────────────────────────────────────────────────────────────────── $0.05  implement  openai-codex/gpt-6-astra · high ╮
+│ ▌                                                                                                                    │
+│                                                                                                                      │
+│                                                                                                                      │
+╰ ∼ idle ────────────────────────────────────────────────────────────────────────────────────── /tmp/synthetic-project ╯
+

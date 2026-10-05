@@ -12,7 +12,14 @@ export interface PaletteCommand {
 }
 
 export const PALETTE_COMMANDS: readonly PaletteCommand[] = [
-  { id: "run: new", label: "run: new", description: "Start a new run", argv: ["run", "new"] },
+  { id: "task: new", label: "task: new", description: "Start a fresh native operator conversation", argv: ["task", "new"] },
+  { id: "task: monitor", label: "task: monitor", description: "Inspect native compute and repetition receipts", argv: ["task", "monitor"] },
+  { id: "task: limits", label: "task: limits", description: "Inspect or set limits for new native sessions", argv: ["task", "limits"] },
+  { id: "integrations: status", label: "integrations: status", description: "Inspect integration readiness", argv: ["doctor", "--json"] },
+  { id: "integrations: jev enable", label: "integrations: jev enable", description: "Enable configured Jev for new sessions", argv: ["integrations", "jev", "enable"] },
+  { id: "integrations: jev disable", label: "integrations: jev disable", description: "Disable Jev for new sessions", argv: ["integrations", "jev", "disable"] },
+  { id: "mode: auto", label: "mode: auto", description: "Restore adaptive reasoning effort", argv: ["mode", "set", "auto"] },
+  { id: "run: new", label: "run: new", description: "Start the explicit legacy phase pipeline", argv: ["run", "new"] },
   { id: "run: resume", label: "run: resume", description: "Resume a saved run", argv: ["run", "resume"] },
   { id: "run: show record", label: "run: show record", description: "Show a run record", argv: ["run", "record"] },
   { id: "ideas: frontier", label: "ideas: frontier", description: "Inspect the idea frontier", argv: ["ideas", "frontier"] },

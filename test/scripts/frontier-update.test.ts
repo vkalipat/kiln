@@ -3,15 +3,17 @@ import { mkdtemp, mkdir, readFile, writeFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createHash } from "node:crypto";
-import { PACKAGES, AUTH_PATCH_SHA256, GATES, selectUpdate, migrateManifest, registryMetadata, applyUpdate, main, validateArtifacts, publishUpdate, type Manifest, type Packument, type Runner } from "../../scripts/frontier-update";
+import { PACKAGES, AUTH_PATCH_SHA256, SHELL_PATCH_SHA256, GATES, selectUpdate, migrateManifest, registryMetadata, applyUpdate, main, validateArtifacts, publishUpdate, type Manifest, type Packument, type Runner } from "../../scripts/frontier-update";
 
 const roots: string[] = [];
 afterEach(async () => { await Promise.all(roots.splice(0).map(path => rm(path, { recursive: true, force: true }))); });
-const current = "18.4.2", target = "18.5.0", base = "a".repeat(40);
-const patchPath = "patches/@oh-my-pi%2Fpi-ai@18.4.2.patch";
+const current = "18.6.1", target = "18.6.2", base = "a".repeat(40);
+const patchPath = "patches/@oh-my-pi%2Fpi-ai@18.6.1.patch";
+const shellPatchPath = "patches/@oh-my-pi%2Fpi-coding-agent@18.6.1.patch";
+const shellPatch = await readFile(join(import.meta.dir, "../../", shellPatchPath), "utf8");
 const originalPatch = await readFile(join(import.meta.dir, "../../", patchPath), "utf8");
 const digest = (value: string) => createHash("sha256").update(value).digest("hex");
-const manifest = (): Manifest => ({ name: "fixture", scripts: { test: "bun test" }, dependencies: Object.fromEntries(PACKAGES.map(name => [name, current])), patchedDependencies: { [`@oh-my-pi/pi-ai@${current}`]: patchPath } });
+const manifest = (): Manifest => ({ name: "fixture", scripts: { test: "bun test" }, dependencies: Object.fromEntries(PACKAGES.map(name => [name, current])), patchedDependencies: { [`@oh-my-pi/pi-ai@${current}`]: patchPath, [`@oh-my-pi/pi-coding-agent@${current}`]: shellPatchPath } });
 const doc = (name: string, versions = [current, target]): Packument => ({ name, versions: Object.fromEntries(versions.map(version => [version,
   { name, version, dist: { integrity: `sha512-${Buffer.alloc(64).toString("base64")}`, tarball: `https://registry.npmjs.org/${name}/-/package-${version}.tgz` } }])) });
 const metadata = () => PACKAGES.map(name => doc(name));
@@ -21,23 +23,30 @@ async function fixture() {
   const root = await mkdtemp(join(tmpdir(), "kiln-frontier-")); roots.push(root);
   const cwd = join(root, "checkout"), artifacts = join(root, "artifact"); await mkdir(join(cwd, "patches"), { recursive: true });
   await writeFile(join(cwd, "package.json"), JSON.stringify(manifest(), null, 2) + "\n");
-  await writeFile(join(cwd, patchPath), originalPatch); await writeFile(join(cwd, "bun.lock"), "original lock\n");
+  await writeFile(join(cwd, patchPath), originalPatch); await writeFile(join(cwd, shellPatchPath), shellPatch); await writeFile(join(cwd, "bun.lock"), "original lock\n");
   const commands: string[][] = [];
   const run: Runner = async args => {
     commands.push([...args]);
     if (args[0] === "git") {
       if (args[1] === "branch") return "automation/frontier-fixture";
-      if (args[1] === "rev-parse") return base;
+      if (args[1] === "rev-parse") {
+        const path = args[2]?.split(":")[1];
+        if (path) { const bytes = await readFile(join(artifacts, path)); return createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex"); }
+        return base;
+      }
+      if (args[1] === "ls-remote" && args.at(-1) === "refs/heads/main") return `${base}\trefs/heads/main`;
       if (args[1] === "diff") return "package.json\nbun.lock";
       return "";
     }
     if (args[0] === "gh" && args[1] === "pr" && args[2] === "list") return "[]";
+    if (args[0] === "gh" && args[1] === "pr" && args[2] === "view") return JSON.stringify({ headRefOid: "b".repeat(40), baseRefName: "main", isDraft: false });
+    if (args[0] === "gh" && args[1] === "repo") return "main";
     if (args[0] === "bun" && args[1] === "install") {
       await writeFile(join(cwd, "bun.lock"), "verified new lock\n");
-      for (const section of originalPatch.split("diff --git ").slice(1)) {
+      for (const [name, patch] of [["pi-ai", originalPatch], ["pi-coding-agent", shellPatch]] as const) for (const section of patch.split("diff --git ").slice(1)) {
         const path = /^a\/([^ ]+) b\//.exec(section)![1]!;
         const installed = section.split(/^@@ .* @@.*\n/m).slice(1).map(hunk => hunk.split("\n").filter(line => line.startsWith("+") || line.startsWith(" ")).map(line => line.slice(1)).join("\n")).join("\n");
-        const destination = join(cwd, "node_modules/@oh-my-pi/pi-ai", path); await mkdir(join(destination, ".."), { recursive: true }); await writeFile(destination, installed);
+        const destination = join(cwd, "node_modules/@oh-my-pi", name, path); await mkdir(join(destination, ".."), { recursive: true }); await writeFile(destination, installed);
       }
     }
     return args.includes("catalog") ? '{"advisory":true,"runtimeAdmissionChanged":false}' : "";
@@ -65,9 +74,9 @@ test("rejects downgrade, deprecated releases and nonofficial tarballs", () => {
 });
 
 test("migration preserves original reviewed patch bytes and unrelated settings", () => {
-  expect(digest(originalPatch)).toBe(AUTH_PATCH_SHA256);
+  expect(digest(originalPatch)).toBe(AUTH_PATCH_SHA256); expect(digest(shellPatch)).toBe(SHELL_PATCH_SHA256);
   const original = manifest(), updated = migrateManifest(original, { current, version: target, changed: true });
-  expect(updated.patchedDependencies).toEqual({ [`@oh-my-pi/pi-ai@${target}`]: patchPath });
+  expect(updated.patchedDependencies).toEqual({ [`@oh-my-pi/pi-ai@${target}`]: patchPath, [`@oh-my-pi/pi-coding-agent@${target}`]: shellPatchPath });
   expect(updated.scripts).toEqual(original.scripts);
   expect(original.dependencies[PACKAGES[0]!]).toBe(current);
   expect(Object.values(updated.dependencies)).toEqual(PACKAGES.map(() => target));
@@ -148,20 +157,49 @@ test("publisher rejects tampered scripts despite matching attacker-controlled re
   await expect(validateArtifacts(f.cwd, f.artifacts, base)).rejects.toThrow("beyond exact native pins");
 });
 
-test("publisher uses only trusted commands, refuses existing branches and never installs or auto-merges", async () => {
+test("publisher merges exact verified changes without installing code or bypassing protections", async () => {
   const f = await fixture(); await applyUpdate({ ...f, fetchImpl: fetchFixture });
   await writeFile(join(f.cwd, "package.json"), JSON.stringify(manifest(), null, 2) + "\n"); f.commands.length = 0;
   await publishUpdate(f.cwd, f.artifacts, f.run, { GITHUB_ACTIONS: "true", KILN_FRONTIER_PUBLISH: "1" });
   expect(f.commands.some(args => args[0] === "bun")).toBe(false);
-  expect(f.commands.find(args => args[0] === "gh" && args[2] === "create")).toContain("--draft");
-  expect(f.commands.some(args => args.includes("--force") || args.includes("merge"))).toBe(false);
+  expect(f.commands.find(args => args[0] === "gh" && args[2] === "create")).not.toContain("--draft");
+  expect(f.commands.find(args => args[0] === "gh" && args[2] === "merge")).toEqual(["gh", "pr", "merge", `automation/frontier-${target}`, "--squash", "--match-head-commit", "b".repeat(40)]);
+  expect(f.commands.some(args => args.includes("--force") || args.includes("--admin"))).toBe(false);
   const g = await fixture(); await applyUpdate({ ...g, fetchImpl: fetchFixture }); await writeFile(join(g.cwd, "package.json"), JSON.stringify(manifest(), null, 2) + "\n");
-  await expect(publishUpdate(g.cwd, g.artifacts, async (args, cwd, capture) => args[1] === "ls-remote" ? "existing-ref" : g.run(args, cwd, capture), { GITHUB_ACTIONS: "true", KILN_FRONTIER_PUBLISH: "1" })).rejects.toThrow("already exists");
+  await expect(publishUpdate(g.cwd, g.artifacts, async (args, cwd, capture) => args[1] === "ls-remote" && args.includes("--heads") ? "existing-ref" : g.run(args, cwd, capture), { GITHUB_ACTIONS: "true", KILN_FRONTIER_PUBLISH: "1" })).rejects.toThrow("already exists");
+});
+
+test("publication stops on base drift, extra PR files or artifact substitution", async () => {
+  for (const defect of ["base", "files", "blob"] as const) {
+    const f = await fixture(); await applyUpdate({ ...f, fetchImpl: fetchFixture });
+    await writeFile(join(f.cwd, "package.json"), JSON.stringify(manifest(), null, 2) + "\n"); f.commands.length = 0;
+    await expect(publishUpdate(f.cwd, f.artifacts, async (args, cwd, capture) => {
+      if (defect === "base" && args[1] === "ls-remote") return `${"c".repeat(40)}\trefs/heads/main`;
+      if (defect === "files" && args[1] === "diff") return "package.json\nbun.lock\nscripts/evil.ts";
+      if (defect === "blob" && args[1] === "rev-parse" && args[2]?.includes(":")) return "d".repeat(40);
+      return f.run(args, cwd, capture);
+    }, { GITHUB_ACTIONS: "true", KILN_FRONTIER_PUBLISH: "1" })).rejects.toThrow();
+    expect(f.commands.some(args => args[0] === "gh" && args[2] === "merge")).toBe(false);
+  }
+});
+
+test("a previous verified draft resumes publication without another push", async () => {
+  const f = await fixture(); await applyUpdate({ ...f, fetchImpl: fetchFixture });
+  await writeFile(join(f.cwd, "package.json"), JSON.stringify(manifest(), null, 2) + "\n"); f.commands.length = 0;
+  await publishUpdate(f.cwd, f.artifacts, async (args, cwd, capture) => {
+    const result = await f.run(args, cwd, capture);
+    if (args[0] === "gh" && args[2] === "list") return '[{"number":1}]';
+    if (args[0] === "gh" && args[1] === "pr" && args[2] === "view") return JSON.stringify({ headRefOid: "b".repeat(40), baseRefName: "main", isDraft: true });
+    return result;
+  }, { GITHUB_ACTIONS: "true", KILN_FRONTIER_PUBLISH: "1" });
+  expect(f.commands.some(args => args[2] === "ready")).toBe(true);
+  expect(f.commands.some(args => args[2] === "merge")).toBe(true);
+  expect(f.commands.some(args => args[1] === "push" || args[2] === "create")).toBe(false);
 });
 
 
 test("default invocation is registry-only and never writes manifest, lock, patch or artifacts", async () => {
-  const f = await fixture(); const paths = ["package.json", "bun.lock", patchPath];
+  const f = await fixture(); const paths = ["package.json", "bun.lock", patchPath, shellPatchPath];
   const before = await Promise.all(paths.map(path => readFile(join(f.cwd, path), "utf8")));
   const log = spyOn(console, "log").mockImplementation(() => {});
   try {
@@ -178,4 +216,17 @@ test("same release is a no-op without installation or verification artifact", as
   expect((await applyUpdate({ ...f, fetchImpl })).changed).toBe(false);
   expect(f.commands.every(args => args[0] === "git")).toBe(true);
   await expect(readFile(join(f.artifacts, "receipt.json"))).rejects.toThrow();
+});
+
+
+test("a changed or omitted shell boundary patch blocks updates before validation", async () => {
+  const altered = await fixture(); await writeFile(join(altered.cwd, shellPatchPath), shellPatch + "\n");
+  await expect(applyUpdate({ ...altered, fetchImpl: fetchFixture })).rejects.toThrow("Shell patch differs");
+  const omitted = await fixture();
+  await expect(applyUpdate({ ...omitted, fetchImpl: fetchFixture, run: async (args, cwd, capture) => {
+    const output = await omitted.run(args, cwd, capture);
+    if (args[1] === "install") await writeFile(join(cwd, "node_modules/@oh-my-pi/pi-coding-agent/src/tools/bash.ts"), "// upstream changed\n");
+    return output;
+  } })).rejects.toThrow("not installed exactly once");
+  expect(omitted.commands.some(args => args[1] === "run" || args[1] === "test")).toBe(false);
 });

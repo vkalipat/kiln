@@ -1,0 +1,47 @@
+{
+  "matrix": [
+    {
+      "width": 20,
+      "height": 10,
+      "rows": 10,
+      "maxVisibleWidth": 20,
+      "boundsPass": true
+    },
+    {
+      "width": 40,
+      "height": 12,
+      "rows": 12,
+      "maxVisibleWidth": 40,
+      "boundsPass": true
+    },
+    {
+      "width": 80,
+      "height": 24,
+      "rows": 24,
+      "maxVisibleWidth": 80,
+      "boundsPass": true
+    },
+    {
+      "width": 120,
+      "height": 40,
+      "rows": 40,
+      "maxVisibleWidth": 120,
+      "boundsPass": true
+    }
+  ],
+  "paletteMissing": {
+    "nativeNewSession": false,
+    "autoEffort": false,
+    "computeMonitor": false,
+    "integrations": false
+  },
+  "maskedInputHidden": true,
+  "effortChoices": [
+    "╭ Effort ──────────────────────────────────────────────────────────────────────╮",
+    "│ ·     ·     •     ·     ·                                                    │",
+    "│ auto   low    medium  high   ultra                                           │",
+    "│                                                                              │",
+    "│ Balanced reasoning for everyday work                                         │",
+    "╰──────────────────────────────────────── ←/→ choose · Enter apply · Esc close ╯"
+  ]
+}

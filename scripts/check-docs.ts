@@ -83,7 +83,7 @@ export async function inspectExternalLinks(links: string[]) {
 
 if (import.meta.main) {
   const root = resolve(import.meta.dir, "..");
-  const files = Bun.spawnSync(["git", "ls-files", "-z"], { cwd: root });
+  const files = Bun.spawnSync(["git", "ls-files", "--cached", "--others", "--exclude-standard", "-z"], { cwd: root });
   if (files.exitCode !== 0) throw new Error("Documentation checks require a Git checkout");
   const report = inspectDocumentation(root, files.stdout.toString().split("\0").filter(Boolean));
   const external = process.argv.includes("--external") ? await inspectExternalLinks(report.externalLinks) : undefined;

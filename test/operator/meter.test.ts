@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, readFileSync } from "node:fs";
+import { mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { getBundledModel, type Model } from "@oh-my-pi/pi-catalog";
@@ -7,6 +7,7 @@ import { createAssistantMessageEventStream, streamSimple } from "@oh-my-pi/pi-ai
 import { createOmpSession } from "../../src/operator/session";
 import { createOperatorMeter, operatorReservation } from "../../src/operator/meter";
 import { OperatorBudget, OperatorBudgetError } from "../../src/operator/budget";
+import { readOperatorLedger } from "../../src/operator/meter-ledger";
 
 const model = { ...getBundledModel("anthropic", "claude-opus-5")!, maxTokens: 100, contextWindow: 1000,
   cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 1 } } as Model;
@@ -26,6 +27,45 @@ function setup(limit: number | null = 1, extra: Record<string, unknown> = {}) {
   return { meter, attach, dir, violations };
 }
 const request = { payload: { model: model.id, max_tokens: 100, messages: [{ content: "PRIVATE_SENTINEL" }] } };
+test("an impossible FIFO head cannot delay or reject a smaller affordable request", async () => {
+  const budget = new OperatorBudget(10), active = await budget.acquire(4);
+  const impossible = budget.acquire(11);
+  const cheap = budget.acquire(1);
+  await expect(impossible).rejects.toBeInstanceOf(OperatorBudgetError);
+  const ticket = await cheap;
+  expect(budget.queuedCount).toBe(0); expect(budget.chargedUsd).toBe(5);
+  ticket.settle(0); active.settle(0);
+  const settling = await budget.acquire(9);
+  const deniedAfterSettlement = budget.acquire(8);
+  const affordableAfterSettlement = budget.acquire(1);
+  settling.settle(3);
+  await expect(deniedAfterSettlement).rejects.toBeInstanceOf(OperatorBudgetError);
+  (await affordableAfterSettlement).settle(0); expect(budget.chargedUsd).toBe(3);
+});
+
+test("an oversized native child does not abort the parent or reset its budget", async () => {
+  const s = setup(0.025), parent = s.attach("parent"), child = s.attach("child");
+  expect(await s.meter.beforeModelCall(parent.ctx, { messages: [] })).toBe(true);
+  child.ctx.model = { ...model, maxTokens: 1_000_000 };
+  expect(await s.meter.beforeModelCall(child.ctx, { messages: [] })).toBe(false);
+  expect(child.aborted()).toBe(true); expect(parent.aborted()).toBe(false);
+  expect(s.meter.signal.aborted).toBe(false); expect(s.violations).toHaveLength(0);
+  expect(s.meter.usage().rows).toHaveLength(1); await s.meter.close();
+});
+
+test("journal replay retains every uncheckpointed charge and refuses damaged history", async () => {
+  const s = setup(null);
+  for (let i = 0; i < 150; i++) {
+    const ticket = await s.meter.reserveExternal({ provider: "fixture", model: "fixture", reservedUsd: 1 });
+    expect(ticket!.dispatch()).toBe(true); ticket!.settle({ costUsd: 0.25 });
+  }
+  const path = join(s.dir, "operator-meter.json"), durable = readOperatorLedger(path)!;
+  expect(durable.rows).toHaveLength(150); expect(durable.knownCostUsd).toBe(37.5);
+  const resumed = createOperatorMeter({ run: { id: "test", dir: s.dir }, limitUsd: null, onViolation: () => {} });
+  expect(resumed.usage().knownCostUsd).toBe(37.5); await resumed.close(); await s.meter.close();
+  writeFileSync(path + ".jsonl", '{"torn":');
+  expect(() => createOperatorMeter({ run: { id: "test", dir: s.dir }, limitUsd: null, onViolation: () => {} })).toThrow("Incomplete operator ledger");
+});
 const response = () => ({ message: { role: "assistant", model: model.id, provider: model.provider, usage: billed(), stopReason: "stop" } });
 
 test("parent and rebound child extensions share one exposure ledger without payload leakage", async () => {
@@ -97,12 +137,23 @@ test("native queued child cancellation does not abort unrelated sessions or reta
   expect(s.meter.signal.aborted).toBe(false); expect(s.violations).toHaveLength(0); expect(s.meter.usage().rows).toHaveLength(1);
   await s.meter.close();
 });
-test("payload-hook queue watchdog aborts before the SDK can swallow its30second timeout", async () => {
+test("a child queue deadline stops that child while the parent can settle and continue", async () => {
   const s = setup(0.025, { hookWaitMs: 5 }), parent = s.attach("parent"), child = s.attach("child");
   await parent.emit("before_provider_request", request);
   await expect(child.emit("before_provider_request", request)).rejects.toThrow();
-  expect(s.violations[0]?.message).toContain("hook deadline"); expect(child.aborted()).toBe(true);
+  expect(child.aborted()).toBe(true); expect(parent.aborted()).toBe(false);
+  expect(s.meter.signal.aborted).toBe(false); expect(s.violations).toHaveLength(0);
+  await parent.emit("message_end", response());
+  expect(await s.meter.beforeModelCall(parent.ctx, { messages: [] })).toBe(true);
   await s.meter.close();
+});
+
+test("a reservation top-up that cannot fit alongside its own ticket fails without waiting", async () => {
+  const budget = new OperatorBudget(10), original = await budget.acquire(8);
+  await expect(budget.acquire(3, undefined, original.reservedUsd)).rejects.toBeInstanceOf(OperatorBudgetError);
+  expect(budget.queuedCount).toBe(0);
+  const small = await budget.acquire(1); small.settle(0); original.settle(2);
+  expect(budget.chargedUsd).toBe(2);
 });
 test("compaction pre-reserve covers before hook and durable usage once", async () => {
   const s = setup(), session = s.attach("session");

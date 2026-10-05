@@ -5,10 +5,17 @@ import { readFile, writeFile, mkdir, realpath, lstat, readdir } from "node:fs/pr
 import { resolve, relative, isAbsolute, join } from "node:path";
 
 export const PACKAGES = ["pi-agent-core", "pi-ai", "pi-catalog", "pi-coding-agent", "pi-tui", "pi-utils"].map(name => `@oh-my-pi/${name}`);
-export const AUTH_PATCH_SHA256 = "7e1df3ff73a91df1482a5f7af68724b926ef33a24b2ef168e9f1eb1288bbd036";
+export const AUTH_PATCH_SHA256 = "425a835a0f563761f0629172486f47ce5cfed3019a37a298035dbe678b8972c7";
+export const SHELL_PATCH_SHA256 = "f032d6c3d67b051d51a0e4a9231f4e71d99573110c1fc3ead6c365965b09c5fd";
+const REVIEWED_PATCHES = [
+  { name: "@oh-my-pi/pi-ai", label: "Auth", sha256: AUTH_PATCH_SHA256,
+    targets: ["src/registry/oauth/types.ts", "dist/types/registry/oauth/types.d.ts", "src/registry/oauth/callback-server.ts"] },
+  { name: "@oh-my-pi/pi-coding-agent", label: "Shell", sha256: SHELL_PATCH_SHA256,
+    targets: ["src/exec/bash-executor.ts", "src/tools/bash.ts", "dist/types/exec/bash-executor.d.ts", "src/eval/js/context-manager.ts", "src/eval/py/runtime.ts"] },
+] as const;
 export const GATES = [
   ["bun", "install", "--ignore-scripts", "--registry", "https://registry.npmjs.org"],
-  ["bun", "run", "typecheck"], ["bun", "test"],
+  ["bun", "run", "typecheck"], ["bun", "run", "docs:check"], ["bun", "test"],
   ["bun", "bin/kiln.ts", "evals", "verify", "--home", ".", "--json"],
   ["bun", "bin/kiln.ts", "evals", "leakcheck", "--home", ".", "--json"],
 ] as const;
@@ -69,40 +76,47 @@ export function selectUpdate(manifest: Manifest, metadata: readonly Packument[])
 
 export function migrateManifest(manifest: Manifest, plan: Plan): Manifest {
   if (!stable(plan.version) || !stable(plan.current)) fail("Invalid exact update version");
-  const patches = { ...manifest.patchedDependencies }, key = `@oh-my-pi/pi-ai@${plan.current}`, path = patches[key];
-  if (!path || Object.keys(patches).some(other => other.startsWith("@oh-my-pi/pi-ai@") && other !== key)) fail("Expected one reviewed native auth patch");
-  if (!/^patches\/[A-Za-z0-9@%._-]+\.patch$/.test(path)) fail("Unexpected auth patch path");
-  delete patches[key]; patches[`@oh-my-pi/pi-ai@${plan.version}`] = path;
+  const patches = { ...manifest.patchedDependencies };
+  for (const reviewed of REVIEWED_PATCHES) {
+    const key = `${reviewed.name}@${plan.current}`, path = patches[key];
+    if (!path || Object.keys(patches).some(other => other.startsWith(`${reviewed.name}@`) && other !== key)) fail(`Expected one reviewed native ${reviewed.label.toLowerCase()} patch`);
+    if (!/^patches\/[A-Za-z0-9@%._-]+\.patch$/.test(path)) fail(`Unexpected ${reviewed.label.toLowerCase()} patch path`);
+    delete patches[key]; patches[`${reviewed.name}@${plan.version}`] = path;
+  }
   return { ...manifest, dependencies: { ...manifest.dependencies, ...Object.fromEntries(PACKAGES.map(name => [name, plan.version])) }, patchedDependencies: patches };
 }
 
 async function readManifest(cwd: string): Promise<Manifest> { return JSON.parse(await readFile(join(cwd, "package.json"), "utf8")); }
 async function assertPatch(cwd: string, manifest: Manifest, current: string): Promise<void> {
-  const path = manifest.patchedDependencies?.[`@oh-my-pi/pi-ai@${current}`];
-  if (!path || !/^patches\/[A-Za-z0-9@%._-]+\.patch$/.test(path)) fail("Missing reviewed auth patch");
-  if ((await lstat(join(cwd, path))).isSymbolicLink() || sha(await readFile(join(cwd, path))) !== AUTH_PATCH_SHA256) fail("Auth patch differs from reviewed baseline; manual review required");
+  for (const reviewed of REVIEWED_PATCHES) {
+    const path = manifest.patchedDependencies?.[`${reviewed.name}@${current}`];
+    if (!path || !/^patches\/[A-Za-z0-9@%._-]+\.patch$/.test(path)) fail(`Missing reviewed ${reviewed.label.toLowerCase()} patch`);
+    if ((await lstat(join(cwd, path))).isSymbolicLink() || sha(await readFile(join(cwd, path))) !== reviewed.sha256) fail(`${reviewed.label} patch differs from reviewed baseline; manual review required`);
+  }
 }
 export async function assertInstalledPatch(cwd: string, manifest: Manifest, version: string): Promise<void> {
-  const patch = await readFile(join(cwd, manifest.patchedDependencies![`@oh-my-pi/pi-ai@${version}`]!), "utf8");
-  const expected = new Set(["src/registry/oauth/types.ts", "dist/types/registry/oauth/types.d.ts", "src/registry/oauth/callback-server.ts"]);
-  for (const section of patch.split("diff --git ").slice(1)) {
-    const path = /^a\/([^ ]+) b\//.exec(section)?.[1];
-    if (!path || !expected.delete(path)) fail("Unexpected reviewed patch target");
-    const inserted = section.split("\n").filter(line => line.startsWith("+") && !line.startsWith("+++")).map(line => line.slice(1)).join("\n").trim();
-    const installed = await readFile(join(cwd, "node_modules/@oh-my-pi/pi-ai", path), "utf8");
-    if (!inserted || installed.split(inserted).length !== 2) fail("Reviewed callback hook was not installed exactly once; manual compatibility review required");
-    // Bun can accept a patch with shifted/fuzzy context. Text presence alone cannot
-    // establish which interface or handler received the hook. Require every reviewed
-    // post-image, including its surrounding context, exactly once at any line offset.
-    const hunks = section.split(/^@@ .* @@.*\n/m).slice(1);
-    if (!hunks.length) fail("Missing reviewed patch context");
-    for (const hunk of hunks) {
-      const lines = hunk.split("\n").filter(line => line.startsWith(" ") || line.startsWith("+"));
-      const postimage = lines.map(line => line.slice(1)).join("\n");
-      if (!postimage || installed.split(postimage).length !== 2) fail("Reviewed callback hook context differs; manual compatibility review required");
+  for (const reviewed of REVIEWED_PATCHES) {
+    const patch = await readFile(join(cwd, manifest.patchedDependencies![`${reviewed.name}@${version}`]!), "utf8");
+    const expected = new Set<string>(reviewed.targets);
+    for (const section of patch.split("diff --git ").slice(1)) {
+      const path = /^a\/([^ ]+) b\//.exec(section)?.[1];
+      if (!path || !expected.delete(path)) fail("Unexpected reviewed patch target");
+      const installed = await readFile(join(cwd, "node_modules", reviewed.name, path), "utf8");
+      // Bun can accept a patch with shifted/fuzzy context. Text presence alone cannot
+      // establish which interface or handler received the hook. Require every reviewed
+      // post-image, including its surrounding context, exactly once at any line offset.
+      const hunks = section.split(/^@@ .* @@.*\n/m).slice(1);
+      if (!hunks.length) fail("Missing reviewed patch context");
+      for (const hunk of hunks) {
+        const inserted = hunk.split("\n").filter(line => line.startsWith("+")).map(line => line.slice(1));
+        if (!inserted.length || inserted.some(line => !installed.includes(line))) fail("Reviewed hook was not installed exactly once; manual compatibility review required");
+        const lines = hunk.split("\n").filter(line => line.startsWith(" ") || line.startsWith("+"));
+        const postimage = lines.map(line => line.slice(1)).join("\n");
+        if (!postimage || installed.split(postimage).length !== 2) fail("Reviewed hook context differs; manual compatibility review required");
+      }
     }
+    if (expected.size) fail("Missing reviewed patch target");
   }
-  if (expected.size) fail("Missing reviewed patch target");
 }
 async function assertClean(cwd: string, run: Runner): Promise<void> {
   if (await run(["git", "status", "--porcelain", "--untracked-files=all"], cwd, true)) fail("Update requires a clean disposable checkout");
@@ -112,7 +126,7 @@ const safeArtifactDir = (cwd: string, output: string) => {
   if (!child || (!(child === ".." || child.startsWith("../")) && !isAbsolute(child))) fail("Artifacts must be outside the checkout");
   return directory;
 };
-interface Receipt { version: 1; base: string; current: string; target: string; patchSha256: string; packageSha256: string; lockSha256: string; gates: readonly (readonly string[])[] }
+interface Receipt { version: 1; base: string; current: string; target: string; patchSha256: string; shellPatchSha256: string; packageSha256: string; lockSha256: string; gates: readonly (readonly string[])[] }
 
 export async function applyUpdate(options: { cwd: string; artifacts: string; env?: Record<string, string | undefined>; run?: Runner; fetchImpl?: typeof fetch }): Promise<Plan> {
   const { cwd } = options, run = options.run ?? runCommand, env = options.env ?? process.env;
@@ -134,7 +148,7 @@ export async function applyUpdate(options: { cwd: string; artifacts: string; env
   if (changed.some(path => !["package.json", "bun.lock"].includes(path))) fail("Validation modified files outside the dependency update");
   const packageBytes = await readFile(join(cwd, "package.json")), lockBytes = await readFile(join(cwd, "bun.lock"));
   if (packageBytes.length > LIMIT || lockBytes.length > LIMIT) fail("Update artifact exceeds limit");
-  const receipt: Receipt = { version: 1, base, current: plan.current, target: plan.version, patchSha256: AUTH_PATCH_SHA256,
+  const receipt: Receipt = { version: 1, base, current: plan.current, target: plan.version, patchSha256: AUTH_PATCH_SHA256, shellPatchSha256: SHELL_PATCH_SHA256,
     packageSha256: sha(packageBytes), lockSha256: sha(lockBytes), gates: GATES };
   await mkdir(artifacts, { recursive: true });
   await writeFile(join(artifacts, "package.json"), packageBytes); await writeFile(join(artifacts, "bun.lock"), lockBytes);
@@ -152,7 +166,7 @@ export async function validateArtifacts(cwd: string, artifacts: string, base: st
   for (const name of await readdir(artifacts)) { const stat = await lstat(join(artifacts, name)); if (!stat.isFile() || stat.size > LIMIT) fail("Invalid update artifact"); }
   const receipt = JSON.parse(await readFile(join(artifacts, "receipt.json"), "utf8")) as Receipt;
   if (receipt.version !== 1 || receipt.base !== base || !/^[a-f0-9]{40}$/.test(base) || !stable(receipt.current) || !stable(receipt.target)
-    || compare(receipt.target, receipt.current) <= 0 || receipt.patchSha256 !== AUTH_PATCH_SHA256 || JSON.stringify(receipt.gates) !== JSON.stringify(GATES)) fail("Invalid verification receipt");
+    || compare(receipt.target, receipt.current) <= 0 || receipt.patchSha256 !== AUTH_PATCH_SHA256 || receipt.shellPatchSha256 !== SHELL_PATCH_SHA256 || JSON.stringify(receipt.gates) !== JSON.stringify(GATES)) fail("Invalid verification receipt");
   const original = await readManifest(cwd); await assertPatch(cwd, original, receipt.current);
   if (!PACKAGES.every(name => original.dependencies[name] === receipt.current)) fail("Receipt does not match base pins");
   const manifest = await readFile(join(artifacts, "package.json")), lock = await readFile(join(artifacts, "bun.lock"));
@@ -168,10 +182,33 @@ export async function publishUpdate(cwd: string, artifacts: string, run: Runner 
   const base = await run(["git", "rev-parse", "HEAD"], cwd, true);
   const { receipt, manifest, lock } = await validateArtifacts(cwd, artifacts, base);
   const branch = `automation/frontier-${receipt.target}`;
+  const defaultBranch = await run(["gh", "repo", "view", "--json", "defaultBranchRef", "--jq", ".defaultBranchRef.name"], cwd, true);
+  if (!/^[A-Za-z0-9._/-]+$/.test(defaultBranch)) fail("Cannot determine the default branch");
+  const assertBase = async () => {
+    const remote = await run(["git", "ls-remote", "origin", `refs/heads/${defaultBranch}`], cwd, true);
+    if (remote.split(/\s+/)[0] !== base) fail("Default branch advanced after verification; retry on the current base");
+  };
+  await assertBase();
   const existing = JSON.parse(await run(["gh", "pr", "list", "--head", branch, "--state", "open", "--json", "number"], cwd, true));
   if (!Array.isArray(existing)) fail("Cannot determine existing update review");
-  if (existing.length) { console.log("An update PR already awaits review; no branch was changed."); return; }
   await run(["gh", "auth", "setup-git"], cwd);
+  const mergeVerified = async () => {
+    const pr = JSON.parse(await run(["gh", "pr", "view", branch, "--json", "headRefOid,baseRefName,isDraft"], cwd, true));
+    if (!/^[a-f0-9]{40}$/.test(pr.headRefOid) || pr.baseRefName !== defaultBranch) fail("Update PR identity mismatch");
+    await run(["git", "fetch", "--no-tags", "origin", `refs/heads/${branch}`], cwd);
+    const paths = (await run(["git", "diff", "--name-only", base, pr.headRefOid], cwd, true)).split("\n").filter(Boolean).sort();
+    if (JSON.stringify(paths) !== JSON.stringify(["bun.lock", "package.json"])) fail("Update PR contains unverified changes");
+    // Git blob identities compare exact bytes without importing or executing artifacts.
+    for (const [path, bytes] of [["package.json", manifest], ["bun.lock", lock]] as const) {
+      const blob = createHash("sha1").update(`blob ${bytes.length}\0`).update(bytes).digest("hex");
+      if (await run(["git", "rev-parse", `${pr.headRefOid}:${path}`], cwd, true) !== blob) fail("Update PR differs from verified artifacts");
+    }
+    await assertBase();
+    if (pr.isDraft) await run(["gh", "pr", "ready", branch], cwd);
+    // Respect repository protections. Never use an administrative bypass or force push.
+    await run(["gh", "pr", "merge", branch, "--squash", "--match-head-commit", pr.headRefOid], cwd);
+  };
+  if (existing.length) { await mergeVerified(); return; }
   // A pre-existing branch without an open PR is never reset or force-pushed.
   if (await run(["git", "ls-remote", "--heads", "origin", `refs/heads/${branch}`], cwd, true)) fail("Update branch already exists; manual review required");
   await run(["git", "checkout", "-b", branch], cwd);
@@ -180,8 +217,9 @@ export async function publishUpdate(cwd: string, artifacts: string, run: Runner 
   await run(["git", "-c", "user.name=kiln-update-bot", "-c", "user.email=kiln-update-bot@users.noreply.github.com", "commit", "-m", `Update native harness dependencies to ${receipt.target}`], cwd);
   await run(["git", "push", "origin", `HEAD:refs/heads/${branch}`], cwd);
   const body = join(artifacts, "pr-body.md");
-  await writeFile(body, `Updates all six native OMP dependencies from ${receipt.current} to ${receipt.target}, the latest common stable release observed on the official npm registry. Preserves the exact reviewed OAuth callback patch under its new version key.\n\nValidation on base ${receipt.base}: install with lifecycle scripts disabled, typecheck, full test suite, evaluator manifest verification, and leakcheck passed. The workflow artifact includes an advisory catalog check; metadata findings do not admit models or prove provider availability.\n\nReview the dependency and lockfile changes before merging. No automatic merge is configured.\n`);
-  await run(["gh", "pr", "create", "--draft", "--head", branch, "--title", `Update native harness dependencies to ${receipt.target}`, "--body-file", body], cwd);
+  await writeFile(body, `Updates all six native OMP dependencies from ${receipt.current} to ${receipt.target}, the latest common stable release observed on the official npm registry. Preserves the reviewed OAuth callback and session shell patches under their new version keys.\n\nValidation on base ${receipt.base}: install with lifecycle scripts disabled, typecheck, documentation links, full test suite, evaluator manifest verification, and leakcheck passed. The workflow artifact includes an advisory catalog check; metadata findings do not prove provider availability or refresh benchmark rankings.\n\nThe isolated publication job checks the current base, exact PR files, and commit identity before merging. A failed check stops publication.\n`);
+  await run(["gh", "pr", "create", "--base", defaultBranch, "--head", branch, "--title", `Update native harness dependencies to ${receipt.target}`, "--body-file", body], cwd);
+  await mergeVerified();
 }
 
 export async function main(args = process.argv.slice(2), options: { cwd?: string; fetchImpl?: typeof fetch } = {}): Promise<void> {

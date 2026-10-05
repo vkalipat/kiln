@@ -11,6 +11,15 @@ import { loadConfig, saveConfig } from "../../src/core/config";
 import { createComputeMonitor } from "../../src/operator/compute-monitor";
 import { requestRunPause } from "../../src/core/pause-request";
 
+test("misspelled task controls fail before home initialization or runtime launch", async () => {
+  const root = mkdtempSync(join(tmpdir(), "kiln-task-typo-")), home = join(root, "missing");
+  let calls = 0;
+  const code = await main(["task", "Implement a formatter", "--budegt", "1", "--home", home], { write: () => {} }, {
+    createOperatorRuntime: async () => { calls++; throw new Error("must not dispatch"); },
+  });
+  expect(code).toBe(2); expect(calls).toBe(0); expect(existsSync(home)).toBe(false);
+});
+
 test("operator CLI preserves a file prompt and forwards per-task budgets without changing home configuration", async () => {
   const home = mkdtempSync(join(tmpdir(), "kiln-task-cli-"));
   const path = join(home, "input.md"), seed = "  Research and ideate.\n\nKeep this exact.\n";
@@ -153,4 +162,17 @@ test("monitor CLI on a nonexistent home remains a read-only failure", async () =
   expect(calls).toBe(0);
   expect(existsSync(home)).toBe(false);
   expect(readdirSync(parent)).toEqual([]);
+});
+
+test("inapplicable task flags fail before home creation or model dispatch", async () => {
+  const parent = mkdtempSync(join(tmpdir(), "kiln-invalid-task-flags-")), home = join(parent, "absent");
+  let calls = 0;
+  for (const args of [["limits", "--seed-file", "seed.txt"], ["monitor", "run-id", "--budget", "10"], ["pause", "run-id", "--uncapped"], ["resume", "run-id", "--id", "other-id"]]) {
+    const output: string[] = [];
+    expect(await main(["task", ...args, "--home", home], { write: text => output.push(text) }, {
+      createOperatorRuntime: async (): Promise<never> => { calls++; throw new Error("must not dispatch"); },
+    })).toBe(2);
+    expect(output.join("")).toContain("does not accept");
+  }
+  expect(calls).toBe(0); expect(existsSync(home)).toBe(false);
 });

@@ -1,0 +1,90 @@
+{
+  "version": 1,
+  "ready": true,
+  "offline": true,
+  "liveChecked": false,
+  "versions": {
+    "bun": "1.4.0",
+    "pi-agent-core": "18.6.1",
+    "pi-ai": "18.6.1",
+    "pi-catalog": "18.6.1",
+    "pi-coding-agent": "18.6.1",
+    "pi-tui": "18.6.1",
+    "pi-utils": "18.6.1"
+  },
+  "native": {
+    "codeAvailable": true,
+    "configured": true,
+    "credentialConfigured": true,
+    "roles": {
+      "brain": {
+        "compatible": true
+      },
+      "scout": {
+        "compatible": true
+      },
+      "judge": {
+        "compatible": true
+      },
+      "builder": {
+        "compatible": true
+      },
+      "auditor": {
+        "compatible": true
+      },
+      "critic": {
+        "compatible": true
+      },
+      "reflector": {
+        "compatible": true
+      },
+      "generator": {
+        "compatible": true
+      },
+      "prober": {
+        "compatible": true
+      },
+      "arbiter": {
+        "compatible": true
+      }
+    },
+    "liveChecked": false
+  },
+  "operator": {
+    "budgetUsd": null,
+    "wallSeconds": null,
+    "nullMeans": "unlimited",
+    "appliesTo": "new_sessions",
+    "computeMonitor": {
+      "codeAvailable": true
+    },
+    "scopedTeams": {
+      "codeAvailable": true
+    }
+  },
+  "jev": {
+    "codeAvailable": true,
+    "enabled": true,
+    "workflows": true,
+    "credentialConfigured": true,
+    "configured": true,
+    "liveChecked": false
+  },
+  "hindsight": {
+    "codeAvailable": true,
+    "endpoint": null,
+    "bankConfigured": false,
+    "configurationValid": false,
+    "credentialConfigured": false,
+    "configured": false,
+    "liveChecked": false
+  },
+  "blockers": [],
+  "warnings": [
+    "hindsight_not_configured"
+  ],
+  "limitations": [
+    "Credential presence does not establish live authentication or model entitlement.",
+    "No provider, DNS, service, or challenge execution was attempted."
+  ]
+}

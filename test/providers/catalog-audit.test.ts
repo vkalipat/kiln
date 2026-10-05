@@ -1,9 +1,17 @@
 import { expect, test } from "bun:test";
 import { auditCatalog, fetchUpstreamCatalog, parseCatalog, UPSTREAM_CATALOG_URL } from "../../src/providers/catalog-audit";
+import { getBundledModel } from "@oh-my-pi/pi-catalog";
 const model = (id = "new-frontier") => ({ id, provider: "openai", api: "openai-responses", supportsTools: true, input: ["text"], cost: { input: 1, output: 2, cacheRead: 0.1, cacheWrite: 0 }, contextWindow: 100000, maxTokens: 10000, thinking: { efforts: ["low", "high"] } });
 test("new catalog IDs pass metadata review without becoming runtime admitted", () => {
   const finding = auditCatalog([], [model()])[0]!;
   expect(finding).toMatchObject({ change: "added", compatibility: "metadata_checks_passed", runtimeAdmission: "not_runtime_admitted" });
+});
+test("installed Sol metadata uses native implicit tool support on both transports", () => {
+  for (const provider of ["openai", "openai-codex"] as const) {
+    const sol = getBundledModel(provider, "gpt-6.1-sol")!;
+    expect(auditCatalog([], [sol as unknown as Record<string, unknown>])[0]!.compatibility).toBe("metadata_checks_passed");
+    expect(auditCatalog([], [{ ...sol, supportsTools: false }])[0]!.compatibility).toBe("blocked");
+  }
 });
 test("unknown API, effort, tool dialect and missing rates remain blocked", () => {
   const finding = auditCatalog([], [{ ...model(), api: "future-wire-v2", toolMode: "code_mode_only", thinking: { efforts: ["ultra"] }, cost: { input: 0, output: -1 } }])[0]!;

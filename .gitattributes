@@ -1,2 +1,5 @@
 # Unified diff context contains a required prefix before upstream tabs and blank lines.
 patches/*.patch -whitespace
+# Terminal snapshots preserve column padding and blank frames as evidence.
+docs/testing/2026-10-04-audit/ui-render.txt -whitespace
+docs/testing/2026-10-04-fixes/ui-render.txt -whitespace

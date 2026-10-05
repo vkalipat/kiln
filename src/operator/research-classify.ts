@@ -1,8 +1,9 @@
 import { JEV_MODEL, type JevChoiceQuestion, type JevState } from "../integrations/jev";
 import type { createJevWorkflowService } from "./jev-service";
 import type { ResearchClassification, ResearchCoverage, ResearchPassage, ResearchTaskDeps } from "./research-task";
+import { ResearchClassificationCapacityError } from "./research-task";
 
-type Service = Pick<ReturnType<typeof createJevWorkflowService>, "evaluate">;
+type Service = Pick<ReturnType<typeof createJevWorkflowService>, "evaluate"> & Partial<Pick<ReturnType<typeof createJevWorkflowService>, "capacity">>;
 type Input = Parameters<NonNullable<ResearchTaskDeps["classify"]>>[0];
 type Piece = { passageId: string; text: string };
 type Aggregate = { support: boolean; conflict: boolean; unknown: boolean; ids: Set<string>; supportId?: string; conflictId?: string };
@@ -37,6 +38,23 @@ function fits(value: ReturnType<typeof payload>) {
       questions: Object.fromEntries(Object.entries(value.questions).map(([id, q]) => [id, { type: "choice", ...q }])) })).byteLength <= 60000;
 }
 
+function chunksFor(question: string, fields: Input["fields"], passages: ResearchPassage[]): Piece[][] {
+  const pieces = passages.flatMap(p => {
+    const out: Piece[] = [];
+    if (p.text.trim()) for (let start = 0; start < p.text.length; start += 1000) out.push({ passageId: p.id, text: p.text.slice(start, start + 1000) });
+    return out;
+  });
+  const chunks: Piece[][] = [];
+  let cursor = 0;
+  while (cursor < pieces.length) {
+    const chunk: Piece[] = [];
+    while (cursor < pieces.length && chunk.length < 32 && fits(payload(question, fields, [...chunk, pieces[cursor]!]))) chunk.push(pieces[cursor++]!);
+    if (!chunk.length) throw new Error("Research classifier chunk exceeds bounds");
+    chunks.push(chunk);
+  }
+  return chunks;
+}
+
 /** Labels captured evidence only. Original artifacts and passages remain owned by research-task. */
 export function createResearchClassifier(service: Service, sessionId: string): NonNullable<ResearchTaskDeps["classify"]> {
   return async (input, signal) => {
@@ -52,6 +70,14 @@ export function createResearchClassifier(service: Service, sessionId: string): N
       group.push(passage); sources.set(passage.sourceId, group);
     }
     const labelsBySource = new Map<string, ResearchClassification[]>();
+    const plan = new Map([...sources].map(([sourceId, passages]) => [sourceId,
+      Array.from({ length: Math.ceil(input.fields.length / 4) }, (_, i) => chunksFor(input.question, input.fields.slice(i * 4, i * 4 + 4), passages))]));
+    const requiredCalls = [...plan.values()].reduce((total, groups) => total + groups.reduce((n, chunks) => n + chunks.length, 0), 0);
+    const capacity = service.capacity?.();
+    if (capacity?.callsRemaining !== null && capacity?.callsRemaining !== undefined && requiredCalls > capacity.callsRemaining)
+      throw new ResearchClassificationCapacityError(requiredCalls, capacity.callsRemaining);
+    if (requiredCalls && capacity?.inputTokensRemaining !== null && capacity?.inputTokensRemaining !== undefined && capacity.inputTokensRemaining < capacity.requestInputReserve)
+      throw new ResearchClassificationCapacityError(requiredCalls, capacity.callsRemaining, "Classification cannot reserve one request within the remaining input-token exposure budget; captured evidence is retained.");
     let costUsd = 0, knownCost = true;
     const classifySource = async ([sourceId, passages]: [string, ResearchPassage[]]) => {
       const labels: ResearchClassification[] = [];
@@ -59,20 +85,10 @@ export function createResearchClassifier(service: Service, sessionId: string): N
         unknown: passages.some(p => !p.text.trim()), ids: new Set<string>() }]));
       // Splitting large supplied passages preserves their original citation ID. Every character
       // is evaluated; only the original passage, never a generated quotation, can be returned.
-      const pieces = passages.flatMap(p => {
-        const out: Piece[] = [];
-        if (!p.text.trim()) return out;
-        for (let start = 0; start < p.text.length; start += 1000) out.push({ passageId: p.id, text: p.text.slice(start, start + 1000) });
-        return out;
-      });
       for (let fieldStart = 0; fieldStart < input.fields.length; fieldStart += 4) {
         const fields = input.fields.slice(fieldStart, fieldStart + 4);
-        let cursor = 0;
-        while (cursor < pieces.length) {
+        for (const chunk of plan.get(sourceId)![fieldStart / 4]!) {
           if (signal.aborted) throw new Error("Research classification cancelled");
-          const chunk: Piece[] = [];
-          while (cursor < pieces.length && chunk.length < 32 && fits(payload(input.question, fields, [...chunk, pieces[cursor]!]))) chunk.push(pieces[cursor++]!);
-          if (!chunk.length) throw new Error("Research classifier chunk exceeds bounds");
           const built = payload(input.question, fields, chunk);
           const decision = await service.evaluate({ operation: "research", sessionId, ...built, signal });
           // The service owns actual dispatch accounting; a valid decision is not proof of free transport.

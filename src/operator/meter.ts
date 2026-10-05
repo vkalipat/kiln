@@ -10,6 +10,7 @@ import type { RunPaths } from "../core/run";
 import { writeAtomic } from "../core/paths";
 import { modelCostUsd } from "../providers/models";
 import { OperatorBudget, OperatorBudgetError, type OperatorTicket } from "./budget";
+import { createMeterLedger, readOperatorLedger } from "./meter-ledger";
 
 export interface OperatorMeterRow {
   id: number; sessionId: string; lane: "sdk" | "legacy" | "maintenance" | "external";
@@ -24,11 +25,14 @@ export interface OperatorMeterSnapshot {
   coverage: "estimated-exposure-not-invoice-ceiling";
   gaps: string[]; rows: OperatorMeterRow[]; seenMaintenance: string[];
 }
+export interface OperatorMeterChange { row: OperatorMeterRow; previous?: OperatorMeterRow }
 export interface OperatorMeterOptions {
   run: Pick<RunPaths, "id" | "dir">; limitUsd: number | null; deadline?: number; signal?: AbortSignal;
   /** Must abort the whole operator tree: SDK extension errors are notification-only. */
   onViolation: (error: Error) => void;
   onUsage?: (snapshot: OperatorMeterSnapshot) => void;
+  /** Incremental runtime observer; initial rows are supplied once, then only changed rows. */
+  onChange?: (summary: Omit<OperatorMeterSnapshot, "rows">, changes: readonly OperatorMeterChange[], initial: boolean) => void;
   ledgerPath?: string; models?: readonly Model[];
   /** Optional child-specific cancellation source unavailable on SDK ExtensionContext itself. */
   sessionSignal?: (sessionId: string) => AbortSignal | undefined;
@@ -91,11 +95,14 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
   mkdirSync(dirname(path), { recursive: true });
   const waitMs = options.hookWaitMs ?? 20_000;
   if (!Number.isFinite(waitMs) || waitMs < 1 || waitMs >= 29_000) throw new Error("Meter hook deadline must be below SDK handler timeout");
-  const old: OperatorMeterSnapshot | undefined = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : undefined;
+  const old = readOperatorLedger(path);
   if (old && (old.version !== 1 || old.runId !== options.run.id || old.limitUsd !== options.limitUsd || !Array.isArray(old.rows)
     || !Number.isFinite(old.chargedUsd) || old.chargedUsd < 0)) throw new Error("Invalid or mismatched operator ledger; refuse reset");
   const rows = old?.rows ?? [], gaps = old?.gaps ?? [], seen = new Set(old?.seenMaintenance ?? []);
-  if (rows.some(row => !Number.isFinite(row.chargedUsd) || row.chargedUsd < 0 || !Number.isFinite(row.reservedUsd) || row.reservedUsd < 0)) throw new Error("Invalid persisted exposure");
+  if (rows.some((row, index) => row.id !== index + 1 || typeof row.sessionId !== "string" || !row.sessionId || row.sessionId.length > 512
+    || !["sdk", "legacy", "maintenance", "external"].includes(row.lane) || !["reserved", "settled", "unknown"].includes(row.state)
+    || !Number.isFinite(row.chargedUsd) || row.chargedUsd < 0 || !Number.isFinite(row.reservedUsd) || row.reservedUsd < 0
+    || (row.costUsd !== undefined && (!Number.isFinite(row.costUsd) || row.costUsd < 0)))) throw new Error("Invalid persisted exposure");
   for (const row of rows) if (row.state === "reserved") { row.state = "unknown"; row.chargedUsd = Math.max(row.chargedUsd, row.reservedUsd); row.reason = "Interrupted request retained on resume"; }
   const prior = Math.max(old?.chargedUsd ?? 0, rows.reduce((n, row) => n + row.chargedUsd, 0));
   const budget = new OperatorBudget(options.limitUsd, prior), abort = new AbortController();
@@ -104,13 +111,30 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
   const compact = new Map<string, OperatorMeterRow>(), boundCompacts = new Set<number>();
   const preCalls = new Map<string, OperatorMeterRow>();
   let closed = false, violation: Error | undefined;
+  let knownCostUsd = rows.reduce((n, row) => n + (row.costUsd ?? 0), 0);
+  const publishedRows = new Map(rows.map(row => [row.id, { ...row }]));
+  const summary = (): Omit<OperatorMeterSnapshot, "rows"> => ({ version: 1, runId: options.run.id, limitUsd: options.limitUsd,
+    chargedUsd: budget.chargedUsd, knownCostUsd, coverage: "estimated-exposure-not-invoice-ceiling", gaps: [...gaps], seenMaintenance: [...seen] });
   const usage = (): OperatorMeterSnapshot => ({ version: 1, runId: options.run.id, limitUsd: options.limitUsd, chargedUsd: budget.chargedUsd,
-    knownCostUsd: rows.reduce((n, row) => n + (row.costUsd ?? 0), 0), coverage: "estimated-exposure-not-invoice-ceiling",
+    knownCostUsd, coverage: "estimated-exposure-not-invoice-ceiling",
     gaps: [...gaps], rows: rows.map(row => ({ ...row, ...(row.usage ? { usage: { ...row.usage } } : {}) })), seenMaintenance: [...seen] });
-  const persist = () => { const snapshot = usage(); writeAtomic(path, JSON.stringify(snapshot, null, 2), { mode: 0o600 }); options.onUsage?.(snapshot); };
+  const ledger = createMeterLedger(path, old?.journalSequence ?? 0, usage);
+  const persist = (row?: OperatorMeterRow) => {
+    const previous = row ? publishedRows.get(row.id) : undefined;
+    const next = row ? { ...row, ...(row.usage ? { usage: { ...row.usage } } : {}) } : undefined;
+    if (row) { knownCostUsd += (row.costUsd ?? 0) - (previous?.costUsd ?? 0); publishedRows.set(row.id, next!); }
+    const totals = summary(); ledger.append(totals, row);
+    options.onChange?.(totals, next ? [{ row: next, previous }] : [], false);
+    if (options.onUsage) options.onUsage(usage());
+  };
   const violate = (reason: string, ctx?: ExtensionContext) => {
     ctx?.abort();
     if (!violation) { violation = new Error(reason); abort.abort(violation); for (const context of contexts.values()) context.abort(); options.onViolation(violation); }
+  };
+  const deny = (error: unknown, ctx: ExtensionContext | undefined, fallback: string) => {
+    const child = ctx && ctx.sessionManager.getSessionId() !== contexts.keys().next().value;
+    if (child && error instanceof OperatorBudgetError) ctx.abort();
+    else violate(error instanceof OperatorBudgetError ? error.message : fallback, ctx);
   };
   const gap = (reason: string, ctx?: ExtensionContext) => { if (!gaps.includes(reason)) gaps.push(reason); persist(); violate(reason, ctx); };
   const deadlineTimer = options.deadline === undefined ? undefined : setTimeout(() => violate("Operator deadline reached"), Math.max(0, options.deadline - Date.now()));
@@ -119,17 +143,20 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
     const child = ctx ? options.sessionSignal?.(ctx.sessionManager.getSessionId()) : undefined;
     return AbortSignal.any([signal, ...(child ? [child] : []), ...(supplied ? [supplied] : [])]);
   }
-  async function admit(amount: number, ctx?: ExtensionContext, supplied?: AbortSignal) {
+  async function admit(amount: number, ctx?: ExtensionContext, supplied?: AbortSignal, heldUsd = 0) {
     if (closed) throw new Error("Operator meter closed");
     const scoped = scope(ctx, supplied); scoped.throwIfAborted();
     const timeout = new AbortController();
-    const timer = ctx ? setTimeout(() => { violate("Operator admission wait exceeded SDK hook deadline", ctx); timeout.abort(violation); }, waitMs) : undefined;
+    const timer = ctx ? setTimeout(() => {
+      const error = new OperatorBudgetError("Operator admission wait exceeded SDK hook deadline");
+      deny(error, ctx, error.message); timeout.abort(error);
+    }, waitMs) : undefined;
     let ticket: OperatorTicket;
     try {
-      ticket = await budget.acquire(amount, AbortSignal.any([scoped, timeout.signal]));
+      ticket = await budget.acquire(amount, AbortSignal.any([scoped, timeout.signal]), heldUsd);
       if (scoped.aborted || closed) { ticket.settle(0); throw scoped.reason ?? new Error("Operator meter closed"); }
     } catch (error) {
-      if (error instanceof OperatorBudgetError) violate(error.message, ctx);
+      if (ctx && error instanceof OperatorBudgetError) deny(error, ctx, error.message);
       if (ctx) ctx.abort(); throw error;
     } finally { if (timer) clearTimeout(timer); }
     return ticket;
@@ -140,7 +167,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
     if (scoped.aborted || closed) { ticket.settle(0); throw scoped.reason ?? new Error("Operator meter closed"); }
     const row: OperatorMeterRow = { id: rows.length + 1, sessionId, lane, provider: String(model.provider), model: model.id,
       reservedUsd: amount, chargedUsd: amount, state: "reserved" };
-    rows.push(row); tickets.set(row.id, ticket); persist(); return row;
+    rows.push(row); tickets.set(row.id, ticket); persist(row); return row;
   }
   function settle(row: OperatorMeterRow, model: Model, raw: any, stop?: string) {
     if (row.state !== "reserved") return;
@@ -150,7 +177,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
     tickets.delete(row.id); row.state = retain ? "unknown" : "settled";
     row.provider = String(model.provider); row.model = model.id;
     if (known) { row.usage = counters(raw); if (Number.isFinite(cost)) row.costUsd = cost; }
-    row.stop = stop; persist(); if (options.limitUsd !== null && budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
+    row.stop = stop; persist(row); if (options.limitUsd !== null && budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
   }
   /** Optional external calls never wait on a parent model reservation or stop the tree on denial. */
   async function reserveExternal(request: ExternalMeterReservation): Promise<ExternalMeterTicket | undefined> {
@@ -184,14 +211,14 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
         }
       }
       row.reason = typeof result.reason === "string" ? result.reason.slice(0, 1024) : known ? "External usage settled" : "External usage unavailable; reservation retained";
-      scoped.removeEventListener("abort", onAbort); persist();
+      scoped.removeEventListener("abort", onAbort); persist(row);
       if (options.limitUsd !== null && budget.chargedUsd > options.limitUsd) violate("Observed cost exceeds operator exposure limit");
     };
     const onAbort = () => finish(dispatched ? { reason: "External request cancelled after dispatch; reservation retained" }
       : { costUsd: 0, reason: "External request cancelled before dispatch" });
     scoped.addEventListener("abort", onAbort, { once: true });
     // Durable exposure must exist before the caller gets authority to dispatch.
-    persist();
+    persist(row);
     if (scoped.aborted) onAbort();
     return {
       dispatch() {
@@ -228,6 +255,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
         rows.push(row);
         // Account uncovered cost in the same total without pretending it had dispatch admission.
         budget.chargeUnreserved(cost ?? 0);
+        persist(row);
         gap("SDK maintenance call bypassed operator request admission", ctx);
       }
     }
@@ -249,12 +277,12 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
       const row = await reserve(ctx.model, estimate.reservedUsd, sid, "sdk", undefined, scoped);
       Object.assign(row, estimateMetadata(estimate), { reason: "Native gate: SDK local input-token estimate with single framing allowance" });
       if (scoped.aborted) {
-        tickets.get(row.id)!.settle(0); tickets.delete(row.id); row.chargedUsd = 0; row.state = "settled"; persist(); return false;
+        tickets.get(row.id)!.settle(0); tickets.delete(row.id); row.chargedUsd = 0; row.state = "settled"; persist(row); return false;
       }
-      preCalls.set(sid, row); persist(); return true;
+      preCalls.set(sid, row); persist(row); return true;
     } catch (error) {
       if (scope(ctx, requestSignal).aborted && !signal.aborted) ctx.abort();
-      else violate(error instanceof OperatorBudgetError ? error.message : "Native operator admission failed", ctx);
+      else deny(error, ctx, "Native operator admission failed");
       return false;
     }
   }
@@ -271,7 +299,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
         if (group?.state === "reserved" && !boundCompacts.has(group.id)) {
           if (estimate.reservedUsd > group.reservedUsd) {
             // Top up only the difference: waiting for a second full reservation could deadlock on our own pre-reserve.
-            const extra = await admit(estimate.reservedUsd - group.reservedUsd, ctx), original = tickets.get(group.id)!;
+            const extra = await admit(estimate.reservedUsd - group.reservedUsd, ctx, undefined, group.reservedUsd), original = tickets.get(group.id)!;
             const total = estimate.reservedUsd;
             tickets.set(group.id, { reservedUsd: total, settle: actual => {
               if (actual === undefined) return original.settle() + extra.settle();
@@ -283,10 +311,10 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
         } else row = await reserve(ctx.model, estimate.reservedUsd, sid, "sdk", ctx);
         Object.assign(row, { ...estimateMetadata(estimate),
           provider: String(ctx.model.provider), model: ctx.model.id }); // Never persist payloads or headers.
-        (pending.get(sid) ?? (pending.set(sid, []), pending.get(sid)!)).push(row); persist();
+        (pending.get(sid) ?? (pending.set(sid, []), pending.get(sid)!)).push(row); persist(row);
       } catch (error) {
         if (scope(ctx).aborted && !signal.aborted) ctx.abort();
-        else violate(error instanceof OperatorBudgetError ? error.message : "SDK request admission failed", ctx);
+        else deny(error, ctx, "SDK request admission failed");
         throw error;
       }
       return event.payload;
@@ -311,7 +339,7 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
         const worst = estimates.sort((a, b) => b.amount - a.amount)[0]; if (!worst) throw new Error("No admitted maintenance model bounds");
         const sid = ctx.sessionManager.getSessionId(); contexts.set(sid, ctx); maintenance(ctx);
         compact.set(sid, await reserve(worst.model, worst.amount, sid, "maintenance", ctx));
-      } catch { if (scope(ctx).aborted && !signal.aborted) ctx.abort(); else violate("Compaction exposure admission failed", ctx); return { cancel: true }; }
+      } catch (error) { if (scope(ctx).aborted && !signal.aborted) ctx.abort(); else deny(error, ctx, "Compaction exposure admission failed"); return { cancel: true }; }
     });
     pi.on("session_compact", (event, ctx) => {
       const sid = ctx.sessionManager.getSessionId(), row = compact.get(sid); compact.delete(sid);
@@ -344,12 +372,13 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
       const encoding = headers.get("content-encoding"), decoded = encoding === "zstd" ? Bun.zstdDecompressSync(bytes) : bytes;
       if (encoding && !["identity", "zstd"].includes(encoding)) { violate("Unsupported legacy wire encoding"); throw violation; }
       const estimate = operatorReservation(model, JSON.parse(new TextDecoder().decode(decoded)));
-      row = await reserve(model, estimate.reservedUsd, "legacy", "legacy", undefined, scoped);
+      try { row = await reserve(model, estimate.reservedUsd, "legacy", "legacy", undefined, scoped); }
+      catch (error) { if (error instanceof OperatorBudgetError) violate(error.message); throw error; }
       if (scoped.aborted) {
         tickets.get(row.id)!.settle(0); tickets.delete(row.id); row.chargedUsd = 0; row.state = "settled";
-        row.reason = "Cancelled before transport dispatch"; persist(); throw scoped.reason;
+        row.reason = "Cancelled before transport dispatch"; persist(row); throw scoped.reason;
       }
-      Object.assign(row, estimate); persist(); return (options.fetchImpl ?? coworkFetch)(url, init);
+      Object.assign(row, estimate); persist(row); return (options.fetchImpl ?? coworkFetch)(url, init);
     };
     const { fallbacks: _fallbacks, ...rest } = supplied ?? {};
     const stream = (options.streamImpl ?? streamSimple)(model, context, { ...rest, signal: scoped, fetch: guard, preferWebsockets: false, codexSseMaxAttempts: 1 } as never);
@@ -357,7 +386,8 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
     legacyPending.add(done); void done.finally(() => legacyPending.delete(done)); return stream;
   };
   const legacyPending = new Set<Promise<unknown>>();
-  persist();
+  options.onChange?.(summary(), rows.map(row => ({ row: { ...row } })), true);
+  options.onUsage?.(usage());
   return { extension, beforeModelCall, reserveExternal, streamFn, signal, usage: snapshot,
     async close() {
       if (closed) return snapshot(); closed = true; abort.abort(new Error("Operator meter closed"));
@@ -366,8 +396,8 @@ export function createOperatorMeter(options: OperatorMeterOptions) {
       for (const row of rows) if (row.state === "reserved") {
         const model = modelFor(row.provider, row.model) ?? contexts.get(row.sessionId)?.model;
         if (model) settle(row, model, undefined, "error");
-        else { row.chargedUsd = tickets.get(row.id)?.settle() ?? row.reservedUsd; tickets.delete(row.id); row.state = "unknown"; row.reason = "Closed without final model usage"; }
+        else { row.chargedUsd = tickets.get(row.id)?.settle() ?? row.reservedUsd; tickets.delete(row.id); row.state = "unknown"; row.reason = "Closed without final model usage"; persist(row); }
       }
-      persist(); return snapshot();
+      persist(); ledger.checkpoint(); return snapshot();
     } };
 }

@@ -78,6 +78,18 @@ function fixture(required = false) {
     calls: () => calls, cancelCalls: () => cancelCalls, disposed: () => disposed };
 }
 
+test("native new disposes the previous conversation while ordinary followups reuse it", async () => {
+  const s = fixture();
+  try {
+    await s.controller.start({ seed: "First task" });
+    await s.controller.send("Follow up"); expect(s.calls()).toBe(1);
+    await s.controller.execute("task: new", ["Second task"]);
+    expect(s.calls()).toBe(2); expect(s.disposed()).toBe(1);
+    expect(s.controller.getSnapshot().transcript.flatMap(entry => entry.kind === "user" ? [entry.text] : [])).toEqual(["Second task"]);
+    await s.controller.execute("mode: auto"); expect(s.efforts).toContain("auto"); expect(s.controller.getSnapshot().effort).toBe("auto");
+  } finally { await s.controller.dispose(); }
+});
+
 describe("operator TUI adapter", () => {
   test("routing shows operator selection while reviewer and worker routes preserve it", async () => {
     const s = fixture();

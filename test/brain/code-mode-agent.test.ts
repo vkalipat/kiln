@@ -28,11 +28,12 @@ function setup(responses: unknown[], overrides: Partial<BrainOptions> = {}) {
   return { brain, run, record, contexts, model, exits: () => exits };
 }
 
-test("native Code Mode sends only a custom executor and preserves nested artifact completion", async () => {
+test.each(["gpt-6-astra", "gpt-6.1-sol"])("%s sends the custom executor and preserves nested artifact completion", async id => {
   const events: string[] = [];
   const f = setup([cell('await tools.note({text:"start"}); await tools.write({path:"artifact.txt",content:"complete"}); await tools.note({text:"must not run"});')], {
     afterTool: (event) => event.name === "write" && event.ok,
     onTool: (event) => events.push(`${event.phase}:${event.name}`),
+    model: getBundledModel("openai-codex", id)!,
   });
   const result = await f.brain.run("Write the artifact.");
   expect(result.stopped).toBe("done");

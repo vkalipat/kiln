@@ -2,7 +2,7 @@
 export const TUI_PHASES = ["frame", "discover", "ideate", "form", "build", "reflect"] as const;
 export type TuiPhase = (typeof TUI_PHASES)[number];
 export type TuiRunState = "idle" | "running" | "paused" | "stopped" | "done" | "failed";
-export type TuiEffort = "low" | "medium" | "high" | "ultra";
+export type TuiEffort = "auto" | "low" | "medium" | "high" | "ultra";
 export type TuiConfigEffort = Exclude<TuiEffort, "ultra"> | "xhigh";
 export type TuiToolStatus = "queued" | "running" | "done" | "error" | "cancelled" | "blocked";
 

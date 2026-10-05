@@ -20,6 +20,7 @@ function generation(holder: RunLockInfo | undefined): string | undefined {
   if (!holder) return undefined;
   return createHash("sha256").update(JSON.stringify([holder.pid, holder.host, holder.startedAt, holder.token ?? null])).digest("hex");
 }
+export function runControlGeneration(run: RunPaths): string | undefined { return generation(readRunLock(run)); }
 
 export function pauseRequestPath(run: RunPaths, target = generation(readRunLock(run))): string {
   return join(run.toolOutputDir, target ? `.pause-request-${target}.json` : REQUEST_FILE);

@@ -3,7 +3,7 @@ import type { TuiConfigEffort, TuiEffort } from "./contracts";
 import { renderRoundedOverlay } from "./overlay";
 import { ansi, EFFORT_STYLE } from "./theme";
 
-export const EFFORTS: readonly TuiEffort[] = ["low", "medium", "high", "ultra"] as const;
+export const EFFORTS: readonly TuiEffort[] = ["auto", "low", "medium", "high", "ultra"] as const;
 
 export function toConfigEffort(effort: TuiEffort): TuiConfigEffort {
   return effort === "ultra" ? "xhigh" : effort;
@@ -23,6 +23,7 @@ export function nextEffort(effort: TuiEffort, step = 1): TuiEffort {
 }
 
 const DESCRIPTION: Readonly<Record<TuiEffort, string>> = {
+  auto: "Choose reasoning effort for each task; explicit pins take precedence",
   low: "Quick work with a small reasoning budget",
   medium: "Balanced reasoning for everyday work",
   high: "Deeper reasoning for demanding work",

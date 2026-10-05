@@ -9,12 +9,32 @@ import { localIntakeReply } from "../../tui/intake";
 import type { OperatorRuntime, OperatorEvent } from "../../operator/runtime";
 import { loadConfig, saveConfig } from "../../core/config";
 import { readComputeMonitor } from "../../operator/compute-monitor";
+import { requestOperatorSteering } from "../../operator/steering-mailbox";
+import { pauseCommand } from "./pause";
 
 /** Scriptable entry to the same persistent operator used by the Amp-style TUI. */
 export async function taskCommand(cmd: string[], flags: Record<string, string | boolean>, io: CliIo, deps: CliDeps): Promise<number> {
   const fail = io.error ?? io.write;
   const home = typeof flags.home === "string" ? flags.home : kilnHome();
   const validId = (value: string | undefined) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/.test(value);
+  if (cmd[0] === "pause" || cmd[0] === "steer") {
+    if (!validId(cmd[1])) { fail(`usage: kiln task ${cmd[0]} RUN_ID [message | --seed-file PATH]\n`); return 2; }
+    try {
+      const run = runPaths(home, cmd[1]!);
+      if (!existsSync(join(run.dir, "operator.json"))) throw new Error("This is not a native operator session");
+      if (cmd[0] === "pause") {
+        if (cmd.length !== 2) throw new Error("task pause requires one run id");
+        return pauseCommand(run.id, flags, io);
+      }
+      if (readStatus(run).state !== "running") throw new Error("No active turn; use task resume with a follow-up");
+      let text = cmd.slice(2).join(" ");
+      if (typeof flags["seed-file"] === "string") {
+        if (text) throw new Error("Provide steering text or --seed-file, not both");
+        text = readFileSync(resolve(flags["seed-file"]), "utf8");
+      }
+      io.write(JSON.stringify(requestOperatorSteering(run, text)) + "\n"); return 0;
+    } catch (error) { fail(`${(error as Error).message}\n`); return 2; }
+  }
   if (cmd[0] === "monitor") {
     if (!validId(cmd[1]) || cmd.length !== 2) { fail("usage: kiln task monitor RUN_ID [--json]\n"); return 2; }
     try {

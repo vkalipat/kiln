@@ -42,6 +42,7 @@ describe("rounded overlay", () => {
 describe("command palette", () => {
   test("contains every specified command with a CLI argv mapping", () => {
     expect(PALETTE_COMMANDS.map((command) => command.label)).toEqual([
+      "task: new", "task: monitor", "task: limits", "integrations: status", "integrations: jev enable", "integrations: jev disable", "mode: auto",
       "run: new", "run: resume", "run: show record", "ideas: frontier", "ideas: pick",
       "ideas: another round", "project: form", "build: start", "build: pause", "evolve: eval",
       "evolve: promote", "evolve: rollback", "evals: calibrate", "auth: login anthropic",
@@ -68,8 +69,10 @@ describe("effort dial", () => {
   test("maps the display-only ultra name to xhigh config", () => {
     expect(toConfigEffort("ultra")).toBe("xhigh");
     expect(fromConfigEffort("xhigh")).toBe("ultra");
-    expect(nextEffort("ultra")).toBe("low");
-    expect(nextEffort("low", -1)).toBe("ultra");
+    expect(nextEffort("ultra")).toBe("auto");
+    expect(nextEffort("low", -1)).toBe("auto");
+    expect(nextEffort("auto", -1)).toBe("ultra");
+    expect(toConfigEffort("auto")).toBe("auto");
   });
 
   test("cycles and commits the selected effort", () => {
