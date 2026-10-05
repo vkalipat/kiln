@@ -29,8 +29,8 @@
         <a href="#long-running">Resume and monitor</a>
         <a href="#readiness">Usage notes</a>
         <p class="nav-label">Reference</p>
-        <a href="https://github.com/vkalipat/kiln/blob/main/docs/user-manual.md">Full manual <span class="external" aria-hidden="true">↗</span></a>
-        <a href="https://github.com/vkalipat/kiln/blob/main/docs/architecture-and-integrations.md">Architecture <span class="external" aria-hidden="true">↗</span></a>
+        <a href="https://github.com/vkalipat/kiln/blob/main/docs/README.md">Command reference <span class="external" aria-hidden="true">↗</span></a>
+        <a href="https://github.com/vkalipat/kiln/blob/main/docs/architecture.md">Architecture <span class="external" aria-hidden="true">↗</span></a>
         <a href="https://github.com/vkalipat/kiln/releases">Changelog <span class="external" aria-hidden="true">↗</span></a>
       </nav>
     </aside>
@@ -65,7 +65,7 @@ kiln doctor --json</code></pre></div>
         <div class="code-block"><div class="code-header"><button data-copy aria-label="Copy task command">Copy <span aria-hidden="true">⧉</span></button></div><pre><code>kiln task "Implement the importer and verify malformed input handling" --cwd .</code></pre></div>
         <p>Describe the outcome, quality requirements, and constraints. When independent work benefits from delegation, Kiln composes task-specific responsibilities with separate file scopes, dependencies, and acceptance checks. The parent operator reviews the handoffs and integrates the result.</p>
         <div class="two-column"><div><h3>Research &amp; ideation</h3><p>Ask for sources, competing approaches, assumptions, and a test that could change the decision. Task-specific teams can research alternatives, generate ideas, run probes, and review the evidence.</p></div><div><h3>Implementation</h3><p>Describe the behavior and constraints. Let the operator choose the steps, use tools, inspect results, and repair failures within that scope.</p></div></div>
-        <p>For additional controls, see the <a href="https://github.com/vkalipat/kiln/blob/main/docs/user-manual.md#6-explicit-workflow-runs">workflow commands</a>.</p>
+        <p>For additional controls, see the <a href="https://github.com/vkalipat/kiln/blob/main/docs/README.md#phase-workflows">workflow commands</a>.</p>
       </section>
 
       <section id="models" aria-labelledby="models-title">
@@ -76,7 +76,7 @@ kiln doctor --json</code></pre></div>
 kiln mode set auto
 kiln mode show</code></pre></div>
         <p>Use <code>kiln mode set auto</code> for Jev effort selection, or a level such as <code>kiln mode set high</code> to pin it. Catalog and benchmark updates remain explicit.</p>
-        <a class="text-link" href="https://github.com/vkalipat/kiln/blob/main/docs/jev-resource-routing.md">Read about resource routing <span aria-hidden="true">↗</span></a>
+        <a class="text-link" href="https://github.com/vkalipat/kiln/blob/main/docs/README.md#jev-selection">Read about resource routing <span aria-hidden="true">↗</span></a>
       </section>
 
       <section id="integrations" aria-labelledby="integrations-title">
@@ -92,7 +92,7 @@ kiln doctor --require jev --json</code></pre></div>
         <p>Use project memory when you need curated knowledge across runs. Set up a running Hindsight server and an explicit project bank, then choose what to retain.</p>
         <div class="code-block"><div class="code-header"><button data-copy aria-label="Copy Hindsight status command">Copy <span aria-hidden="true">⧉</span></button></div><pre><code>kiln memory status --url http://127.0.0.1:8888 --bank example-project</code></pre></div>
         <p>Configure authentication with <code>kiln auth key hindsight</code> when your server requires it.</p>
-        <a class="text-link" href="https://github.com/vkalipat/kiln/blob/main/docs/optional-integrations.md">Integration setup <span aria-hidden="true">↗</span></a>
+        <a class="text-link" href="https://github.com/vkalipat/kiln/blob/main/docs/README.md#optional-integrations">Integration setup <span aria-hidden="true">↗</span></a>
       </section>
 
       <section id="long-running" aria-labelledby="long-running-title">

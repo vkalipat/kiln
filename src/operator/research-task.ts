@@ -5,6 +5,12 @@ import { webFetchTool, webSearch } from "../brain/tools/web";
 import type { ToolContext } from "../brain/tools";
 
 export type ResearchCoverage = "supports" | "contradicts" | "mixed" | "not_stated" | "unknown";
+export class ResearchClassificationCapacityError extends Error {
+  constructor(readonly requiredCalls: number, readonly availableCalls: number | null, reason?: string) {
+    super(reason ?? `Classification requires ${requiredCalls} requests; only ${availableCalls} remain. Reduce fields or sources, or continue in a separately funded session.`);
+    this.name = "ResearchClassificationCapacityError";
+  }
+}
 export interface ResearchTaskInput {
   question: string;
   requiredFields: { id: string; question: string }[];
@@ -222,7 +228,11 @@ export async function runResearchTask(input: ResearchTaskInput, deps: ResearchTa
           seen.add(key);
         }
         labels = result.labels;
-      } catch { if (!charged) account(); failures.push({ stage: "classify", reason: "Labels unavailable or invalid; all captured evidence retained" }); }
+      } catch (error) {
+        if (!charged) account(error instanceof ResearchClassificationCapacityError ? 0 : undefined);
+        failures.push({ stage: "classify", reason: error instanceof ResearchClassificationCapacityError ? error.message
+          : "Labels unavailable or invalid; all captured evidence retained" });
+      }
     }
     for (const source of sources) {
       try {

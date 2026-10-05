@@ -6,6 +6,17 @@ import type { ResearchPassage } from "../../src/operator/research-task";
 
 type Request = Parameters<ReturnType<typeof createJevWorkflowService>["evaluate"]>[0];
 const field = { id: "claim", question: "The feature is available." };
+test("classification preflights the complete request count without spending an insufficient allocation", async () => {
+  let calls = 0;
+  const classify = createResearchClassifier({
+    capacity: () => ({ callsRemaining: 64, inputTokensRemaining: 1_000_000, requestInputReserve: 64000 }),
+    evaluate: async () => { calls++; throw new Error("must not dispatch"); },
+  }, "fixture");
+  const input = { question: "q".repeat(4096), fields: Array.from({ length: 12 }, (_, i) => ({ id: `f${i}`, question: "q".repeat(1024) })),
+    passages: Array.from({ length: 12 }, (_, i) => ({ id: `p${i}`, sourceId: `s${i}`, text: "x".repeat(12000), start: 0, end: 12000 })) };
+  await expect(classify(input, new AbortController().signal)).rejects.toThrow("requires 72 requests; only 64 remain");
+  expect(calls).toBe(0);
+});
 const passage = (id: string, text: string, sourceId = "source-1"): ResearchPassage => ({ id, text, sourceId, start: 0, end: text.length });
 const answer = (choice: string, accepted = true): JevChoiceAnswer => ({ choice, accepted, confidence: accepted ? 0.99 : 0.2, probabilities: { [choice]: 1 } });
 function reply(request: Request, modify?: (answers: Record<string, JevChoiceAnswer>) => void): JevWorkflowDecision {

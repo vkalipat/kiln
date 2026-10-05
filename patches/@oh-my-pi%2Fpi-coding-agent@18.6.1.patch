@@ -1,0 +1,147 @@
+diff --git a/src/exec/bash-executor.ts b/src/exec/bash-executor.ts
+--- a/src/exec/bash-executor.ts
++++ b/src/exec/bash-executor.ts
+@@ -32,12 +32,14 @@
+ 	cfgShellMinimizer,
+ 	cfgShellPath,
+ 	type ShellMinimizerSettings,
+ } from "./settings";
+ 
+ export interface BashExecutorOptions {
++	/** Use the owning session settings, including its subprocess environment boundary. */
++	settings?: Settings;
+ 	cwd?: string;
+ 	/** Milliseconds before aborting the command; 0 disables the executor deadline. */
+ 	timeout?: number;
+ 	onChunk?: (chunk: string) => void;
+ 	chunkThrottleMs?: number;
+ 	signal?: AbortSignal;
+@@ -510,13 +512,13 @@
+ 		cancelled: false,
+ 		...(await run.dump()),
+ 	};
+ }
+ 
+ export async function executeBash(command: string, options?: BashExecutorOptions): Promise<BashResult> {
+-	const settings = await Settings.init();
++	const settings = options?.settings ?? (await Settings.init());
+ 	const baseShellConfig = settings.getShellConfig();
+ 	const shellConfig =
+ 		options?.useUserShell === true ? resolveUserShellConfig(settings, baseShellConfig) : baseShellConfig;
+ 	const { shell, args, env: shellEnv, prefix } = shellConfig;
+ 	const bashShell = isBashShell(shell);
+ 	// `!` hotkey commands on zsh/fish run in a real PTY: interactive shell
+diff --git a/src/tools/bash.ts b/src/tools/bash.ts
+--- a/src/tools/bash.ts
++++ b/src/tools/bash.ts
+@@ -848,12 +848,13 @@
+ 			async ({ jobId, signal: runSignal, reportProgress }) => {
+ 				const { path: artifactPath, id: artifactId } = (await this.session.allocateOutputArtifact?.("bash")) ?? {};
+ 				const tailBuffer = new TailBuffer(DEFAULT_MAX_BYTES);
+ 				const wallTimeStart = performance.now();
+ 				try {
+ 					const result = await executeBash(options.command, {
++						settings: this.session.settings,
+ 						cwd: options.commandCwd,
+ 						sessionKey: `${this.session.getSessionId?.() ?? ""}:async:${jobId}`,
+ 						timeout: options.timeoutMs ?? 0,
+ 						signal: runSignal,
+ 						// Bound to the job's own signal: the job outlives the call that started it.
+ 						filesystem: this.#urlFilesystem(runSignal, options.approvalTier).shellFilesystem(),
+@@ -1512,12 +1513,13 @@
+ 					artifactPath,
+ 					artifactId,
+ 				})
+ 			: // executeBash runs its OWN direnv preflight internally — pass the RAW
+ 				// command here so the unset prefix is not applied twice.
+ 				await executeBash(command, {
++					settings: this.session.settings,
+ 					cwd: commandCwd,
+ 					sessionKey: this.session.getSessionId?.() ?? undefined,
+ 					timeout: timeoutMs ?? 0,
+ 					signal,
+ 					filesystem: this.#urlFilesystem(signal, approvalTier).shellFilesystem(),
+ 					artifactPath,
+diff --git a/dist/types/exec/bash-executor.d.ts b/dist/types/exec/bash-executor.d.ts
+--- a/dist/types/exec/bash-executor.d.ts
++++ b/dist/types/exec/bash-executor.d.ts
+@@ -1,11 +1,14 @@
++import type { Settings } from "../config/settings.js";
+ import type { ImageContent } from "@oh-my-pi/pi-ai";
+ import { type MinimizerOptions, type ShellFilesystem } from "@oh-my-pi/pi-natives";
+ import { type OutputArtifactError } from "@oh-my-pi/pi-tui/tools/streaming-output";
+ import { type ShellMinimizerSettings } from "./settings.js";
+ export interface BashExecutorOptions {
++    /** Use the owning session settings, including its subprocess environment boundary. */
++    settings?: Settings;
+     cwd?: string;
+     /** Milliseconds before aborting the command; 0 disables the executor deadline. */
+     timeout?: number;
+     onChunk?: (chunk: string) => void;
+     chunkThrottleMs?: number;
+     signal?: AbortSignal;
+diff --git a/src/eval/js/context-manager.ts b/src/eval/js/context-manager.ts
+--- a/src/eval/js/context-manager.ts
++++ b/src/eval/js/context-manager.ts
+@@ -981,31 +981,40 @@
+ 			error: error instanceof Error ? error.message : String(error),
+ 		});
+ 	}
+ 	return workerFactories.spawnWorker();
+ }
+ 
++/** Credential hygiene for model-controlled code, including the Worker fallback. */
++function safeEvalWorkerEnv(): Record<string, string> {
++	const env = workerEnvFromParent();
++	for (const key of Object.keys(env)) {
++		if (/(?:_API_KEY|_TOKEN|_SECRET)$/i.test(key) || key === "BASH_ENV" || key === "ENV") delete env[key];
++	}
++	return env;
++}
++
+ function spawnBunWorker(): JsEvalWorkerHandle {
+ 	try {
+ 		const hostEntry = workerHostEntry();
+ 		const worker = hostEntry
+-			? new Worker(hostEntry, { type: "module", argv: ["__omp_worker_js_eval"] })
+-			: new Worker(new URL("./worker-entry.ts", import.meta.url).href, { type: "module" });
++			? new Worker(hostEntry, { type: "module", argv: ["__omp_worker_js_eval"], env: safeEvalWorkerEnv() })
++			: new Worker(new URL("./worker-entry.ts", import.meta.url).href, { type: "module", env: safeEvalWorkerEnv() });
+ 		return wrapBunWorker(worker);
+ 	} catch (error) {
+ 		throw new Error(
+ 			`Failed to start isolated JS eval worker: ${error instanceof Error ? error.message : String(error)}`,
+ 			{ cause: error },
+ 		);
+ 	}
+ }
+ 
+ function spawnJsProcess(): JsEvalWorkerHandle {
+ 	const spawned = createWorkerSubprocess<WorkerOutbound>({
+ 		spawnCommand: resolveWorkerSpawnCmd(JS_EVAL_PROCESS_ARG),
+-		env: workerEnvFromParent(),
++		env: safeEvalWorkerEnv(),
+ 		exitLabel: "JS eval worker",
+ 		detached: shouldDetachKernel(process.platform),
+ 		reportCleanExit: true,
+ 		unref: false,
+ 	});
+ 	const base = createWorkerHandle<WorkerInbound, WorkerOutbound>(spawned, message =>
+diff --git a/src/eval/py/runtime.ts b/src/eval/py/runtime.ts
+--- a/src/eval/py/runtime.ts
++++ b/src/eval/py/runtime.ts
+@@ -131,13 +131,13 @@
+  */
+ export function filterEnv(env: Record<string, string | undefined>): Record<string, string | undefined> {
+ 	const filtered: Record<string, string | undefined> = {};
+ 	for (const [key, value] of Object.entries(env)) {
+ 		if (value === undefined) continue;
+ 		const normalizedKey = normalizeEnvKey(key);
+-		if (NORMALIZED_DENYLIST.has(normalizedKey)) continue;
++		if (NORMALIZED_DENYLIST.has(normalizedKey) || /(?:_API_KEY|_TOKEN|_SECRET)$/i.test(normalizedKey)) continue;
+ 		if (NORMALIZED_ALLOWLIST.has(normalizedKey)) {
+ 			const destKey = normalizedKey === "PATH" ? "PATH" : key;
+ 			filtered[destKey] = value;
+ 			continue;
+ 		}
+ 		if (NORMALIZED_ALLOW_PREFIXES.some(prefix => normalizedKey.startsWith(prefix))) {

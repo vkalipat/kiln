@@ -10,6 +10,21 @@ const input: ResourceRouteInput = { task: "Classify the supplied documents", ses
 const accepted = (role = "classifier", route = "model_1"): JevWorkflowDecision => ({ source: "jev", reason: "accepted", requestedModel: "jev-1.13.0", stateHash: "test", dispatched: true, latencyMs: 1,
   answers: { role: { choice: role, accepted: true, confidence: 0.95, probabilities: {} }, model: { choice: route, accepted: true, confidence: 0.95, probabilities: {} }, effort: { choice: "light", accepted: true, confidence: 0.95, probabilities: {} } } });
 describe("resource routing", () => {
+  test("new unscored Sol reaches Jev on both transports without displacing the quality fallback", async () => {
+    for (const provider of ["openai", "openai-codex"]) {
+      const models = buildResourceCatalog(new Set([provider]));
+      const ref = `${provider}/gpt-6.1-sol`;
+      expect(models.length).toBeLessThanOrEqual(32);
+      expect(models.find(model => model.modelRef === ref)?.benchmarks).toEqual([]);
+      const selected = await chooseResourceRoute(input, models, { evaluate: async request => {
+        const choice = Object.entries(request.questions.model!.criteria).find(([, value]) => value === ref)?.[0];
+        expect(choice).toBeDefined(); return accepted("classifier", choice!);
+      } });
+      expect(selected.modelRef).toBe(ref); expect(selected.effort).toBe("low");
+      const fallback = await chooseResourceRoute(input, models, { evaluate: async () => ({ ...accepted(), source: "fallback", reason: "disabled" }) });
+      expect(models.find(model => model.modelRef === fallback.modelRef)?.benchmarks.length).toBeGreaterThan(0);
+    }
+  });
   test("admits smaller installed models independently of role presets and preserves actual provenance", () => {
     const models = buildResourceCatalog(new Set(["anthropic"]));
     expect(models.length).toBeLessThanOrEqual(32);

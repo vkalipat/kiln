@@ -62,6 +62,7 @@ export function restoredTranscript(runId: string, events: readonly StoredEvent[]
 /** Correlates streaming deltas and tool calls without relying on non-unique display names. */
 export class ControllerTranscript {
   #entries: TuiTranscriptEntry[] = [];
+  readonly #index = new Map<string, number>();
   readonly #textBySource = new Map<string, string>();
   readonly #toolByCall = new Map<string, string>();
   #sequence = 0;
@@ -72,19 +73,20 @@ export class ControllerTranscript {
 
   restore(entries: readonly TuiTranscriptEntry[]): void {
     this.#entries = [...entries];
+    this.#index.clear(); this.#entries.forEach((entry, index) => this.#index.set(entry.id, index));
     this.#textBySource.clear();
     this.#toolByCall.clear();
   }
 
   appendUser(text: string): TuiTextEntry {
     const entry: TuiTextEntry = { id: `user:${++this.#sequence}`, kind: "user", text };
-    this.#entries = [...this.#entries, entry];
+    this.#append(entry);
     return entry;
   }
 
   appendBrain(text: string): TuiTextEntry {
     const entry: TuiTextEntry = { id: `controller:${++this.#sequence}`, kind: "brain", text };
-    this.#entries = [...this.#entries, entry];
+    this.#append(entry);
     return entry;
   }
 
@@ -92,7 +94,7 @@ export class ControllerTranscript {
     if (event.type === "text") {
       const existingId = this.#textBySource.get(event.sourceId);
       if (existingId) {
-        const current = this.#entries.find((entry): entry is TuiTextEntry => entry.id === existingId && entry.kind !== "tool" && entry.kind !== "activity" && entry.kind !== "tournament");
+        const current = this.#entries[this.#index.get(existingId)!] as TuiTextEntry | undefined;
         const entry: TuiTextEntry = {
           id: existingId,
           kind: "brain",
@@ -109,7 +111,7 @@ export class ControllerTranscript {
         streaming: true,
       };
       this.#textBySource.set(event.sourceId, entry.id);
-      this.#entries = [...this.#entries, entry];
+      this.#append(entry);
       return { type: "text", entry };
     }
 
@@ -117,7 +119,7 @@ export class ControllerTranscript {
     const existingId = this.#toolByCall.get(correlation);
     const id = existingId ?? `tool:${event.sourceId}:${event.toolCallId}`;
     const prior = existingId
-      ? this.#entries.find((entry): entry is TuiToolEntry => entry.id === existingId && entry.kind === "tool")
+      ? this.#entries[this.#index.get(existingId)!] as TuiToolEntry | undefined
       : undefined;
     const entry: TuiToolEntry = event.type === "tool_start"
       ? { id, kind: "tool", status: "running", verb: event.name, args: printable(event.args) }
@@ -132,7 +134,7 @@ export class ControllerTranscript {
     if (existingId) this.#replace(existingId, entry);
     else {
       this.#toolByCall.set(correlation, id);
-      this.#entries = [...this.#entries, entry];
+      this.#append(entry);
     }
     return { type: "tool", entry };
   }
@@ -156,6 +158,9 @@ export class ControllerTranscript {
   }
 
   #replace(id: string, replacement: TuiTranscriptEntry): void {
-    this.#entries = this.#entries.map((entry) => entry.id === id ? replacement : entry);
+    const index = this.#index.get(id);
+    if (index === undefined) throw new Error("Transcript entry identity missing");
+    const entries = this.#entries.slice(); entries[index] = replacement; this.#entries = entries;
   }
+  #append(entry: TuiTranscriptEntry): void { this.#index.set(entry.id, this.#entries.length); this.#entries = [...this.#entries, entry]; }
 }

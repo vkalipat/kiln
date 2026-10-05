@@ -23,9 +23,9 @@ export function parseModelRef(ref: string): { provider: string; modelId: string 
   return { provider: ref.slice(0, i), modelId: ref.slice(i + 1) };
 }
 
-/** The scoped host adapter supports this installed Codex custom-tool dialect, not arbitrary Code Mode models. */
+/** Admit the installed Codex custom-tool contract, independent of release names. */
 export function usesKilnCodeMode(model: Model | undefined): boolean {
-  return model?.provider === "openai-codex" && model.id === "gpt-6-astra"
+  return model?.provider === "openai-codex"
     && model.api === "openai-codex-responses" && model.toolMode === "code_mode_only"
     && model.applyPatchToolType === "freeform";
 }

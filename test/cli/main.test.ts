@@ -6,6 +6,12 @@ import { main, parseArgs } from "../../src/cli/main";
 import { initHome } from "../../src/core/home";
 
 describe("parseArgs", () => {
+  test("boolean switches preserve prompts and -- ends option parsing", () => {
+    expect(parseArgs(["task", "--uncapped", "--json", "Implement a formatter"])).toEqual({ cmd: ["task", "Implement a formatter"], flags: { uncapped: true, json: true } });
+    expect(parseArgs(["task", "--json", "--", "--literal", "body"])).toEqual({ cmd: ["task", "--literal", "body"], flags: { json: true } });
+    expect(() => parseArgs(["task", "--budget"])).toThrow("Missing value");
+    expect(() => parseArgs(["task", "--budget", "1", "--budget", "2"])).toThrow("Duplicate");
+  });
   test("splits commands and flags", () => {
     expect(parseArgs(["run", "new", "seed text", "--json", "--out=/x", "--through", "frame"])).toEqual({ cmd: ["run", "new", "seed text"], flags: { json: true, out: "/x", through: "frame" } });
   });

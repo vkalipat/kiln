@@ -1,0 +1,151 @@
+{
+  "fixtureRoot": "/var/folders/h7/xh65m1594r3b9y7pb51g85gc0000gn/T/kiln-audit-probes-HutRCF",
+  "providerCalls": 0,
+  "results": {
+    "parseArgs": {
+      "cases": [
+        {
+          "argv": [
+            "task",
+            "--uncapped",
+            "Implement a formatter"
+          ],
+          "parsed": {
+            "cmd": [
+              "task",
+              "Implement a formatter"
+            ],
+            "flags": {
+              "uncapped": true
+            }
+          }
+        },
+        {
+          "argv": [
+            "task",
+            "--json",
+            "Implement a formatter"
+          ],
+          "parsed": {
+            "cmd": [
+              "task",
+              "Implement a formatter"
+            ],
+            "flags": {
+              "json": true
+            }
+          }
+        },
+        {
+          "argv": [
+            "task",
+            "Implement a formatter",
+            "--budegt",
+            "1"
+          ],
+          "parsed": {
+            "cmd": [
+              "task",
+              "Implement a formatter"
+            ],
+            "flags": {
+              "budegt": "1"
+            }
+          }
+        }
+      ]
+    },
+    "unknownBudgetFlag": {
+      "code": 2,
+      "captured": []
+    },
+    "budgetFIFO": {
+      "before": {
+        "charged": 4,
+        "unused": 6,
+        "small": "admitted",
+        "queued": 0
+      },
+      "oversized": {
+        "state": "rejected",
+        "error": "Operator estimated exposure budget exhausted: requested $11.000000, available $6.000000 (charged $4.000000 of $10.000000)"
+      },
+      "affordable": {
+        "state": "admitted"
+      },
+      "chargedAfter": 0
+    },
+    "transcriptPerf": {
+      "rows": [
+        {
+          "entries": 100,
+          "initialMs": 1.0196249999999907,
+          "tickMs": [
+            0.020666000000005624,
+            0.03741600000000744,
+            0.015917000000001735
+          ],
+          "visibleRows": 20
+        },
+        {
+          "entries": 500,
+          "initialMs": 1.5221249999999884,
+          "tickMs": [
+            0.011209000000008018,
+            0.009457999999995081,
+            0.007333000000016909
+          ],
+          "visibleRows": 20
+        },
+        {
+          "entries": 2000,
+          "initialMs": 4.710624999999993,
+          "tickMs": [
+            0.012416999999999234,
+            0.006459000000006654,
+            0.006624999999985448
+          ],
+          "visibleRows": 20
+        },
+        {
+          "entries": 5000,
+          "initialMs": 13.349209000000002,
+          "tickMs": [
+            0.014250000000004093,
+            0.007750000000015689,
+            0.009999999999990905
+          ],
+          "visibleRows": 20
+        }
+      ]
+    },
+    "meterPerf": {
+      "rows": [
+        {
+          "requests": 100,
+          "wallMs": 57.99437499999999,
+          "msPerRequest": 0.5799437499999999,
+          "snapshots": 201,
+          "ledgerBytes": 17822,
+          "rows": 100
+        },
+        {
+          "requests": 500,
+          "wallMs": 332.989708,
+          "msPerRequest": 0.665979416,
+          "snapshots": 1001,
+          "ledgerBytes": 123771,
+          "rows": 500
+        },
+        {
+          "requests": 1500,
+          "wallMs": 1123.761833,
+          "msPerRequest": 0.7491745553333333,
+          "snapshots": 3001,
+          "ledgerBytes": 406867,
+          "rows": 1500
+        }
+      ]
+    }
+  }
+}

@@ -12,7 +12,9 @@ export function paletteInvocation(commandId: string, runId: string | undefined, 
   if (commandId === "model: preview") return draft.trim() ? { args: [draft.trim()] } : { missing: "type a seed, then preview its model routing" };
   if (commandId === "auth: logout") return { args: values.length ? values : ["all"] };
   if (commandId === "evals: calibrate") return values.length ? { args: values } : { missing: "type --labels human|agent --budget USD, then reopen the command palette" };
-  if (commandId === "run: new") return values.length > 0 ? { args: values } : { missing: "type a seed, then reopen the command palette" };
+  if (commandId === "run: new" || commandId === "task: new") return draft.trim() ? { args: [draft] } : { missing: "type a seed, then reopen the command palette" };
+  if (commandId === "task: monitor") return runId ? { args: [runId] } : { missing: "attach a native task first" };
+  if (commandId === "mode: auto" || commandId.startsWith("integrations:")) return { args: [] };
   if (commandId === "run: resume") return runId ? { args: [runId] } : values.length === 1 ? { args: values } : { missing: "type one run id, then reopen the command palette" };
   if (["run: show record", "ideas: frontier", "project: form", "build: start"].includes(commandId)) {
     return runId ? { args: [runId] } : { missing: "attach a run first" };

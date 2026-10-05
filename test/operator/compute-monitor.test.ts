@@ -43,6 +43,27 @@ test("meter snapshots replace aggregates, separate cache counters and unknown ex
   expect(() => m.observeUsage(usage([]))).toThrow();
   expect(m.snapshot().usage.rows).toBe(2);
 }));
+
+test("incremental accounting matches full replay through reservation, metadata, settlement and interrupted usage", () => fixture(dir => {
+  const full = createComputeMonitor({ runId: "r", dir: join(dir, "full") }), delta = createComputeMonitor({ runId: "r", dir: join(dir, "delta") });
+  const rows: OperatorMeterRow[] = [];
+  const update = (current: OperatorMeterRow) => {
+    const previous = rows[current.id - 1]; rows[current.id - 1] = current;
+    const snapshot = usage(rows), { rows: _, ...summary } = snapshot;
+    full.observeUsage(snapshot); delta.observeUsageDelta(summary, [{ row: current, ...(previous ? { previous } : {}) }]);
+    expect(delta.snapshot().usage).toEqual(full.snapshot().usage);
+  };
+  for (let id = 1; id <= 4; id++) {
+    update(row(id)); update(row(id, { payloadBytes: 100 * 2 ** id }));
+    update(row(id, { payloadBytes: 100 * 2 ** id, state: id === 4 ? "unknown" : "settled", costUsd: 0.5, chargedUsd: id === 4 ? 3 : 0.5,
+      usage: { input: 10, output: 3, cacheRead: 5, cacheWrite: 2, totalTokens: 13 } }));
+  }
+  expect(delta.snapshot().notices.map(n => n.kind)).toEqual(full.snapshot().notices.map(n => n.kind));
+  expect(delta.snapshot().usage.unknownExposureUsd).toBe(2.5);
+  const { rows: _, ...summary } = usage(rows), before = delta.snapshot();
+  expect(() => delta.observeUsageDelta(summary, [{ row: row(5, { payloadBytes: 3200 }) }, { row: row(7) }])).toThrow();
+  expect(delta.snapshot()).toEqual(before);
+}));
 test("context growth advisories fire once per new observation and never pause", () => fixture(dir => {
   const notices: ComputeNotice[] = []; const m = createComputeMonitor({ runId: "r", dir, onNotice: n => notices.push(n) });
   const rows: OperatorMeterRow[] = [];

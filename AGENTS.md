@@ -6,11 +6,9 @@ Preparation or configuration alone does not authorize launching a user workload.
 
 Read guidance when the task needs it:
 
-- `docs/architecture-and-integrations.md` for runtime and service boundaries.
-- `docs/user-manual.md` for CLI behavior and operator workflows.
-- `docs/optional-integrations.md` for Jev, Hindsight, and external credentials.
-- `docs/frontier-updates.md` for native dependency and model catalog updates.
-- `docs/challenges/2026-readiness.md` when preparing the two challenge workflows.
+- `docs/README.md` for commands, integrations, limits, and maintenance.
+- `docs/architecture.md` for runtime and service boundaries.
+- `docs/validation.md` for recorded checks and evidence limits.
 
 Load a skill for an explicit request or a concrete capability need. Do not load a
 catalog of skills, impose a persona, or read every document because a keyword matches.

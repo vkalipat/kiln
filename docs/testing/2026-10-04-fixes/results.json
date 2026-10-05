@@ -1,0 +1,86 @@
+{
+  "version": 1,
+  "date": "2026-10-04",
+  "baseCommit": "f647946354dced39ba0b64d622c3607290818c25",
+  "localChanges": true,
+  "published": false,
+  "cliVersion": "0.1.2",
+  "nativeVersion": "18.6.1",
+  "bunVersion": "1.4.0",
+  "verification": {
+    "fullSuite": {
+      "pass": 2375,
+      "fail": 0,
+      "files": 261,
+      "seconds": 179.7
+    },
+    "additionalCatalogAutoResume": {
+      "pass": 3,
+      "fail": 0,
+      "includedInFinalFullSuite": true
+    },
+    "typecheck": "pass",
+    "docs": "pass",
+    "evals": "pass",
+    "leakcheck": "pass",
+    "frozenInstall": "pass",
+    "reviewedPatchContexts": "pass",
+    "providerCalls": 0,
+    "nativeCredentialRegressions": {
+      "pass": 3,
+      "fail": 0,
+      "JSProcess": true,
+      "JSWorkerFallback": true,
+      "parentAndChildShell": true,
+      "PythonEnvFilter": true
+    },
+    "documentation": {
+      "documents": 47,
+      "localLinks": 191,
+      "problems": []
+    }
+  },
+  "pluginCopies": [
+    {
+      "path": "plugins/kiln",
+      "helperSha256": "3fdcb43503413cd04368e146456489cfa5f0a7b0169dee655d0645a31153b6c8",
+      "registeredVersion": "0.1.2"
+    },
+    {
+      "path": "/Users/vedantk/plugins/kiln",
+      "helperSha256": "3fdcb43503413cd04368e146456489cfa5f0a7b0169dee655d0645a31153b6c8",
+      "registeredVersion": "0.1.1"
+    },
+    {
+      "path": "/Users/vedantk/.codex/plugins/cache/personal/kiln/0.1.1",
+      "helperSha256": "3fdcb43503413cd04368e146456489cfa5f0a7b0169dee655d0645a31153b6c8",
+      "registeredVersion": "0.1.1"
+    }
+  ],
+  "patches": {
+    "patches/@oh-my-pi%2Fpi-ai@18.6.1.patch": "425a835a0f563761f0629172486f47ce5cfed3019a37a298035dbe678b8972c7",
+    "patches/@oh-my-pi%2Fpi-coding-agent@18.6.1.patch": "f032d6c3d67b051d51a0e4a9231f4e71d99573110c1fc3ead6c365965b09c5fd"
+  },
+  "reasonblocks": {
+    "runId": null,
+    "startError": "HTTP 401 Unauthorized",
+    "finishError": "ValueError: unknown run: kiln-audit-fixes-20261004"
+  },
+  "fixedFindings": [
+    "native_credentials",
+    "plugin_endpoint_truth",
+    "task_flag_validation",
+    "budget_fifo_and_child_denial",
+    "transcript_rendering",
+    "native_plugin_and_palette_controls",
+    "frontier_patch_compatibility",
+    "meter_incremental_durability",
+    "workflow_queue_and_research_preflight"
+  ],
+  "remainingBoundaries": [
+    "Provider authentication quota throughput and task quality unmeasured",
+    "Historical run catalog identity remains frozen",
+    "Intentional concurrency source ledger and per-request bounds retained",
+    "No public release or remote CI run triggered"
+  ]
+}

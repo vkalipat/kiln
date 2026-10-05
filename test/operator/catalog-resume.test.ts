@@ -3,6 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { initHome } from "../../src/core/home";
+import { loadConfig } from "../../src/core/config";
 import { AuthStore } from "../../src/providers/auth";
 import { createOperatorRuntime } from "../../src/operator/runtime";
 import type { OmpSessionHandle, OmpSessionOptions } from "../../src/operator/session";
@@ -53,5 +54,24 @@ test("effort changes survive reopening without changing catalog identity; legacy
     runtime = await createOperatorRuntime({ ...f.options, runId, seed: undefined });
     expect(JSON.parse(readFileSync(path, "utf8")).catalogSha256).toBe(initialHash);
     expect(f.calls.transport).toBe(0);
+  } finally { await runtime.dispose(); rmSync(f.home, { recursive: true, force: true }); }
+});
+
+
+test("restoring automatic effort preserves frozen models, allocation and resume identity without transport", async () => {
+  const f = fixture(); let runtime = await createOperatorRuntime(f.options);
+  try {
+    const runId = runtime.run.id, path = join(runtime.run.dir, "operator.json"), configDir = join(runtime.run.dir, "operator");
+    const initial = JSON.parse(readFileSync(path, "utf8")), initialConfig = loadConfig(configDir);
+    await runtime.setEffort("low"); expect(loadConfig(configDir).routing?.effort).toBe("fixed");
+    await runtime.setEffort("auto");
+    const automatic = loadConfig(configDir), metadata = JSON.parse(readFileSync(path, "utf8"));
+    expect(automatic.routing?.effort).toBe("adaptive");
+    expect(automatic.roles).toEqual(initialConfig.roles); expect(JSON.stringify(automatic.budgets)).toBe(JSON.stringify(initialConfig.budgets));
+    expect(metadata.catalogSha256).toBe(initial.catalogSha256);
+    expect([metadata.budgetUsd, metadata.wallSeconds]).toEqual([initial.budgetUsd, initial.wallSeconds]);
+    await runtime.dispose(); runtime = await createOperatorRuntime({ ...f.options, runId, seed: undefined });
+    expect(loadConfig(configDir).routing?.effort).toBe("adaptive");
+    expect(f.calls.sessions).toBe(0); expect(f.calls.prompts).toBe(0); expect(f.calls.transport).toBe(0);
   } finally { await runtime.dispose(); rmSync(f.home, { recursive: true, force: true }); }
 });

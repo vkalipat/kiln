@@ -11,7 +11,7 @@ export interface OperatorWorkflowToolOptions {
   jev: ReturnType<typeof createJevWorkflowService>;
   signal: () => AbortSignal;
   assertOriginal: () => void;
-  admit: () => () => void;
+  admit: (signal: AbortSignal) => (() => void) | Promise<() => void>;
   toolContext: ToolContext;
   artifactDir: string;
   browser: (input: BrowserTaskInput, execution: { ctx: ExtensionContext; signal: AbortSignal; toolCallId: string; decideToolName: string }) => Promise<BrowserWorkflowResult>;
@@ -82,7 +82,7 @@ export function registerOperatorWorkflowTools(extension: Extension, options: Ope
       const input = browserTask.parse(raw) as BrowserTaskInput;
       const signal = AbortSignal.any([options.signal(), ...(toolSignal ? [toolSignal] : [])]);
       signal.throwIfAborted();
-      const release = options.admit();
+      const release = await options.admit(signal);
       try {
         options.onStatus("Running browser task");
         const receipt = await options.browser(input, { ctx, signal, toolCallId: id, decideToolName: "kiln_browser_decide" });
@@ -107,7 +107,7 @@ export function registerOperatorWorkflowTools(extension: Extension, options: Ope
       const input = researchTask.parse(raw) as ResearchTaskInput;
       const signal = AbortSignal.any([options.signal(), ...(toolSignal ? [toolSignal] : [])]);
       signal.throwIfAborted();
-      const release = options.admit();
+      const release = await options.admit(signal);
       try {
         options.onStatus("Collecting cited evidence");
         const receipt = await runResearchTask(input, { artifactDir: options.artifactDir, toolContext: options.toolContext, signal,

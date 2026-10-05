@@ -36,7 +36,8 @@ function compatibility(row: Row): string[] {
   const problems: string[] = [];
   if (!APIS.has(String(row.api))) problems.push("unsupported_api");
   if (!isKilnToolModelSupported(row as unknown as Model)) problems.push("unsupported_tool_contract");
-  if (row.supportsTools !== true && row.supportsTools !== false) problems.push("tool_support_not_explicit");
+  // The native catalog defaults omitted supportsTools to true. Match runtime admission.
+  if (row.supportsTools !== undefined && typeof row.supportsTools !== "boolean") problems.push("invalid_tool_support");
   if (row.toolMode !== undefined && !["code_mode_only", "function"].includes(String(row.toolMode))) problems.push("unreviewed_tool_mode");
   const rates = (value: unknown) => object(value) && ["input", "output", "cacheRead", "cacheWrite"].every(k => typeof value[k] === "number" && Number.isFinite(value[k]) && (value[k] as number) >= 0);
   if (!rates(row.cost)) problems.push("invalid_or_missing_cost");

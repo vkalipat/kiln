@@ -7,6 +7,7 @@ import argparse
 from contextlib import contextmanager
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -31,6 +32,30 @@ TERMINAL_RUN_STATES = {"done", "failed"}
 
 class OperatorError(Exception):
     pass
+
+
+def request_signature(seed_sha: str, through: str, kiln_bin: str, engine: str = "legacy",
+                      cwd: str | None = None, limits: dict[str, Any] | None = None) -> str:
+    identity = f"v1\0{seed_sha}\0{through}\0{kiln_bin}"
+    if engine == "native":
+        identity += "\0native\0" + str(cwd) + "\0" + json.dumps(limits or {}, sort_keys=True)
+    return hashlib.sha256(identity.encode()).hexdigest()
+
+
+def attempt_command(metadata: dict[str, Any], job: Path, attempt: dict[str, Any]) -> list[str]:
+    kiln_bin, home, run_id = metadata["kilnBin"], metadata["home"], metadata["runId"]
+    operation, through = attempt["operation"], attempt["through"]
+    if metadata.get("engine", "legacy") == "legacy":
+        return ([kiln_bin, "run", "new", "--seed-file", str(job / "seed.md"), "--id", run_id,
+                 "--through", through, "--autonomous", "--yes", "--home", home] if operation == "start" else
+                [kiln_bin, "run", "resume", run_id, "--through", through, "--autonomous", "--yes", "--home", home])
+    command = ([kiln_bin, "task", "new", "--seed-file", str(job / "seed.md"), "--id", run_id] if operation == "start" else
+               [kiln_bin, "task", "resume", run_id, "--seed-file", str(job / f"followup-{attempt['number']}.md")])
+    command += ["--cwd", metadata["cwd"], "--home", home]
+    if operation == "start":
+        for name, value in metadata.get("limits", {}).items():
+            command += ["--" + name] if value is True else ["--" + name, str(value)]
+    return command
 
 
 def now() -> str:
@@ -134,7 +159,21 @@ def validate_metadata(job: Path, metadata: dict[str, Any], home: Path, request_i
     if not isinstance(attempts, list) or not attempts:
         raise OperatorError("operator metadata attempts are invalid")
     initial_through = attempts[0].get("through") if isinstance(attempts[0], dict) else None
-    expected_signature = hashlib.sha256(f"v1\0{seed_sha}\0{initial_through}\0{kiln_bin}".encode()).hexdigest()
+    engine = metadata.get("engine", "legacy")
+    if engine not in {"legacy", "native"}:
+        raise OperatorError("invalid operator engine")
+    if engine == "native":
+        cwd, limits = metadata.get("cwd"), metadata.get("limits")
+        if not isinstance(cwd, str) or not Path(cwd).is_absolute() or not isinstance(limits, dict):
+            raise OperatorError("invalid native scope or limits")
+        if set(limits) - {"uncapped", "budget", "wall-seconds"} or ("uncapped" in limits and limits != {"uncapped": True}):
+            raise OperatorError("invalid native limit flags")
+        for name, value in limits.items():
+            if name != "uncapped" and value != "unlimited":
+                try:
+                    if not isinstance(value, str) or not math.isfinite(float(value)) or float(value) <= 0: raise ValueError()
+                except (ValueError, TypeError): raise OperatorError("invalid native limit")
+    expected_signature = request_signature(seed_sha, initial_through, kiln_bin, engine, metadata.get("cwd"), metadata.get("limits"))
     if signature != expected_signature:
         raise OperatorError("operator metadata signature mismatch")
     intent_path = job / "intent.json"
@@ -143,7 +182,8 @@ def validate_metadata(job: Path, metadata: dict[str, Any], home: Path, request_i
             "version": 1, "requestId": request_id, "home": str(home), "signature": signature,
         }:
             raise OperatorError("operator durable intent mismatch")
-    if metadata.get("launchThrough") not in {"checkpoint", "reflect"}:
+    boundaries = {"turn"} if engine == "native" else {"checkpoint", "reflect"}
+    if metadata.get("launchThrough") not in boundaries:
         raise OperatorError("operator metadata launch boundary is invalid")
     if metadata.get("launchThrough") != attempts[-1].get("through"):
         raise OperatorError("operator metadata launch boundary does not match its latest attempt")
@@ -168,18 +208,19 @@ def validate_metadata(job: Path, metadata: dict[str, Any], home: Path, request_i
         operation = attempt.get("operation")
         through = attempt.get("through")
         spec_name = attempt.get("spec")
-        if operation != ("start" if index == 1 else "resume") or through not in {"checkpoint", "reflect"}:
+        if operation != ("start" if index == 1 else "resume") or through not in boundaries:
             raise OperatorError("operator attempt operation is invalid")
         if attempt.get("state") not in {"launching", "running", "exited"}:
             raise OperatorError("operator attempt state is invalid")
         if spec_name != f"attempt-{index}.json":
             raise OperatorError("operator attempt spec identity mismatch")
         spec = read_json(job / spec_name)
-        expected = ([kiln_bin, "run", "new", "--seed-file", str(seed_path), "--id", f"operator-{request_id}",
-                     "--through", through, "--autonomous", "--yes", "--home", str(home)]
-                    if operation == "start" else
-                    [kiln_bin, "run", "resume", f"operator-{request_id}", "--through", through,
-                     "--autonomous", "--yes", "--home", str(home)])
+        if engine == "native" and operation == "resume":
+            followup = job / f"followup-{index}.md"
+            mode = followup.lstat().st_mode
+            if stat.S_ISLNK(mode) or not stat.S_ISREG(mode) or hashlib.sha256(followup.read_bytes()).hexdigest() != attempt.get("followupSha256"):
+                raise OperatorError("native follow-up identity mismatch")
+        expected = attempt_command(metadata, job, attempt)
         if spec.get("version") != 1 or spec.get("argv") != expected:
             raise OperatorError("operator worker command does not match durable request identity")
 
@@ -271,6 +312,22 @@ def start(args: argparse.Namespace) -> dict[str, Any]:
         raise OperatorError("start requires --confirm-spend because Kiln may make paid provider calls")
     home = Path(args.home).expanduser().resolve() if args.home else default_home()
     kiln_bin = resolve_bin(args.kiln_bin)
+    through = args.through or ("turn" if args.engine == "native" else "checkpoint")
+    if (args.engine == "native" and through != "turn") or (args.engine == "legacy" and through == "turn"):
+        raise OperatorError("native jobs use --through turn; legacy jobs use checkpoint or reflect")
+    args.through = through
+    limits = {name: value for name, value in {"budget": args.budget, "wall-seconds": args.wall_seconds}.items() if value is not None}
+    if args.uncapped:
+        if limits: raise OperatorError("use --uncapped alone or explicit limits")
+        limits = {"uncapped": True}
+    if args.engine != "native" and (args.cwd or limits): raise OperatorError("--cwd and limit options require --engine native")
+    cwd = str(Path(args.cwd or os.getcwd()).expanduser().resolve()) if args.engine == "native" else None
+    if cwd and not Path(cwd).is_dir(): raise OperatorError("native working directory is unavailable")
+    for name, value in limits.items():
+        if name != "uncapped" and value != "unlimited":
+            try:
+                if not math.isfinite(float(value)) or float(value) <= 0: raise ValueError()
+            except (ValueError, TypeError): raise OperatorError("native limits must be positive numbers or unlimited")
     seed_source = Path(os.path.abspath(os.path.expanduser(args.seed_file)))
     try:
         seed_stat = seed_source.lstat()
@@ -280,7 +337,7 @@ def start(args: argparse.Namespace) -> dict[str, Any]:
         raise OperatorError("seed file must be a regular file, not a symbolic link")
     seed = seed_source.read_bytes()
     seed_sha = hashlib.sha256(seed).hexdigest()
-    signature = hashlib.sha256(f"v1\0{seed_sha}\0{args.through}\0{kiln_bin}".encode()).hexdigest()
+    signature = request_signature(seed_sha, args.through, kiln_bin, args.engine, cwd, limits)
     root, job, metadata_path = paths(home, args.request_id)
     root.mkdir(mode=0o700, parents=True, exist_ok=True)
     secure_directory(root, "operator directory")
@@ -325,19 +382,18 @@ def start(args: argparse.Namespace) -> dict[str, Any]:
         else:
             log_path.touch(mode=0o600)
         run_id = f"operator-{args.request_id}"
-        command = [kiln_bin, "run", "new", "--seed-file", str(durable_seed), "--id", run_id,
-                   "--through", args.through, "--autonomous", "--yes", "--home", str(home)]
         spec_path = job / "attempt-1.json"
-        atomic_json(spec_path, {"version": 1, "argv": command})
         timestamp = now()
         metadata = {
             "version": 1, "requestId": args.request_id, "runId": run_id,
             "signature": signature, "seedSha256": seed_sha, "kilnBin": kiln_bin,
             "home": str(home), "logPath": str(log_path), "launchThrough": args.through,
+            "engine": args.engine, **({"cwd": cwd, "limits": limits} if args.engine == "native" else {}),
             "state": "launching", "createdAt": timestamp, "updatedAt": timestamp,
             "attempts": [{"number": 1, "operation": "start", "through": args.through,
                           "state": "launching", "createdAt": timestamp, "spec": spec_path.name}],
         }
+        atomic_json(spec_path, {"version": 1, "argv": attempt_command(metadata, job, metadata["attempts"][0])})
         atomic_json(metadata_path, metadata)
         pid = launch_worker(job, metadata, 1)
         return public_job(metadata, pid=pid, idempotent=False)
@@ -371,6 +427,7 @@ def public_job(metadata: dict[str, Any], **extra: Any) -> dict[str, Any]:
     return {
         "requestId": metadata["requestId"], "runId": metadata["runId"],
         "state": metadata.get("state"), "launchThrough": metadata.get("launchThrough"),
+        "engine": metadata.get("engine", "legacy"),
         "pid": metadata.get("workerPid"), "childPid": attempt.get("childPid"),
         "logPath": metadata["logPath"], **extra,
     }
@@ -414,25 +471,32 @@ def endpoint_status(metadata: dict[str, Any], process: dict[str, Any], run: dict
     requested = metadata.get("launchThrough", "checkpoint")
     phase = run.get("phase") if run.get("available") else None
     state = run.get("state") if run.get("available") else None
-    if requested == "checkpoint":
+    if requested == "turn":
+        reached = state == "done"
+    elif requested == "checkpoint":
         reached = phase in {"form", "build", "reflect"}
     else:
         reached = phase == "reflect" and state in TERMINAL_RUN_STATES
-    if reached and requested == "checkpoint" and state == "running" and process.get("exitCode") == 0:
-        disposition = "awaiting_delivery"
-    elif reached:
-        disposition = "completed"
+    if state == "failed":
+        disposition = "failed"
     elif process.get("workerAlive") or process.get("kilnAlive"):
         disposition = "running"
+    elif requested == "turn" and state == "paused":
+        disposition = "paused"
     elif process.get("exitCode") not in {None, 0}:
         disposition = "worker_failed"
+    elif reached and requested == "checkpoint" and state == "running" and process.get("exitCode") == 0:
+        disposition = "awaiting_delivery"
+    elif reached and state == "done" and process.get("exitCode") == 0:
+        disposition = "completed"
     elif state in TERMINAL_RUN_STATES:
         disposition = "ended_before_boundary"
     elif not run.get("available"):
         disposition = "run_unavailable"
     else:
         disposition = "worker_exited_before_boundary"
-    return {"requested": requested, "reached": reached, "disposition": disposition}
+    return {"requested": requested, "reached": reached, "disposition": disposition,
+            **({"taskQualityValidated": False} if requested == "turn" else {})}
 
 
 def tail_lines(path: Path, count: int, byte_limit: int = 1_048_576) -> list[str]:
@@ -466,7 +530,7 @@ def pause(args: argparse.Namespace) -> dict[str, Any]:
     with control_lock(job):
         metadata = read_json(job / "job.json")
         validate_metadata(job, metadata, Path(loaded["home"]), args.request_id)
-        command = [metadata["kilnBin"], "build", "pause", metadata["runId"], "--json", "--home", metadata["home"]]
+        command = [metadata["kilnBin"], "task" if metadata.get("engine") == "native" else "build", "pause", metadata["runId"], "--json", "--home", metadata["home"]]
         result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
         if result.returncode != 0:
             raise OperatorError((result.stderr or result.stdout).strip()[-1000:] or "kiln pause failed")
@@ -490,19 +554,33 @@ def resume(args: argparse.Namespace) -> dict[str, Any]:
         actual = kiln_status(metadata)
         if not actual.get("available"):
             raise OperatorError("saved Kiln run is unavailable; refusing an unsafe retry")
-        if actual.get("state") in TERMINAL_RUN_STATES:
+        native = metadata.get("engine") == "native"
+        if actual.get("state") in TERMINAL_RUN_STATES and not native:
             raise OperatorError(f"saved Kiln run already ended ({actual.get('state')})")
         through = args.through or metadata.get("launchThrough", "checkpoint")
+        if native and through != "turn": raise OperatorError("native jobs use --through turn")
+        if not native and args.seed_file: raise OperatorError("follow-up files require a native job")
         number = len(metadata["attempts"]) + 1
         spec_path = job / f"attempt-{number}.json"
-        command = [metadata["kilnBin"], "run", "resume", metadata["runId"], "--through", through,
-                   "--autonomous", "--yes", "--home", metadata["home"]]
-        atomic_json(spec_path, {"version": 1, "argv": command})
+        followup_sha = None
+        if native:
+            if args.seed_file:
+                source = Path(args.seed_file).expanduser()
+                if source.is_symlink() or not source.is_file(): raise OperatorError("follow-up must be a regular file")
+                followup = source.read_bytes()
+            elif actual.get("state") in TERMINAL_RUN_STATES:
+                raise OperatorError("an ended native turn requires an explicit follow-up --seed-file")
+            else: followup = b"Continue the saved task from its current state."
+            if not followup.strip(): raise OperatorError("native follow-up must not be empty")
+            followup_sha = hashlib.sha256(followup).hexdigest()
+            atomic_bytes(job / f"followup-{number}.md", followup)
         timestamp = now()
         metadata["launchThrough"] = through
         metadata["state"] = "launching"
         metadata["attempts"].append({"number": number, "operation": "resume", "through": through,
-                                     "state": "launching", "createdAt": timestamp, "spec": spec_path.name})
+                                     "state": "launching", "createdAt": timestamp, "spec": spec_path.name,
+                                     **({"followupSha256": followup_sha} if native else {})})
+        atomic_json(spec_path, {"version": 1, "argv": attempt_command(metadata, job, metadata["attempts"][-1])})
         metadata["updatedAt"] = timestamp
         atomic_json(job / "job.json", metadata)
         pid = launch_worker(job, metadata, number)
@@ -555,6 +633,24 @@ def worker(args: argparse.Namespace) -> int:
     return exit_code
 
 
+def steer(args: argparse.Namespace) -> dict[str, Any]:
+    job, loaded = load_job(args)
+    with control_lock(job):
+        metadata = read_json(job / "job.json")
+        validate_metadata(job, metadata, Path(loaded["home"]), args.request_id)
+        if metadata.get("engine") != "native": raise OperatorError("steering requires a native job")
+        source = Path(args.seed_file).expanduser()
+        if source.is_symlink() or not source.is_file(): raise OperatorError("steering text must be a regular file")
+        text = source.read_bytes()
+        if not text.strip() or len(text) > 65536: raise OperatorError("steering text must be 1..65536 bytes")
+        path = job / "steering.md"
+        atomic_bytes(path, text)
+        command = [metadata["kilnBin"], "task", "steer", metadata["runId"], "--seed-file", str(path), "--json", "--home", metadata["home"]]
+        result = subprocess.run(command, stdin=subprocess.DEVNULL, capture_output=True, text=True, timeout=30, check=False)
+        if result.returncode != 0: raise OperatorError((result.stderr or result.stdout).strip()[-1000:] or "native steering failed")
+        return {"requestId": metadata["requestId"], "runId": metadata["runId"], "steering": json.loads(result.stdout)}
+
+
 def parser() -> argparse.ArgumentParser:
     common = argparse.ArgumentParser(add_help=False)
     common.add_argument("--home", default=argparse.SUPPRESS, help="Kiln home (default: KILN_HOME or ~/.kiln)")
@@ -564,7 +660,12 @@ def parser() -> argparse.ArgumentParser:
     start_parser = commands.add_parser("start", parents=[common])
     start_parser.add_argument("--seed-file", required=True)
     start_parser.add_argument("--request-id", required=True)
-    start_parser.add_argument("--through", choices=["checkpoint", "reflect"], default="checkpoint")
+    start_parser.add_argument("--engine", choices=["native", "legacy"], default="legacy")
+    start_parser.add_argument("--through", choices=["checkpoint", "reflect", "turn"])
+    start_parser.add_argument("--cwd")
+    start_parser.add_argument("--budget")
+    start_parser.add_argument("--wall-seconds")
+    start_parser.add_argument("--uncapped", action="store_true")
     start_parser.add_argument("--confirm-spend", action="store_true")
     for name in ("status", "pause"):
         command = commands.add_parser(name, parents=[common])
@@ -574,8 +675,12 @@ def parser() -> argparse.ArgumentParser:
     logs_parser.add_argument("--lines", type=int, default=40, choices=range(0, 1001), metavar="0..1000")
     resume_parser = commands.add_parser("resume", parents=[common])
     resume_parser.add_argument("--request-id", required=True)
-    resume_parser.add_argument("--through", choices=["checkpoint", "reflect"])
+    resume_parser.add_argument("--through", choices=["checkpoint", "reflect", "turn"])
+    resume_parser.add_argument("--seed-file", help="Native follow-up prompt; required after an ended turn")
     resume_parser.add_argument("--confirm-spend", action="store_true")
+    steer_parser = commands.add_parser("steer", parents=[common])
+    steer_parser.add_argument("--request-id", required=True)
+    steer_parser.add_argument("--seed-file", required=True)
     hidden = commands.add_parser("_worker", help=argparse.SUPPRESS)
     hidden.add_argument("--job-dir", required=True)
     hidden.add_argument("--attempt", required=True, type=int)
@@ -592,7 +697,7 @@ def main(argv: list[str] | None = None) -> int:
     try:
         if args.command == "_worker":
             return worker(args)
-        action = {"start": start, "status": status, "logs": logs, "pause": pause, "resume": resume}[args.command]
+        action = {"start": start, "status": status, "logs": logs, "pause": pause, "resume": resume, "steer": steer}[args.command]
         print(json.dumps(action(args), sort_keys=True))
         return 0
     except (OperatorError, OSError, subprocess.SubprocessError) as error:

@@ -25,16 +25,21 @@ describe("models", () => {
     expect(() => resolveRole("brain", cfg, available)).toThrow(NoModelError);
     expect(() => resolveRoleOn("brain", "fireworks", cfg, available)).toThrow(NoModelError);
   });
-  test("resolvers admit the tested Astra adapter but not other Code Mode dialects", () => {
+  test("resolvers admit the installed Codex contract across model releases", () => {
     const cfg = defaultConfig();
     cfg.roles.brain = ["openai-codex/gpt-6-astra"];
     const available = new Set(["openai-codex"]);
     expect(resolveRole("brain", cfg, available).ref).toBe("openai-codex/gpt-6-astra");
     expect(resolveRoleOn("brain", "openai-codex", cfg, available).ref).toBe("openai-codex/gpt-6-astra");
     const astra = getBundledModel("openai-codex", "gpt-6-astra")!;
-    expect(isKilnToolModelSupported({ ...astra, id: "unverified-model" })).toBe(false);
+    expect(isKilnToolModelSupported({ ...astra, id: "future-release-with-same-contract" })).toBe(true);
+    expect(isKilnToolModelSupported({ ...astra, api: "unreviewed-wire" } as unknown as Model)).toBe(false);
     expect(isKilnToolModelSupported({ ...astra, provider: "openai" })).toBe(false);
     expect(isKilnToolModelSupported({ ...astra, applyPatchToolType: undefined })).toBe(false);
+    cfg.roles.brain = ["openai-codex/gpt-6.1-sol"];
+    const sol = resolveRole("brain", cfg, available);
+    expect(sol.ref).toBe("openai-codex/gpt-6.1-sol");
+    expect(clampEffort(sol.model, "max")).toBe("max");
   });
   test("otherProvider prefers a different one", () => {
     expect(otherProvider("anthropic", new Set(["anthropic", "openai-codex"]))).toBe("openai-codex");

@@ -2,7 +2,7 @@ import { createHash } from "node:crypto";
 import { constants, closeSync, fstatSync, lstatSync, openSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { writeAtomic } from "../core/paths";
-import type { OperatorMeterSnapshot } from "./meter";
+import type { OperatorMeterSnapshot, OperatorMeterRow, OperatorMeterChange } from "./meter";
 
 export interface ComputeNotice {
   kind: "repeated_failure" | "repeated_tool" | "context_growth" | "session_capacity" | "fingerprint_unavailable";
@@ -169,6 +169,50 @@ export function createComputeMonitor(options: { runId: string; dir: string; onNo
         s.growth = s.contextBytes > 0 && current.bytes >= s.contextBytes * 1.5 ? s.growth + 1 : 0;
         s.contextBytes = current.bytes; s.contextRow = current.row;
         if (s.growth === 3) notices.push({ kind: "context_growth", severity: "warning", sessionId: id, message: "Serialized request context grew at least 50% across three observations; inspect context reuse. This is not a tokenizer count." });
+      }
+      state.usage = next; persist(); for (const notice of notices) emit(notice);
+    },
+    observeUsageDelta(summary: Omit<OperatorMeterSnapshot, "rows">, changes: readonly OperatorMeterChange[], initial = false) {
+      if (summary.version !== 1 || summary.runId !== options.runId) fail();
+      const next: Usage = initial ? { rows: 0, lastRow: 0, input: 0, output: 0, cacheRead: 0, cacheWrite: 0, reportedTotalTokens: 0,
+        knownCostUsd: 0, reservedUsd: 0, unknownExposureUsd: 0, rowsWithoutUsage: 0 } : { ...state.usage };
+      const contribution = (row: OperatorMeterRow, sign: number) => {
+        identity(row.sessionId);
+        if (!count(row.id) || !numeric(row.reservedUsd) || !numeric(row.chargedUsd) || !["reserved", "settled", "unknown"].includes(row.state)) fail();
+        if (row.costUsd !== undefined) { if (!numeric(row.costUsd)) fail(); next.knownCostUsd += sign * row.costUsd; }
+        if (row.state === "reserved") next.reservedUsd += sign * row.chargedUsd;
+        if (row.state === "unknown") next.unknownExposureUsd += sign * Math.max(0, row.chargedUsd - (row.costUsd ?? 0));
+        if (row.usage) {
+          for (const k of ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const) if (!count(row.usage[k])) fail();
+          next.input += sign * row.usage.input; next.output += sign * row.usage.output;
+          next.cacheRead += sign * row.usage.cacheRead; next.cacheWrite += sign * row.usage.cacheWrite;
+          next.reportedTotalTokens += sign * row.usage.totalTokens;
+        } else next.rowsWithoutUsage += sign;
+      };
+      const notices: ComputeNotice[] = [];
+      const seen = new Set<number>();
+      for (const { row, previous } of changes) {
+        if (seen.has(row.id)) fail(); seen.add(row.id);
+        if (previous) { if (initial || previous.id !== row.id || row.id > next.lastRow) fail(); contribution(previous, -1); }
+        else { if (row.id !== next.lastRow + 1) fail(); next.lastRow = row.id; next.rows++; }
+        contribution(row, 1);
+        if (row.payloadBytes !== undefined && !count(row.payloadBytes)) fail();
+      }
+      for (const [key, value] of Object.entries(next)) {
+        if (key.endsWith("Usd") && value < 0 && value > -1e-8) (next as unknown as Record<string, number>)[key] = 0;
+        else if (key.endsWith("Usd") ? !numeric(value) : !count(value)) fail();
+      }
+      // Validate the entire batch before changing session history or aggregates.
+      for (const { row } of changes) {
+        if (row.payloadBytes !== undefined) {
+          const s = session(row.sessionId);
+          if (row.id > s.contextRow) {
+            s.growth = s.contextBytes > 0 && row.payloadBytes >= s.contextBytes * 1.5 ? s.growth + 1 : 0;
+            s.contextBytes = row.payloadBytes; s.contextRow = row.id;
+            if (s.growth === 3) notices.push({ kind: "context_growth", severity: "warning", sessionId: row.sessionId,
+              message: "Serialized request context grew at least 50% across three observations; inspect context reuse. This is not a tokenizer count." });
+          }
+        }
       }
       state.usage = next; persist(); for (const notice of notices) emit(notice);
     },

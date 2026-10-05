@@ -5,7 +5,7 @@ import { existsSync, mkdirSync, readFileSync, realpathSync } from "node:fs";
 import { join } from "node:path";
 import type { ExtensionFactory, ExtensionContext } from "@oh-my-pi/pi-coding-agent";
 import { getBundledModel, type Model } from "@oh-my-pi/pi-catalog";
-import { loadConfig, saveConfig } from "../core/config";
+import { defaultConfig, loadConfig, saveConfig } from "../core/config";
 import { initHome } from "../core/home";
 import { acquireRunLock } from "../core/lock";
 import { writeAtomic } from "../core/paths";
@@ -35,6 +35,8 @@ import { registerOperatorTeamTools } from "./team-tools";
 import { TeamAssignmentStore, teamAssignmentFeatureHash, type TeamAssignmentProducer } from "./team-assignments";
 import { registerTeamAssignmentTools } from "./team-assignment-tools";
 import type { OmpSessionHandle, OmpSessionOptions } from "./session";
+import { WorkflowSlots } from "./workflow-slots";
+import { watchOperatorSteering } from "./steering-mailbox";
 
 export type OperatorEvent =
   | { type: "run"; run: RunPaths }
@@ -235,7 +237,8 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     else if (metadata.configSha256 && metadata.configSha256 !== hash(readFileSync(configPath, "utf8"))) throw new Error("Saved operator configuration changed");
     await store.publish({ entries: [initial.contextEntry] }); save();
     let control = new RunControl(), handle: OmpSessionHandle | undefined;
-    let workflowControl = new AbortController(), activeWorkflows = 0;
+    let workflowControl = new AbortController();
+    const workflowSlots = new WorkflowSlots();
     let meter: ReturnType<typeof createOperatorMeter> | undefined;
     let busy: Promise<OperatorResult> | undefined, disposed = false, lastText = "", lastError: string | undefined;
     let abortRequested = false, step: OperatorStepKind = metadata.step ?? "synthesize", ideationActive = false, nativeStarted = false;
@@ -345,12 +348,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       const z = extension.zod;
       registerOperatorWorkflowTools(extension, { enabled: workflowsEnabled, jev: workflowJev,
         signal: () => AbortSignal.any([control.signal, workflowControl.signal]), assertOriginal,
-        admit: () => {
-          control.signal.throwIfAborted();
-          if (activeWorkflows >= 4) throw new Error("Four workflow tasks are already active; await their results before starting more");
-          activeWorkflows++; let released = false;
-          return () => { if (!released) { released = true; activeWorkflows--; } };
-        },
+        admit: signal => workflowSlots.acquire(signal),
         artifactDir: join(run.dir, "operator", "research"),
         toolContext: { cwd, roots: [cwd, run.project], run, record, webTimeoutMs: 10_000, fetchImpl: options.workflows?.fetch },
         browser: options.workflows?.browser ?? (async (input, execution) => (await import("./browser-native")).runNativeBrowserWorkflow({ ...execution, input })),
@@ -561,12 +559,14 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
     const ensureMeter = () => {
       if (meter) return;
       meter = createOperatorMeter({ run, limitUsd: metadata.budgetUsd, signal: control.signal, onViolation: stopTree, models: admittedModels,
-        onUsage: snapshot => {
+        onChange: (snapshot, changes, initial) => {
           // The runtime owns run.lock throughout the turn. CLI inspection and the TUI
           // must see the same settled usage, without counting estimates as actual spend.
-          writeStatus(run, { usdSpent: snapshot.knownCostUsd });
-          compute.observeUsage(snapshot);
-          emit({ type: "usage", costUsd: snapshot.knownCostUsd });
+          if (initial || changes.some(({ row, previous }) => row.costUsd !== previous?.costUsd)) {
+            writeStatus(run, { usdSpent: snapshot.knownCostUsd });
+            emit({ type: "usage", costUsd: snapshot.knownCostUsd });
+          }
+          if (initial || changes.length) compute.observeUsageDelta(snapshot, changes, initial);
         } });
     };
     const ensureSession = async () => {
@@ -656,6 +656,7 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
       }
     }
     emit({ type: "status", state: "idle", activity: "Ready", costUsd: spent() });
+    let unwatchSteering: (() => Promise<void>) | undefined;
     const runtime: OperatorRuntime = {
       run,
       prompt(text) {
@@ -784,29 +785,35 @@ export async function createOperatorRuntime(options: OperatorRuntimeOptions): Pr
         try { await handle?.session.abort(); } finally { await busy; }
       },
       async setEffort(effort) {
-        if (!["low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Unsupported operator effort");
+        if (!["auto", "low", "medium", "high", "xhigh"].includes(effort)) throw new Error("Unsupported operator effort");
         resourcePolicyRevision++;
-        metadata.effort = effort;
-        if (metadata.resources) metadata.resources.effortPolicy = "fixed";
-        cfg = { ...cfg, effort: effort as typeof cfg.effort, effortByRole: Object.fromEntries(Object.keys(cfg.roles).map(role => [role, effort])),
-          routing: { ...cfg.routing, mode: cfg.routing?.mode ?? "manual", effort: "fixed" } };
+        const adaptive = effort === "auto", defaults = defaultConfig();
+        if (metadata.resources) metadata.resources.effortPolicy = adaptive ? "adaptive" : "fixed";
+        cfg = { ...cfg, effort: adaptive ? defaults.effort : effort as typeof cfg.effort,
+          effortByRole: adaptive ? { ...defaults.effortByRole } : Object.fromEntries(Object.keys(cfg.roles).map(role => [role, effort])),
+          routing: { ...cfg.routing, mode: cfg.routing?.mode ?? "manual", effort: adaptive ? "adaptive" : "fixed" } };
         prepared = prepare();
+        const selected = resolveStep(metadata.step ?? "synthesize", cfg, available, seed, { prepared });
+        metadata.effort = selected.effort ?? cfg.effort;
         for (const item of assignmentAdmissions) {
           const parsed = parseModelRef(item.modelRef), model = getBundledModel(parsed.provider as never, parsed.modelId)!;
-          item.effort = clampEffort(model, effort) ?? effort;
+          item.effort = clampEffort(model, adaptive ? cfg.effort : effort) ?? cfg.effort;
         }
         saveConfig(join(run.dir, "operator"), cfg); metadata.configSha256 = hash(readFileSync(configPath, "utf8"));
-        save(); handle?.session.setThinkingLevel(effort as never);
-        emit({ type: "routing", kind: metadata.step ?? "synthesize", modelRef: metadata.modelRef, effort,
-          reason: "Effort updated", handoff: false, scope: "operator" });
+        save(); handle?.session.setThinkingLevel(metadata.effort as never);
+        emit({ type: "routing", kind: metadata.step ?? "synthesize", modelRef: metadata.modelRef, effort: metadata.effort,
+          reason: adaptive ? "Adaptive effort restored" : "Effort updated", handoff: false, scope: "operator" });
         record.append({ t: "note", text: `operator.effort ${effort}` });
       },
       async dispose() {
         if (disposed) return; disposed = true;
-        try { try { await runtime.cancel(); } finally { await closeSession(); } }
+        try { try { await unwatchSteering?.(); await runtime.cancel(); } finally { await closeSession(); } }
         finally { options.signal?.removeEventListener("abort", externalCancel); release(); }
       },
     };
+    unwatchSteering = watchOperatorSteering(run, text => runtime.steer(text), error => {
+      record.append({ t: "note", text: `operator.steering_rejected ${redactText(error.message)}` });
+    }, control.signal);
     return runtime;
   } catch (error) { release(); throw error; }
 }

@@ -1,0 +1,560 @@
+{
+  "probes": {
+    "providerCalls": 0,
+    "results": {
+      "parseArgs": {
+        "cases": [
+          {
+            "argv": [
+              "task",
+              "--uncapped",
+              "Implement a formatter"
+            ],
+            "parsed": {
+              "cmd": [
+                "task"
+              ],
+              "flags": {
+                "uncapped": "Implement a formatter"
+              }
+            }
+          },
+          {
+            "argv": [
+              "task",
+              "--json",
+              "Implement a formatter"
+            ],
+            "parsed": {
+              "cmd": [
+                "task"
+              ],
+              "flags": {
+                "json": "Implement a formatter"
+              }
+            }
+          },
+          {
+            "argv": [
+              "task",
+              "Implement a formatter",
+              "--budegt",
+              "1"
+            ],
+            "parsed": {
+              "cmd": [
+                "task",
+                "Implement a formatter"
+              ],
+              "flags": {
+                "budegt": "1"
+              }
+            }
+          }
+        ]
+      },
+      "unknownBudgetFlag": {
+        "code": 0,
+        "captured": [
+          {
+            "seed": "Implement a formatter",
+            "budgetUsd": "unset",
+            "wallSeconds": "unset"
+          }
+        ]
+      },
+      "budgetFIFO": {
+        "before": {
+          "charged": 4,
+          "unused": 6,
+          "small": "pending",
+          "queued": 2
+        },
+        "oversized": {
+          "state": "rejected",
+          "error": "Operator estimated exposure budget exhausted: requested $11.000000, available $10.000000 (charged $0.000000 of $10.000000)"
+        },
+        "affordable": {
+          "state": "rejected",
+          "error": "Operator estimated exposure budget exhausted: requested $1.000000, available $10.000000 (charged $0.000000 of $10.000000)"
+        },
+        "chargedAfter": 0
+      },
+      "transcriptPerf": {
+        "rows": [
+          {
+            "entries": 100,
+            "initialMs": 1.3135409999999865,
+            "tickMs": [
+              0.4646250000000123,
+              0.3306660000000079,
+              0.2887080000000424
+            ],
+            "visibleRows": 20
+          },
+          {
+            "entries": 500,
+            "initialMs": 2.191209000000015,
+            "tickMs": [
+              1.6976250000000164,
+              1.645290999999986,
+              1.69645799999995
+            ],
+            "visibleRows": 20
+          },
+          {
+            "entries": 2000,
+            "initialMs": 15.562667000000033,
+            "tickMs": [
+              15.722499999999968,
+              12.991917000000058,
+              11.990458999999987
+            ],
+            "visibleRows": 20
+          },
+          {
+            "entries": 5000,
+            "initialMs": 72.13758399999995,
+            "tickMs": [
+              69.01104199999997,
+              68.85079199999996,
+              72.55000000000007
+            ],
+            "visibleRows": 20
+          }
+        ]
+      },
+      "meterPerf": {
+        "rows": [
+          {
+            "requests": 100,
+            "wallMs": 122.87470900000005,
+            "msPerRequest": 1.2287470900000006,
+            "snapshots": 201,
+            "ledgerBytes": 43241,
+            "rows": 100
+          },
+          {
+            "requests": 500,
+            "wallMs": 641.227291,
+            "msPerRequest": 1.2824545820000002,
+            "snapshots": 1001,
+            "ledgerBytes": 215639,
+            "rows": 500
+          },
+          {
+            "requests": 1500,
+            "wallMs": 2486.8681669999996,
+            "msPerRequest": 1.657912111333333,
+            "snapshots": 3001,
+            "ledgerBytes": 647140,
+            "rows": 1500
+          }
+        ]
+      }
+    }
+  },
+  "controller": {
+    "rows": [
+      {
+        "totalEntries": 101,
+        "streamDeltaMs": [
+          0.08720900000000142,
+          0.19495900000001143,
+          0.1108329999999853
+        ]
+      },
+      {
+        "totalEntries": 500,
+        "streamDeltaMs": [
+          0.24354199999999082,
+          0.2207920000000172,
+          0.21883299999996098
+        ]
+      },
+      {
+        "totalEntries": 1500,
+        "streamDeltaMs": [
+          0.571875000000091,
+          0.5837920000000167,
+          0.583458999999948
+        ]
+      },
+      {
+        "totalEntries": 3000,
+        "streamDeltaMs": [
+          1.0997910000000957,
+          1.1093340000002172,
+          2.093667000000096
+        ]
+      }
+    ]
+  },
+  "secret-runtime": {
+    "stopped": "completed",
+    "rootTools": [
+      "read",
+      "bash",
+      "edit",
+      "eval",
+      "glob",
+      "grep",
+      "task",
+      "wait",
+      "todo",
+      "web_search",
+      "write"
+    ],
+    "syntheticSecretInMockProviderContext": true,
+    "syntheticSecretInNativeMessages": true,
+    "syntheticSecretInNativeSessionFile": true,
+    "syntheticSecretInKilnUIEvents": false,
+    "mockCalls": 2
+  },
+  "ui": {
+    "matrix": [
+      {
+        "width": 20,
+        "height": 10,
+        "rows": 10,
+        "maxVisibleWidth": 20,
+        "boundsPass": true
+      },
+      {
+        "width": 40,
+        "height": 12,
+        "rows": 12,
+        "maxVisibleWidth": 40,
+        "boundsPass": true
+      },
+      {
+        "width": 80,
+        "height": 24,
+        "rows": 24,
+        "maxVisibleWidth": 80,
+        "boundsPass": true
+      },
+      {
+        "width": 120,
+        "height": 40,
+        "rows": 40,
+        "maxVisibleWidth": 120,
+        "boundsPass": true
+      }
+    ],
+    "paletteMissing": {
+      "nativeNewSession": true,
+      "autoEffort": true,
+      "computeMonitor": true,
+      "integrations": true
+    },
+    "maskedInputHidden": true,
+    "effortChoices": [
+      "\u256d Effort \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u256e",
+      "\u2502 \u00b7     \u2022     \u00b7     \u00b7                                                          \u2502",
+      "\u2502 low    medium  high   ultra                                                  \u2502",
+      "\u2502                                                                              \u2502",
+      "\u2502 Balanced reasoning for everyday work                                         \u2502",
+      "\u2570\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500 \u2190/\u2192 choose \u00b7 Enter apply \u00b7 Esc close \u256f"
+    ]
+  },
+  "capacity": {
+    "rows": [
+      {
+        "sources": 6,
+        "fields": 4,
+        "questionChars": 80,
+        "fieldQuestionChars": 80,
+        "sourceChars": 12000,
+        "classificationCalls": 6,
+        "peakConcurrentClassifications": 3,
+        "labels": 24
+      },
+      {
+        "sources": 12,
+        "fields": 12,
+        "questionChars": 4096,
+        "fieldQuestionChars": 1024,
+        "sourceChars": 12000,
+        "classificationCalls": 72,
+        "peakConcurrentClassifications": 3,
+        "labels": 144
+      }
+    ]
+  },
+  "plugin": [
+    {
+      "metadata": {
+        "launchThrough": "reflect"
+      },
+      "process": {
+        "workerAlive": false,
+        "kilnAlive": false,
+        "exitCode": 1
+      },
+      "run": {
+        "available": true,
+        "phase": "reflect",
+        "state": "failed",
+        "outcome": {
+          "kind": "failure"
+        }
+      },
+      "endpoint": {
+        "requested": "reflect",
+        "reached": true,
+        "disposition": "completed"
+      }
+    },
+    {
+      "metadata": {
+        "launchThrough": "checkpoint"
+      },
+      "process": {
+        "workerAlive": true,
+        "kilnAlive": true,
+        "exitCode": null
+      },
+      "run": {
+        "available": true,
+        "phase": "form",
+        "state": "running"
+      },
+      "endpoint": {
+        "requested": "checkpoint",
+        "reached": true,
+        "disposition": "completed"
+      }
+    }
+  ],
+  "doctor": {
+    "version": 1,
+    "ready": true,
+    "offline": true,
+    "liveChecked": false,
+    "versions": {
+      "bun": "1.4.0",
+      "pi-agent-core": "18.4.4",
+      "pi-ai": "18.4.4",
+      "pi-catalog": "18.4.4",
+      "pi-coding-agent": "18.4.4",
+      "pi-tui": "18.4.4",
+      "pi-utils": "18.4.4"
+    },
+    "native": {
+      "codeAvailable": true,
+      "configured": true,
+      "credentialConfigured": true,
+      "roles": {
+        "brain": {
+          "compatible": true
+        },
+        "scout": {
+          "compatible": true
+        },
+        "judge": {
+          "compatible": true
+        },
+        "builder": {
+          "compatible": true
+        },
+        "auditor": {
+          "compatible": true
+        },
+        "critic": {
+          "compatible": true
+        },
+        "reflector": {
+          "compatible": true
+        },
+        "generator": {
+          "compatible": true
+        },
+        "prober": {
+          "compatible": true
+        },
+        "arbiter": {
+          "compatible": true
+        }
+      },
+      "liveChecked": false
+    },
+    "operator": {
+      "budgetUsd": null,
+      "wallSeconds": null,
+      "nullMeans": "unlimited",
+      "appliesTo": "new_sessions",
+      "computeMonitor": {
+        "codeAvailable": true
+      },
+      "scopedTeams": {
+        "codeAvailable": true
+      }
+    },
+    "jev": {
+      "codeAvailable": true,
+      "enabled": true,
+      "workflows": true,
+      "credentialConfigured": true,
+      "configured": true,
+      "liveChecked": false
+    },
+    "hindsight": {
+      "codeAvailable": true,
+      "endpoint": null,
+      "bankConfigured": false,
+      "configurationValid": false,
+      "credentialConfigured": false,
+      "configured": false,
+      "liveChecked": false
+    },
+    "blockers": [],
+    "warnings": [
+      "hindsight_not_configured"
+    ],
+    "limitations": [
+      "Credential presence does not establish live authentication or model entitlement.",
+      "No provider, DNS, service, or challenge execution was attempted."
+    ]
+  },
+  "evals": {
+    "ok": true,
+    "manifest": {
+      "ok": true,
+      "changed": [],
+      "missing": [],
+      "extra": []
+    },
+    "split": {
+      "ok": true,
+      "errors": [],
+      "problems": [],
+      "missing": [],
+      "extra": [],
+      "changed": [],
+      "maxPairwiseJaccard": 0.23766816143497757,
+      "maxCrossSplitJaccard": 0.23766816143497757
+    }
+  },
+  "leakcheck": {
+    "ok": true,
+    "rows": [],
+    "manifest": {
+      "ok": true,
+      "changed": [],
+      "missing": [],
+      "extra": []
+    }
+  },
+  "frontier-history": [
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-04T21:24:41Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-04T12:21:37Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-04T05:52:08Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-03T21:14:04Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-03T16:17:44Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-03T11:39:39Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-03T05:18:57Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-02T22:14:14Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-02T12:34:53Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-02T05:37:20Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-01T22:41:22Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-01T13:14:56Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-10-01T05:53:39Z"
+    },
+    {
+      "conclusion": "failure",
+      "createdAt": "2026-09-30T22:16:15Z"
+    },
+    {
+      "conclusion": "success",
+      "createdAt": "2026-09-30T12:34:38Z"
+    },
+    {
+      "conclusion": "success",
+      "createdAt": "2026-09-30T05:32:42Z"
+    },
+    {
+      "conclusion": "success",
+      "createdAt": "2026-09-29T22:15:04Z"
+    },
+    {
+      "conclusion": "success",
+      "createdAt": "2026-09-29T12:52:55Z"
+    },
+    {
+      "conclusion": "success",
+      "createdAt": "2026-09-29T05:44:04Z"
+    },
+    {
+      "conclusion": "success",
+      "createdAt": "2026-09-28T21:59:42Z"
+    }
+  ],
+  "verification": {
+    "commit": "f647946354dced39ba0b64d622c3607290818c25",
+    "version": "0.1.2",
+    "bun": "1.4.0",
+    "runtime": "18.4.4",
+    "fullSuite": {
+      "pass": 2356,
+      "fail": 0,
+      "files": 258,
+      "seconds": 193.12
+    },
+    "typecheck": "pass",
+    "docs": {
+      "documents": 45,
+      "localLinks": 157,
+      "problems": []
+    },
+    "firstSuite": {
+      "pass": 2355,
+      "fail": 1,
+      "causeObserved": "fixture Git initialization timed out during iCloud rehydration; isolated rerun passed 10/10 and clean full rerun passed"
+    },
+    "reasonblocks": {
+      "started": false,
+      "error": "HTTP 401 Unauthorized",
+      "runId": null
+    },
+    "realProviderCalls": 0
+  }
+}

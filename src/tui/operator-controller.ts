@@ -31,6 +31,7 @@ export class OperatorController implements TuiControllerPort {
   readonly #factory: RuntimeFactory;
   readonly #listeners = new Set<TuiEventListener>();
   readonly #transcript = new ControllerTranscript();
+  readonly #safeEntries = new WeakMap<object, TuiSnapshot["transcript"][number]>();
   readonly #unsubscribeLegacy: () => void;
   #snapshot: TuiSnapshot;
   #runtime?: OperatorRuntime;
@@ -178,6 +179,20 @@ export class OperatorController implements TuiControllerPort {
   }
 
   async execute(commandId: string, args: readonly string[] = []): Promise<void> {
+    if (commandId === "task: new") {
+      this.#assertAvailable();
+      if (this.#active) throw new Error("Pause the active turn before opening a new conversation");
+      const seed = args.join(" ");
+      if (!seed.trim()) throw new Error("A seed is required");
+      this.#auxiliary = true;
+      try { await this.#runtime?.dispose(); this.#runtime = undefined; }
+      finally { this.#auxiliary = false; }
+      this.#legacyMode = false; this.#pending = []; this.#pendingEffort = undefined;
+      this.#transcript.restore([]);
+      this.#update({ runId: undefined, phase: "frame", state: "idle", routing: undefined, checkpoint: undefined, costUsd: 0, activity: undefined });
+      return this.start({ seed });
+    }
+    if (commandId === "mode: auto") return this.setEffort("auto");
     if (this.#legacyMode) {
       if (commandId === "build: pause") return this.#legacy.execute?.(commandId, args);
       return this.#runLegacy(async () => { await this.#legacy.execute?.(commandId, args); });
@@ -187,7 +202,15 @@ export class OperatorController implements TuiControllerPort {
       if (args.length !== 1) throw new Error("run: resume requires one run id");
       return this.resume(args[0]!);
     }
-    if (commandId === "run: new") return this.start({ seed: args.join(" ") });
+    if (commandId === "run: new") {
+      this.#assertAvailable();
+      if (this.#active) throw new Error("Pause the active turn before starting a legacy run");
+      this.#auxiliary = true;
+      try { await this.#runtime?.dispose(); this.#runtime = undefined; }
+      finally { this.#auxiliary = false; }
+      this.#legacyMode = true;
+      return this.#runLegacy(() => this.#legacy.start({ seed: args.join(" ") }));
+    }
     this.#assertAvailable();
     if (this.#active) throw new Error("an operator turn is already active; pause before changing settings");
     this.#auxiliary = true;
@@ -311,11 +334,18 @@ export class OperatorController implements TuiControllerPort {
   }
   #change(change: TranscriptChange): void { this.#update({}); this.#emit(change); }
   #update(patch: Partial<TuiSnapshot>): void {
-    this.#snapshot = redactValue({ ...this.#snapshot, ...patch, mode: "operator", directory: this.cwd, transcript: [...this.#transcript.entries] });
+    const transcript = this.#transcript.entries.map(entry => this.#safeEntry(entry));
+    this.#snapshot = { ...this.#snapshot, ...redactValue(patch), mode: "operator", directory: this.cwd, transcript };
     this.#emit({ type: "snapshot", snapshot: this.#snapshot });
   }
+  #safeEntry(entry: TuiSnapshot["transcript"][number]): TuiSnapshot["transcript"][number] {
+    let safe = this.#safeEntries.get(entry);
+    if (!safe) { safe = redactValue(entry); this.#safeEntries.set(entry, safe); }
+    return safe;
+  }
   #emit(event: TuiEvent): void {
-    const safe = redactValue(event);
+    const safe = event.type === "snapshot" ? event : event.type === "text" || event.type === "tool"
+      ? { ...event, entry: this.#safeEntry(event.entry) } as TuiEvent : redactValue(event);
     for (const listener of this.#listeners) { try { listener(safe); } catch { /* Observers cannot interrupt owned work. */ } }
   }
 }

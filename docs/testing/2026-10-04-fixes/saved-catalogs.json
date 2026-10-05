@@ -1,0 +1,32 @@
+{
+  "runs": 5,
+  "results": [
+    {
+      "baselineCatalogMatches": true,
+      "catalogMatches": true,
+      "resourceCatalogMatches": true
+    },
+    {
+      "baselineCatalogMatches": true,
+      "catalogMatches": false,
+      "resourceCatalogMatches": true
+    },
+    {
+      "baselineCatalogMatches": false,
+      "catalogMatches": false,
+      "resourceCatalogMatches": true
+    },
+    {
+      "baselineCatalogMatches": true,
+      "catalogMatches": true,
+      "resourceCatalogMatches": true
+    },
+    {
+      "baselineCatalogMatches": true,
+      "catalogMatches": true,
+      "resourceCatalogMatches": true
+    }
+  ],
+  "providerCalls": 0,
+  "runWrites": 0
+}

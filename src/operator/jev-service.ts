@@ -156,6 +156,9 @@ export function createJevWorkflowService(options: JevWorkflowServiceOptions) {
   }
   return {
     stats,
+    capacity: () => ({ callsRemaining: maxCalls === null ? null : Math.max(0, maxCalls - counters.attempts),
+      inputTokensRemaining: maxInputTokens === null ? null : Math.max(0, maxInputTokens - counters.inputTokens - counters.unknownInputTokens - counters.reservedInputTokens),
+      requestInputReserve: MAX_REQUEST_INPUT_TOKENS }),
     evaluate(request: WorkflowRequest): Promise<JevWorkflowDecision> {
       const runSignal = options.signal();
       if (runSignal !== generation) {

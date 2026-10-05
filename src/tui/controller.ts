@@ -3,7 +3,7 @@ import { unlinkSync } from "node:fs";
 import { join } from "node:path";
 import type { CliDeps, CliIo } from "../cli/main";
 import { main } from "../cli/main";
-import { loadConfig, saveConfig } from "../core/config";
+import { defaultConfig, loadConfig, saveConfig } from "../core/config";
 import { classifyFailure } from "../core/failure";
 import { initHome } from "../core/home";
 import { kilnHome, writeAtomic } from "../core/paths";
@@ -69,7 +69,7 @@ export class RunController implements TuiControllerPort {
     const config = loadConfig(this.home);
     this.#snapshot = {
       ...INITIAL_TUI_SNAPSHOT, directory: this.home, branch: this.#branch,
-      effort: fromConfigEffort(config.effort), auth: localAuthState(this.home),
+      effort: config.routing?.effort === "adaptive" ? "auto" : fromConfigEffort(config.effort), auth: localAuthState(this.home),
     };
   }
   getSnapshot(): Readonly<TuiSnapshot> { return this.#snapshot; }
@@ -198,8 +198,9 @@ export class RunController implements TuiControllerPort {
     if (!argv) throw new Error(`unknown palette command ${commandId}`);
     this.#emitTranscript({ type: "text", entry: this.#transcript.appendUser(`$ kiln ${displayCommand(argv)}`) });
     await this.#begin(commandWithHome(argv, this.home), true, false);
-    if (commandId === "mode: toggle") {
-      this.#snapshot = { ...this.#snapshot, effort: fromConfigEffort(loadConfig(this.home).effort) };
+    if (commandId === "mode: toggle" || commandId === "mode: auto") {
+      const cfg = loadConfig(this.home);
+      this.#snapshot = { ...this.#snapshot, effort: cfg.routing?.effort === "adaptive" ? "auto" : fromConfigEffort(cfg.effort) };
       this.#emit({ type: "snapshot", snapshot: this.#snapshot });
     }
   }
@@ -384,9 +385,10 @@ export class RunController implements TuiControllerPort {
     const effort = this.#pendingEffort;
     if (!effort) return;
     const latest = loadConfig(this.home);
-    latest.effort = effort;
-    latest.effortByRole ??= {};
-    for (const role of Object.keys(latest.roles) as Array<keyof typeof latest.roles>) latest.effortByRole[role] = effort;
+    const defaults = defaultConfig(), adaptive = effort === "auto";
+    latest.effort = adaptive ? defaults.effort : effort;
+    latest.effortByRole = adaptive ? { ...defaults.effortByRole } : Object.fromEntries(Object.keys(latest.roles).map(role => [role, effort]));
+    latest.routing = { ...latest.routing, mode: latest.routing?.mode ?? "adaptive", effort: adaptive ? "adaptive" : "fixed" };
     saveConfig(this.home, latest);
     this.#snapshot = { ...this.#snapshot, effort: fromConfigEffort(effort) };
     this.#pendingEffort = undefined;

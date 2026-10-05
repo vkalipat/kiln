@@ -6,10 +6,19 @@ import type { TickSource } from "./ticker";
 import { STATIC_TICKER } from "./ticker";
 
 interface CachedEntry {
+  entry: TuiTranscriptEntry;
+  expanded: boolean;
+  showThinking: boolean;
   signature: string;
   width: number;
   frame: number;
   lines: readonly string[];
+}
+interface Layout {
+  version: number;
+  blocks: (readonly string[])[];
+  offsets: number[];
+  total: number;
 }
 
 export interface TranscriptOptions {
@@ -48,6 +57,9 @@ export function renderUserEntry(text: string, width: number, interrupted = false
 export class TranscriptView implements Component {
   #entries: readonly TuiTranscriptEntry[] = [];
   #entryCache = new Map<string, CachedEntry>();
+  #byId = new Map<string, TuiTranscriptEntry>();
+  #animated: number[] = [];
+  #layouts = new Map<number, Layout>();
   #markdown = new Map<string, Markdown>();
   #expanded = new Map<string, boolean>();
   #height?: number;
@@ -62,6 +74,7 @@ export class TranscriptView implements Component {
 
   constructor(entries: readonly TuiTranscriptEntry[] = [], options: TranscriptOptions = {}) {
     this.#entries = entries;
+    this.#indexEntries();
     this.#height = options.height;
     this.#follow = options.follow ?? true;
     this.#showThinking = options.detailsExpanded ?? false;
@@ -74,9 +87,11 @@ export class TranscriptView implements Component {
   setEntries(entries: readonly TuiTranscriptEntry[]): void {
     if (entries === this.#entries) return;
     this.#entries = entries;
+    this.#indexEntries();
     const ids = new Set(entries.map((entry) => entry.id));
-    for (const id of this.#entryCache.keys()) if (!ids.has(id)) this.#entryCache.delete(id);
+    for (const [key, cached] of this.#entryCache) if (!ids.has(cached.entry.id)) this.#entryCache.delete(key);
     for (const id of this.#markdown.keys()) if (!ids.has(id)) this.#markdown.delete(id);
+    for (const id of this.#expanded.keys()) if (!ids.has(id)) this.#expanded.delete(id);
     this.#invalidate();
   }
 
@@ -90,13 +105,13 @@ export class TranscriptView implements Component {
   }
 
   isExpanded(id: string): boolean {
-    const entry = this.#entries.find((candidate) => candidate.id === id);
+    const entry = this.#byId.get(id);
     return this.#expanded.get(id) ?? Boolean(entry && "expanded" in entry && entry.expanded);
   }
 
   setExpanded(id: string, expanded: boolean): void {
     this.#expanded.set(id, expanded);
-    this.#entryCache.delete(id);
+    for (const [key, cached] of this.#entryCache) if (cached.entry.id === id) this.#entryCache.delete(key);
     this.#invalidate();
   }
 
@@ -139,27 +154,27 @@ export class TranscriptView implements Component {
   render(width: number): readonly string[] {
     width = Math.max(0, Math.trunc(width));
     if (width === 0) return [];
-    const animatedFrame = this.#entries.some((entry) => entryFrame(entry, 1) === 1) ? this.ticker.frame : 0;
+    const animatedFrame = this.#animated.length ? this.ticker.frame : 0;
     const key = `${width}\0${this.#height ?? "all"}\0${this.#version}\0${this.#scrollOffset}\0${this.#follow}\0${animatedFrame}`;
     if (this.#renderCache?.key === key) return this.#renderCache.lines;
 
     let contentWidth = width;
-    let logical = this.#renderLogical(contentWidth);
-    const height = Math.min(this.#height ?? logical.length, Math.max(1, this.#height ?? logical.length));
-    if (logical.length > height && width > 1) {
+    let layout = this.#layout(contentWidth);
+    const height = this.#height ?? layout.total;
+    if (layout.total > height && width > 1) {
       contentWidth = width - 1;
-      logical = this.#renderLogical(contentWidth);
+      layout = this.#layout(contentWidth);
     }
 
-    this.#lastTotalRows = logical.length;
-    this.#lastVisibleRows = Math.min(height, logical.length);
-    const maxOffset = Math.max(0, logical.length - height);
+    this.#lastTotalRows = layout.total;
+    this.#lastVisibleRows = Math.min(height, layout.total);
+    const maxOffset = Math.max(0, layout.total - height);
     if (this.#follow) this.#scrollOffset = maxOffset;
     else this.#scrollOffset = Math.min(this.#scrollOffset, maxOffset);
-    let lines = logical.slice(this.#scrollOffset, this.#scrollOffset + height);
+    let lines = this.#visibleLines(layout, this.#scrollOffset, height);
 
-    if (logical.length > height && width > 1) {
-      const thumbSize = Math.max(1, Math.floor((height * height) / logical.length));
+    if (layout.total > height && width > 1) {
+      const thumbSize = Math.max(1, Math.floor((height * height) / layout.total));
       const travel = Math.max(0, height - thumbSize);
       const thumbStart = maxOffset === 0 ? 0 : Math.round((this.#scrollOffset / maxOffset) * travel);
       lines = lines.map((line, index) => truncateToWidth(line, contentWidth, Ellipsis.Unicode) + ansi.gray(index >= thumbStart && index < thumbStart + thumbSize ? "█" : "▐"));
@@ -174,22 +189,67 @@ export class TranscriptView implements Component {
     this.#invalidate();
   }
 
-  #renderLogical(width: number): string[] {
-    const result: string[] = [];
-    for (const entry of this.#entries) {
-      const rendered = this.#renderEntry(entry, width);
-      if (rendered.length === 0) continue;
-      if (result.length > 0) result.push("");
-      result.push(...rendered);
+  #indexEntries(): void {
+    this.#byId = new Map(this.#entries.map(entry => [entry.id, entry]));
+    this.#animated = [];
+    this.#entries.forEach((entry, index) => { if (entryFrame(entry, 1)) this.#animated.push(index); });
+  }
+
+  #layout(width: number): Layout {
+    let layout = this.#layouts.get(width);
+    if (!layout || layout.version !== this.#version) {
+      layout = { version: this.#version, blocks: this.#entries.map(entry => this.#renderEntry(entry, width)), offsets: [], total: 0 };
+      this.#offsets(layout);
+      // Only the full width and scrollbar width need to remain hot.
+      if (this.#layouts.size >= 2 && !this.#layouts.has(width)) {
+        const retiredWidth = this.#layouts.keys().next().value!;
+        this.#layouts.delete(retiredWidth);
+        for (const [key, cached] of this.#entryCache) if (cached.width === retiredWidth) this.#entryCache.delete(key);
+      }
+      this.#layouts.set(width, layout);
+    } else {
+      let resized = false;
+      for (const index of this.#animated) {
+        const lines = this.#renderEntry(this.#entries[index]!, width);
+        resized ||= lines.length !== layout.blocks[index]!.length;
+        layout.blocks[index] = lines;
+      }
+      if (resized) this.#offsets(layout);
     }
-    return result;
+    return layout;
+  }
+
+  #offsets(layout: Layout): void {
+    let total = 0;
+    layout.offsets = layout.blocks.map(lines => {
+      if (lines.length && total) total++;
+      const offset = total;
+      total += lines.length;
+      return offset;
+    });
+    layout.total = total;
+  }
+
+  #visibleLines(layout: Layout, start: number, height: number): string[] {
+    let lo = 0, hi = layout.blocks.length;
+    while (lo < hi) { const mid = (lo + hi) >>> 1; if (layout.offsets[mid]! + layout.blocks[mid]!.length <= start) lo = mid + 1; else hi = mid; }
+    const lines: string[] = [], end = Math.min(layout.total, start + height);
+    for (let index = lo; index < layout.blocks.length && lines.length < height; index++) {
+      const block = layout.blocks[index]!, offset = layout.offsets[index]!;
+      if (!block.length) continue;
+      if (offset > start && offset - 1 < end) lines.push("");
+      for (let row = Math.max(0, start - offset); row < block.length && offset + row < end; row++) lines.push(block[row]!);
+    }
+    return lines;
   }
 
   #renderEntry(entry: TuiTranscriptEntry, width: number): readonly string[] {
     const expanded = this.isExpanded(entry.id);
-    const signature = entrySignature(entry, expanded, this.#showThinking);
     const frame = entryFrame(entry, this.ticker.frame);
-    const cached = this.#entryCache.get(entry.id);
+    const cacheKey = `${entry.id}\0${width}`;
+    const cached = this.#entryCache.get(cacheKey);
+    const signature = cached?.entry === entry && cached.expanded === expanded && cached.showThinking === this.#showThinking
+      ? cached.signature : entrySignature(entry, expanded, this.#showThinking);
     if (cached?.signature === signature && cached.width === width && cached.frame === frame) return cached.lines;
     let lines: readonly string[];
     if (entry.kind === "user") lines = renderUserEntry(entry.text, width, entry.interrupted);
@@ -212,7 +272,7 @@ export class TranscriptView implements Component {
     } else {
       lines = [];
     }
-    this.#entryCache.set(entry.id, { signature, width, frame, lines });
+    this.#entryCache.set(cacheKey, { entry, expanded, showThinking: this.#showThinking, signature, width, frame, lines });
     return lines;
   }
 

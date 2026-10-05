@@ -10,6 +10,7 @@ import { discoverAgents } from "@oh-my-pi/pi-coding-agent/task/discovery";
 import { initializeExtensions } from "@oh-my-pi/pi-coding-agent/modes/runtime-init";
 import type { AuthStore } from "../providers/auth";
 import { clampEffort, parseModelRef } from "../providers/models";
+import { redactEnv, redactValue, secretValues } from "../core/secrets";
 
 export interface OmpSubagentSpawnEvent {
   agent: string;
@@ -171,6 +172,8 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
   const connectedProviders = options.auth.configuredProviders(options.connectedProviders);
   if (!connectedProviders.includes(provider)) throw new Error(`No connected credentials for ${provider}`);
   const settings = Settings.isolated({
+    // A model shell must not source an ambient login-shell credential snapshot.
+    shellPath: "/bin/sh", "bash.direnv": "off",
     "task.isolation.enabled": options.allowTaskIsolation === true,
     "worktree.cleanSource": false, "autolearn.enabled": false, "title.refreshOnReplan": false,
     "advisor.enabled": false, "memory.backend": "off",
@@ -181,6 +184,20 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
     ...(options.beforeSubagentSpawn ? { "task.speculativeLaunch": false } : {}),
     personality: "none", includeWorkspaceTree: false,
   });
+  const protectedSettings = new WeakSet<Settings>();
+  const protectShell = (nativeSettings: Settings) => {
+    if (protectedSettings.has(nativeSettings)) return;
+    protectedSettings.add(nativeSettings);
+    const getShellConfig = nativeSettings.getShellConfig.bind(nativeSettings);
+    nativeSettings.getShellConfig = () => {
+      const config = getShellConfig();
+      const env = redactEnv(config.env);
+      delete env.BASH_ENV; delete env.ENV;
+      return { ...config, shell: "/bin/sh", args: ["-c"], env };
+    };
+  };
+  protectShell(settings);
+  const ownedSecrets = new Set<string>();
   const authStorage = await AuthStorage.create(":memory:");
   const resolveKey = async (name: string, sessionId?: string, signal?: AbortSignal) => {
     // Auxiliary label/discovery requests have no owning native session. Do not grant them
@@ -191,6 +208,7 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
     const key = await raceWithSignal(options.auth.apiKeyFor(name), scoped);
     scoped?.throwIfAborted();
     // A session that disappeared while host OAuth refreshed no longer owns dispatch.
+    if (key && key.length >= 8) ownedSecrets.add(key);
     return AgentRegistry.global().list().some((ref) => ref.session?.sessionManager.getSessionId() === sessionId) ? key : undefined;
   };
   // Native root/child/compaction resolvers all use this same store. Do not import Kiln's OAuth
@@ -217,6 +235,14 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
     };
   }
   const hooks: NonNullable<CreateAgentSessionOptions["extensions"]>[number] = (extension) => {
+    // Transform results before the native loop persists them or builds the next
+    // provider context. This extension is rebound in every task child too.
+    extension.on("tool_result", event => ({
+      content: redactValue(event.content, [...secretValues(), ...ownedSecrets]),
+      details: redactValue(event.details, [...secretValues(), ...ownedSecrets]),
+      isError: event.isError,
+    }));
+    extension.on("context", event => ({ messages: redactValue(event.messages, [...secretValues(), ...ownedSecrets]) }));
     // Each rebound extension owns one parent session's pending dispatches.
     // Match identities, never consume a global next-worker queue.
     const dispatchedTasks = new Map<string, { name: string; spawnKey?: string }>();
@@ -286,6 +312,8 @@ async function buildOmpSession(options: OmpSessionOptions): Promise<OmpSessionHa
       if (!extension.getSessionName()) await extension.setSessionName("Kiln worker");
       const native = AgentRegistry.global().list().find((ref) => ref.session?.sessionManager.getSessionId() === ctx.sessionManager.getSessionId())?.session;
       if (!native) throw new Error("Native session is missing from the operator registry");
+      // Native task workers clone/overlay Settings; protect each owning instance.
+      protectShell(native.settings);
       removeGate?.();
       removeGate = native.agent.addBeforeModelCall(async (_context, signal) => {
         try {
